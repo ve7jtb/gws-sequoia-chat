@@ -1,8 +1,8 @@
-# gws + Sequoia Chat
+# gws + Sequoia Mail & Chat
 
-Standalone encrypted Google Chat bundles using [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) for transport and [Sequoia `sq`](https://sequoia-pgp.org/) for OpenPGP. No PQ Mail installation, Java runtime, `.p12` identity, or PQ Mail vault is needed.
+A standalone local browser app and CLI for encrypted Google Chat bundles and OpenPGP email, using [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) for transport and [Sequoia `sq`](https://sequoia-pgp.org/) for OpenPGP. No PQ Mail installation, Java runtime, `.p12` identity, or PQ Mail vault is needed.
 
-This is an experimental command-line integration, not an official Google or Sequoia product. The transport uses Google's documented Chat API. A local browser interface is not implemented yet.
+This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
 ## What gets sent
 
@@ -30,7 +30,7 @@ Requirements: Python 3.9+, `sq` with RFC 9980 support (tested with sq 1.5.0 / se
 python3 install.py --sq /absolute/path/to/sq
 ```
 
-The installer downloads official gws v0.22.5 and verifies its published SHA-256. It copies only the executables; dynamically linked Sequoia libraries must remain installed. The current shell wrapper is tested on macOS Apple Silicon; Linux is intended but untested. Windows binaries exist upstream, but this wrapper currently requires a POSIX environment such as WSL. Android/iOS and a browser UI are not included.
+The installer downloads official gws v0.22.5 and verifies its published SHA-256. It copies only the executables; dynamically linked Sequoia libraries must remain installed. The current shell wrapper is tested on macOS Apple Silicon; Linux is intended but untested. Windows binaries exist upstream, but this wrapper currently requires a POSIX environment such as WSL. Native Android/iOS clients are not included. The local browser UI is tested on macOS.
 
 ## Separate Google authorization
 
@@ -183,3 +183,161 @@ part of this OpenPGP-only identity.
 The helper pins the public Sequoia fork by commit in its Cargo manifest and lockfile. Its tests check password protection, wrong-password rejection,
 public-only exports, shared KEM material, refusal to overwrite, and signed and
 encrypted round trips for all three certificate views using `TEST_SQ=/path/to/sq`.
+
+## Local browser app (Mac preview)
+
+Double-click **`Sequoia Chat.command`** on macOS, or run:
+
+```sh
+python3 -B webapp.py
+```
+
+Keep the launcher running while using the app. It starts an HTTP helper on
+`127.0.0.1` with a random port and opens your browser with a per-launch capability.
+It does not listen on the LAN. Close the browser when finished and press Ctrl-C
+in the launcher to stop the helper. Reloading the page loses its in-memory
+capability; launch again for a fresh page. This is a local browser preview, not
+an installed/offline PWA. Python 3.9 or newer and the project's installed `gws`
+and `sq` binaries are required. Start it outside restricted sandboxes so gws can
+read its macOS Keychain item safely.
+
+1. Select a previously configured gws profile and **Connect / reconnect**.
+   **Sign in with Google** renews authorization when necessary. Initial OAuth
+   registration and identity creation still use the setup instructions above.
+2. Choose a conversation. Filter the loaded conversation list; **Older/Newer**
+   page through messages. Google does not receive decrypted message contents or
+   plaintext search queries from this interface. This preview has no full-text
+   encrypted-message search.
+3. In **Contacts & trust**, review a public certificate, independently verify
+   its full primary fingerprint, and trust the selected email. Trust persists
+   locally and can be removed. Attached certificates never grant trust.
+4. In **Compose**, select the conversation, trusted recipient and software
+   identity. Add a prominent subject, plain text, optional HTML alternative and
+   attachments. Enter the identity password to prepare a compressed, signed and
+   encrypted v6 hybrid bundle. Review its destination and fingerprint before
+   explicitly sending. The certificate and encrypted payload are two linked
+   Google Chat messages; do not select a group conversation unless you intend
+   to disclose the public certificate there.
+5. **Decrypt and verify** asks for your identity, expected trusted sender and
+   software-key password. Plaintext appears only after signature, certificate
+   and signed From/To checks pass. Formatting is sanitized and shown inside a
+   sandboxed frame with no scripts, remote images or active links. Attachments
+   are saved only when you choose their download links.
+
+The helper discovers `private/*/public.pgp` paired with `secret.pgp`. It supports
+Level 3 and Level 5 software hybrid identities and the v6 view of the compatible
+identity generator above. It does not yet expose classical/v4 sending, hardware
+private-key operations, PRF vault unlock, or identity provisioning in the browser.
+The standalone YubiKey adapter remains a separate project.
+
+Passwords and decrypted MIME travel through bounded memory/pipes, not temporary
+plaintext files, subprocess arguments or logs. Passwords are requested for each
+operation and are not saved. Python/JavaScript cannot guarantee memory erasure,
+and OS swap or crash dumps can persist memory. gws still owns Google token
+storage under its existing OS-keyring model; this UI does not add PRF protection
+or biometric enforcement.
+
+Public contacts/trust, encrypted outgoing bundles, public sender certificates
+and transport receipts persist under `private/web/`. **Clear session** clears
+browser drafts/displayed messages and prepared ciphertext, disconnects the local
+session and stops pending sign-in; it does not revoke Google access or erase
+saved credentials. HTTP responses are `no-store`, and there is no service worker,
+cookie, browser message database, analytics or remote frontend dependency.
+Host, Origin and per-launch capability checks guard the fixed JSON API against
+cross-site requests and DNS rebinding. There is no arbitrary command or file API.
+A compromised local OS/browser remains outside this boundary.
+
+### Browser helper tests
+
+```sh
+python3 -B -m unittest -v test_chat test_webapp
+```
+
+The combined suite passed **25 tests on macOS**: the 14 CLI tests plus 11 browser
+helper tests covering real password-protected Level 3/5 hybrid round trips,
+wrong passwords/signers, tampering, MIME path and HTML safety, explicit one-time
+send confirmation, trust persistence/removal and loopback access controls.
+The new helper tests mock Google transport and never access account credentials.
+A browser walkthrough also exercised connection, Older/Newer paging, composition,
+password unlock, send review/completion, verified text/HTML reading and session
+clearing using disposable fixtures. These simulated sends are separate from the
+live two-way Chat interoperability result documented above.
+
+For repeatable UI testing only, `python3 -B test_webapp.py --serve` starts a
+loopback fixture with disposable Alice/Bob identities and simulated Google APIs.
+It prints its launch URL; its password is the public test constant in
+`test_webapp.py`. It cannot send messages to Google. Stop it with Ctrl-C to delete
+its temporary identities. Never use those identities or that password for real
+messages.
+
+The local browser preview also passed a **live receive test on macOS**: its
+existing standalone gws session reconnected without another Google login, loaded
+the prior PQ Mail interoperability conversation, and downloaded the encrypted
+return bundle. After the software identity was unlocked in the local browser,
+Sequoia decrypted it and verified the independently trusted hybrid signature.
+The signed sender/recipient, subject and synthetic body matched. This used the
+existing message; the browser check sent no new live messages and performed no
+YubiKey operations.
+
+## Gmail preview
+
+The browser uses a Gmail/Google Chat-inspired layout: a left sidebar for **Mail**,
+**Chat**, **Compose**, contacts and settings; a message list and reading area;
+and a prominent search field and Compose action. It retains this project's
+branding and local cryptographic checks rather than embedding Google's web UI.
+
+Choose **Gmail** on the initial account screen, or **Mail → Connect / reconnect
+Gmail** after connecting Chat. Gmail uses a separate `<base-profile>-mail` gws
+profile. The app copies only OAuth client registration metadata into that new
+profile, never the Chat account token. To authorize it:
+
+1. Enable **Gmail API** in the OAuth client's Google Cloud project and configure
+   its consent screen/test users as required. This app does not silently enable
+   APIs or change a Google Cloud registration.
+2. Choose **Authorize Gmail read & send** (or Gmail → Sign in with Google at the
+   initial screen). Consent requests `gmail.readonly` and `gmail.send`, plus the
+   basic identity scopes used by gws. It does not request `gmail.modify` or full
+   `mail.google.com` access.
+3. Complete Google's consent, then click **Connect / reconnect Gmail**.
+   For a different OAuth registration, place its client JSON in
+   `private/profiles/<base-profile>-mail/client_secret.json` before authorizing.
+   Google credentials remain in gws's separate OS-keyring-backed storage, not in
+   the browser or PQ Mail vault.
+
+Inbox, Sent and All mail use 20-message pages. Search uses Gmail query syntax and
+runs on Google's server; encrypted bodies and protected inner subjects are not
+searchable there. The list requests metadata; full MIME is fetched when a message
+is opened. Reading does not mark messages read or modify mailbox state. The
+helper buffers Gmail responses in bounded memory and maintains no mailbox cache.
+
+Select **Gmail** in Compose, choose a supported trusted recipient and a software
+identity whose email matches the connected Gmail account. The preview sends one
+recipient per message and always signs and encrypts using v6 hybrid keys. Plain
+text, optional HTML, attachments and the public sender certificate are inside
+the encrypted MIME payload. The outer RFC 3156 `multipart/encrypted` envelope has
+a generic subject; routing addresses remain visible to Google. Other clients may
+display that generic outer subject instead of the protected inner subject.
+
+Opening encrypted mail requires the selected software identity and a previously
+trusted hybrid signer. Sequoia must decrypt and verify before plaintext is shown;
+verified inner From/To headers must match the selected identities. Unencrypted
+mail can be read with safe formatting and explicit **unverified** status. This
+preview does not verify detached `multipart/signed` mail, handle inline PGP,
+S/MIME, classical/v4 certificates, or unsigned encrypted messages. Those formats
+must not be mistaken for verified hybrid mail.
+
+The complete offline command is:
+
+```sh
+python3 -B -m unittest -v test_chat test_webapp test_mail_transport
+node --check web/app.js
+node --check web/mail.js
+```
+
+**35 tests passed on macOS**, including ten new Gmail tests with real protected
+Level 3/5 Sequoia keys and mocked Gmail transport. They cover RFC 3156 wrappers,
+text/HTML/files, protected subjects, wrong passwords, tampering, forged outer
+headers, unverified ordinary mail, search/paging metadata, one-time send review,
+account matching and separation of Chat/Gmail credentials. No live Gmail send or
+receive is claimed for this new module yet; it needs Gmail API setup and user
+consent. The earlier live **Chat** decryption result above remains separate.
