@@ -1,0 +1,20 @@
+# Account data, keys and all generated message/test artifacts stay local.
+/private/
+/bin/
+/vendor/
+/local-results/
+/demo/
+__pycache__/
+*.pyc
+*.pgp
+*.asc
+*.pem
+*.p12
+*.mime
+*.eml
+client_secret.json
+credentials*
+token_cache*
+.env
+.DS_Store
+
