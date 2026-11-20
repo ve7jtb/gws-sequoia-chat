@@ -107,10 +107,35 @@ def sq(*args, output=None, interactive=False, batch=False):
 
 
 def gws(*args, output=None, cap=MAX_BYTES):
-    raw = run([ROOT/'gws-chat', *args], output=output, cap=cap)
-    result = json.loads(raw)
-    require(not result.get('error'), 'Google API returned an error')
-    return result
+    # gws restricts transfers to its cwd. The wrapper deliberately uses its
+    # isolated profile directory, so stage only the explicitly selected files
+    # there instead of weakening upstream path checks or changing token stores.
+    profile = os.environ.get('GWS_CHAT_PROFILE', 'default')
+    require(bool(re.fullmatch(r'[A-Za-z0-9_-]+', profile)), 'Invalid account profile')
+    config = ROOT/'private'/('gws' if profile == 'default' else 'profiles/'+profile)
+    config.mkdir(mode=0o700, parents=True, exist_ok=True)
+    argv = list(args)
+    with tempfile.TemporaryDirectory(prefix='.transfer-', dir=config) as directory:
+        staging = Path(directory)
+        if '--upload' in argv:
+            i = argv.index('--upload') + 1
+            source = Path(argv[i])
+            require(source.name in ('message.pgp', 'pq-mail-sender-key.pgp'), 'Unexpected upload filename')
+            target = staging/source.name
+            write_new(target, read(source, cap))
+            argv[i] = str(target)
+        staged_output = None
+        if output:
+            require('--output' in argv, 'Missing download output option')
+            require(not Path(output).exists(), 'Download output already exists')
+            staged_output = staging/'download.bin'
+            argv[argv.index('--output')+1] = str(staged_output)
+        raw = run([ROOT/'gws-chat', *argv], output=staged_output, cap=cap)
+        result = json.loads(raw)
+        require(not result.get('error'), 'Google API returned an error')
+        if staged_output:
+            write_new(output, read(staged_output, cap))
+        return result
 
 
 def canonical_email(value):
@@ -119,15 +144,8 @@ def canonical_email(value):
     return value.lower()
 
 
-def public_info(path):
-    """Read only public certificate metadata; Sequoia validates cryptography.
-
-    This deliberately narrow reader rejects secret material, multiple primaries,
-    classical keys and unusual packet framing. It is not a signature verifier.
-    Binding signatures, revocation, expiry and key usage are checked by sq when
-    encrypting/verifying. Requiring only hybrid key algorithms prevents sq from
-    silently selecting a classical subkey in a mixed certificate.
-    """
+def public_packets(path):
+    """Decode bounded public packets; never accept secret or partial packets."""
     raw = read(path, 1024*1024)
     if raw.startswith(b'-----BEGIN PGP PUBLIC KEY BLOCK-----'):
         parts = raw.replace(b'\r\n', b'\n').split(b'\n\n', 1)
@@ -136,8 +154,9 @@ def public_info(path):
         require(end and not trailing.strip(), 'Trailing data after public certificate')
         encoded = b''.join(x for x in block.splitlines() if x and not x.startswith(b'='))
         raw = base64.b64decode(encoded, validate=True)
-    at, primary, algorithms, userids = 0, None, [], []
+    at, packets = 0, []
     while at < len(raw):
+        start = at
         tag = raw[at]; at += 1
         require(tag & 0x80, 'Invalid OpenPGP packet')
         if tag & 0x40:
@@ -162,18 +181,45 @@ def public_info(path):
         require(at+size <= len(raw), 'Truncated certificate')
         body = raw[at:at+size]; at += size
         require(kind in (6, 14, 2, 13), 'Expected only public certificate packets')
+        packets.append((kind, body, raw[start:at]))
+    return packets
+
+
+def public_info(path):
+    """Read metadata; Sequoia separately validates bindings and revocations.
+
+    Mixed certificates are permitted, but encryption and verification operate
+    on a filtered public view retaining only hybrid subkeys. No signature or
+    primary-key packet is rewritten, so the primary fingerprint is unchanged.
+    """
+    primary, algorithms, userids = None, [], []
+    for kind, body, _ in public_packets(path):
         if kind in (6, 14):
             require(len(body) >= 10 and body[0] == 6, 'Only v6 certificates accepted')
-            require(body[5] in ALGORITHMS, 'Only RFC 9980 hybrid key algorithms accepted')
-            algorithms.append(ALGORITHMS[body[5]])
             if kind == 6:
-                require(primary is None, 'Expected exactly one certificate')
+                require(primary is None and body[5] in (30, 31), 'Expected one hybrid primary')
                 primary = hashlib.sha256(b'\x9b'+len(body).to_bytes(4, 'big')+body).hexdigest().upper()
+            else:
+                require(primary is not None, 'Subkey before primary')
+            algorithms.append(ALGORITHMS.get(body[5], 'Classical algorithm ' + str(body[5])))
         elif kind == 13:
             userids.append(body.decode('utf-8', 'strict'))
     require(primary and algorithms, 'Missing public primary key')
     emails = [address.lower() for _, address in email.utils.getaddresses(userids)]
     return {'fingerprint': primary, 'algorithms': algorithms, 'emails': emails}
+
+
+def hybrid_public(path):
+    public_info(path)
+    result, keep = bytearray(), True
+    for kind, body, encoded in public_packets(path):
+        if kind == 14:
+            keep = body[5] in ALGORITHMS
+        elif kind in (6, 13):
+            keep = True
+        if keep:
+            result.extend(encoded)
+    return bytes(result)
 
 
 def check_cert(path, address, fingerprint=None):
@@ -227,6 +273,8 @@ def pack(identity, recipient_cert, recipient_fingerprint, sender, recipient, sub
          text, html, attachments, output, compression='zip', batch=False):
     identity = Path(identity).resolve()
     own = check_cert(identity/'public.pgp', sender)
+    require(all(x in ALGORITHMS.values() for x in own['algorithms']),
+            'Sending identity must contain only hybrid signing keys')
     peer = check_cert(recipient_cert, recipient, recipient_fingerprint)
     require(any(x.startswith('ML-KEM') for x in peer['algorithms']), 'Recipient has no hybrid KEM')
     out = private_dir(output)
@@ -235,7 +283,9 @@ def pack(identity, recipient_cert, recipient_fingerprint, sender, recipient, sub
         mime = staging/'payload.mime'
         write_new(mime, mime_bytes(sender, recipient, subject, text, html, attachments))
         encrypted = staging/'encrypted.pgp'
-        sq('encrypt', '--for-file', Path(recipient_cert).resolve(), '--signer-file', identity/'secret.pgp',
+        filtered = staging/'recipient.pgp'
+        write_new(filtered, hybrid_public(recipient_cert))
+        sq('encrypt', '--for-file', filtered, '--signer-file', identity/'secret.pgp',
            '--profile', 'rfc9580', '--compression', compression, '--binary', '--output', encrypted,
            mime, output=encrypted, interactive=not batch, batch=batch)
         write_new(out/'message.pgp', read(encrypted))
@@ -288,7 +338,9 @@ def unpack(identity, bundle, signer_cert, fingerprint, sender, recipient, output
         verified = Path(staging)/'verified.mime'
         # Explicit signer file AND threshold enforce verification; decryption
         # success alone is insufficient. Failed output never becomes a result.
-        sq('decrypt', '--recipient-file', identity/'secret.pgp', '--signer-file', Path(signer_cert).resolve(),
+        filtered = Path(staging)/'signer.pgp'
+        write_new(filtered, hybrid_public(signer_cert))
+        sq('decrypt', '--recipient-file', identity/'secret.pgp', '--signer-file', filtered,
            '--signatures', '1', '--output', verified, Path(bundle).resolve(), output=verified,
            interactive=not batch, batch=batch)
         raw = read(verified)
@@ -343,25 +395,56 @@ def send(space, bundle, confirm=False):
         uploaded = gws('chat', 'media', 'upload', '--params', json.dumps({'parent': space}),
                        '--json', json.dumps({'filename': filename}), '--upload', str(bundle/filename),
                        '--upload-content-type', 'application/octet-stream')
-        require(uploaded.get('attachmentDataRef', {}).get('resourceName'), 'Upload returned no attachment reference')
-        attached.append({'attachmentDataRef': uploaded['attachmentDataRef']})
+        ref = uploaded.get('attachmentDataRef', {})
+        # Upload returns an opaque attachmentUploadToken; resourceName is the
+        # later download handle and need not exist until a message is created.
+        require(isinstance(ref, dict) and any(isinstance(ref.get(k), str) and 0 < len(ref[k]) <= 65536
+                for k in ('attachmentUploadToken', 'resourceName')), 'Upload returned no attachment reference')
+        attached.append({'attachmentDataRef': {k: ref[k] for k in ('attachmentUploadToken', 'resourceName') if k in ref}})
     # A stable, saved request ID lets an uncertain create response be investigated
     # without automatically resending. No failed POST is retried by this wrapper.
     request_id = str(uuid.uuid4())
     write_new(bundle/'send-request.json', json.dumps({'space': space, 'requestId': request_id}).encode())
-    result = gws('chat', 'spaces', 'messages', 'create', '--params', json.dumps({'parent': space, 'requestId': request_id}),
-                 '--json', json.dumps({'text': 'Encrypted OpenPGP Chat bundle. Download both attachments to decrypt and verify locally.',
-                                       'attachment': attached}))
+    # Chat rejects multiple non-media files in one message. Publish the public
+    # certificate first, then link it from the encrypted bundle's caption.
+    cert_result = gws('chat', 'spaces', 'messages', 'create', '--params', json.dumps({'parent': space, 'requestId': request_id}),
+                      '--json', json.dumps({'text': 'PQ Mail public OpenPGP certificate. Verify its fingerprint independently.',
+                                            'attachment': [attached[1]]}))
+    cert_message = message_name(cert_result.get('name', ''))
+    require(cert_message.startswith(space+'/messages/'), 'Unexpected certificate message destination')
+    write_new(bundle/'certificate-sent.json', json.dumps(cert_result, indent=2).encode())
+    bundle_request = str(uuid.uuid4())
+    write_new(bundle/'bundle-send-request.json', json.dumps({'space': space, 'requestId': bundle_request}).encode())
+    result = gws('chat', 'spaces', 'messages', 'create', '--params', json.dumps({'parent': space, 'requestId': bundle_request}),
+                 '--json', json.dumps({'text': 'PQ Mail signed OpenPGP bundle.\nCertificate message: '+cert_message,
+                                       'attachment': [attached[0]]}))
     write_new(bundle/'sent.json', json.dumps(result, indent=2).encode())
-    return {'sent': result.get('name'), 'requestId': request_id}
+    return {'sent': result.get('name'), 'certificate_message': cert_message, 'requestId': bundle_request}
+
+
+def linked_certificate_message(result):
+    links = re.findall(r'(?<!\S)Certificate message:\s*(\S+)', result.get('text', ''), re.MULTILINE)
+    require(len(links) == 1, 'Expected one linked certificate message')
+    name = message_name(links[0].strip())
+    own = message_name(result.get('name', ''))
+    require(name.split('/messages/')[0] == own.split('/messages/')[0] and name != own,
+            'Certificate link must stay in this conversation')
+    cert = gws('chat', 'spaces', 'messages', 'get', '--params', json.dumps({'name': name}))
+    sender = result.get('sender', {}).get('name')
+    require(sender and cert.get('sender', {}).get('name') == sender, 'Certificate message sender differs')
+    return cert
 
 
 def receive(message, output):
     message_name(message)
     result = gws('chat', 'spaces', 'messages', 'get', '--params', json.dumps({'name': message}))
+    certificate_result = result
+    if not any(a.get('contentName') == 'pq-mail-sender-key.pgp' for a in result.get('attachment', [])):
+        certificate_result = linked_certificate_message(result)
     out = private_dir(output)
     for wanted, cap in (('message.pgp', MAX_BYTES), ('pq-mail-sender-key.pgp', 1024*1024)):
-        matches = [a for a in result.get('attachment', []) if a.get('contentName') == wanted]
+        source = result if wanted == 'message.pgp' else certificate_result
+        matches = [a for a in source.get('attachment', []) if a.get('contentName') == wanted]
         require(len(matches) == 1, 'Expected exactly one '+wanted)
         resource = matches[0].get('attachmentDataRef', {}).get('resourceName', '')
         # Only Chat media references are used; never follow arbitrary downloadUri

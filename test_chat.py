@@ -58,6 +58,27 @@ class ChatTests(unittest.TestCase):
                     self.assertFalse(any(out.glob('.compose-*')))
                     self.assertFalse(any(target.glob('.verify-*')))
 
+    def test_mixed_certificate_uses_only_hybrid_subkeys(self):
+        alice, info = self.keys['3', 'alice']
+        mixed_secret = self.work/'mixed-secret.pgp'
+        chat.sq('key', 'subkey', 'add', '--cert-file', alice/'secret.pgp',
+                '--cipher-suite', 'cv25519', '--can-encrypt', 'transport',
+                '--without-password', '--output', mixed_secret, batch=True)
+        mixed_public = self.work/'mixed-public.pgp'
+        chat.sq('key', 'delete', '--cert-file', mixed_secret, '--output', mixed_public, batch=True)
+        self.assertTrue(any(a.startswith('Classical') for a in chat.public_info(mixed_public)['algorithms']))
+        filtered = self.work/'filtered.pgp'
+        filtered.write_bytes(chat.hybrid_public(mixed_public))
+        self.assertEqual(chat.public_info(filtered)['fingerprint'], info['fingerprint'])
+        self.assertTrue(all(a in chat.ALGORITHMS.values() for a in chat.public_info(filtered)['algorithms']))
+        bob, b = self.keys['3', 'bob']
+        out = self.work/'mixed-outgoing'
+        chat.pack(bob, mixed_public, info['fingerprint'], 'bob@example.test', 'alice@example.test',
+                  'Hybrid selection', 'synthetic', None, [], out, batch=True)
+        result = chat.unpack(alice, out/'message.pgp', bob/'public.pgp', b['fingerprint'],
+                             'bob@example.test', 'alice@example.test', self.work/'mixed-open', batch=True)
+        self.assertTrue(result['signature_valid'])
+
     def test_wrong_signer_fails_without_exposing_plaintext(self):
         alice, a, bob, b, out, _ = self.prepare()
         target = self.work/'rejected'
@@ -103,18 +124,31 @@ class ChatTests(unittest.TestCase):
         def fake(*args, **kwargs):
             calls.append(args)
             if args[:3] == ('chat', 'media', 'upload'):
-                return {'attachmentDataRef': {'resourceName': 'spaces/TEST/attachments/'+str(len(calls))}}
+                return {'attachmentDataRef': {'attachmentUploadToken': 'synthetic-upload-'+str(len(calls))}}
             return {'name': 'spaces/TEST/messages/123'}
         with patch.object(chat, 'gws', fake):
             result = chat.send('spaces/TEST', out, confirm=True)
             with self.assertRaises(ValueError):
                 chat.send('spaces/TEST', out, confirm=True)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(result['sent'], 'spaces/TEST/messages/123')
         body = json.loads(calls[-1][calls[-1].index('--json')+1])
         self.assertNotIn('Synthetic bundle', body['text'])
         self.assertNotIn('Plain alternative', json.dumps(calls))
-        self.assertEqual(len(body['attachment']), 2)
+        self.assertEqual(len(body['attachment']), 1)
+        self.assertIn('Certificate message: spaces/TEST/messages/123', body['text'])
+
+    def test_linked_certificate_checks_conversation_and_sender(self):
+        result = {'name':'spaces/TEST/messages/bundle', 'sender':{'name':'users/alice'},
+                  'text':'PQ Mail signed OpenPGP bundle. Certificate message: spaces/TEST/messages/cert'}
+        with patch.object(chat, 'gws', return_value={'sender':{'name':'users/alice'}}):
+            chat.linked_certificate_message(result)
+        with patch.object(chat, 'gws', return_value={'sender':{'name':'users/other'}}):
+            with self.assertRaises(ValueError): chat.linked_certificate_message(result)
+        result['text']='Certificate message: spaces/OTHER/messages/cert'
+        with patch.object(chat, 'gws') as call:
+            with self.assertRaises(ValueError): chat.linked_certificate_message(result)
+            call.assert_not_called()
 
     def test_receive_rejects_arbitrary_download_url(self):
         def fake(*args, **kwargs):
@@ -122,6 +156,28 @@ class ChatTests(unittest.TestCase):
         with patch.object(chat, 'gws', fake):
             with self.assertRaises(ValueError):
                 chat.receive('spaces/TEST/messages/123', self.work/'download')
+
+    def test_transfer_staging_stays_in_isolated_profile(self):
+        source = self.work/'message.pgp'
+        source.write_bytes(b'synthetic encrypted payload')
+        calls = []
+        def fake_run(argv, output=None, cap=None):
+            if '--upload' in argv:
+                staged = Path(argv[argv.index('--upload')+1])
+                self.assertEqual(staged.read_bytes(), source.read_bytes())
+                self.assertTrue(str(staged).startswith(str(self.work/'private/profiles/test')))
+                calls.append(staged)
+            if output:
+                Path(output).write_bytes(b'synthetic download')
+            return b'{"ok":true}'
+        with patch.object(chat, 'ROOT', self.work), patch.dict(os.environ, {'GWS_CHAT_PROFILE':'test'}), patch.object(chat, 'run', fake_run):
+            chat.gws('chat', 'media', 'upload', '--upload', str(source))
+            downloaded=self.work/'received.pgp'
+            chat.gws('chat', 'media', 'download', '--output', str(downloaded), output=downloaded)
+            self.assertEqual(downloaded.read_bytes(), b'synthetic download')
+        self.assertTrue(calls)
+        self.assertFalse(calls[0].exists())
+        self.assertFalse(list((self.work/'private/profiles/test').glob('.transfer-*')))
 
     def test_bounded_file_read(self):
         p = self.work/'too-big'; p.write_bytes(b'abc')
