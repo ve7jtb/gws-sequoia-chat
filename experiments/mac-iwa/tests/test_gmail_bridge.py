@@ -35,3 +35,9 @@ class GmailTests(unittest.TestCase):
      with self.assertRaises(ValueError):gmail_bridge.upload_encrypted_mail(b,api,source)
     else:self.assertEqual(gmail_bridge.upload_encrypted_mail(b,api,source),{'id':'test'})
     self.assertEqual(len(paths),1);self.assertFalse(paths[0].exists());self.assertTrue(source.exists())
+
+ def test_service_pin_labels(self):
+  for service in ('Chat','Gmail'):
+   for op,verb in (('seal','Sign and encrypt'),('open','Decrypt and verify')):
+    self.assertEqual(chat_bridge.crypto_prompt(op,service),verb+' '+service+(' email' if service=='Gmail' else ' bundle'))
+  with self.assertRaises(ValueError):chat_bridge.crypto_prompt('open','untrusted prompt')

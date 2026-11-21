@@ -50,10 +50,10 @@ def action(b,r):
         return {'messages':rows,'next':data.get('nextPageToken','')}
     if op=='chat-mail-open':
         account();contact,peer=b.peer(r['contact']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
-        outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer));mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])
+        outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer),service='Gmail');mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])
         return {'verified':True,'sender':contact['email'],'fingerprint':contact['fingerprint'],'subject':mime['subject'],'text':'\n'.join(mime['plain']),'html':'\n'.join(mime['html']),'attachments':[{'name':n,'size':len(d),'data':base64.b64encode(d).decode()} for n,d in mime['files']]}
     if op=='chat-mail-prepare':
-        account();contact,peer=b.peer(r['contact']);raw=compose_mime(b.chat,r,b.cfg['chat_email'],contact['email']);cipher=b.crypto('seal',peer,raw)
+        account();contact,peer=b.peer(r['contact']);raw=compose_mime(b.chat,r,b.cfg['chat_email'],contact['email']);cipher=b.crypto('seal',peer,raw,service='Gmail')
         # Standard ASCII armor without CRC, preserving the binary v6 packets.
         encoded=base64.b64encode(cipher).decode();armor=('-----BEGIN PGP MESSAGE-----\r\n\r\n'+'\r\n'.join(encoded[i:i+64] for i in range(0,len(encoded),64))+'\r\n-----END PGP MESSAGE-----\r\n').encode()
         rid=secrets.token_hex(24);out=b.chat.private_dir(b.data/('mail-draft-'+rid));b.chat.write_new(out/'message.eml',m.encrypted_envelope(b.cfg['chat_email'],contact['email'],armor));b.chat.write_new(out/'review.json',json.dumps({'created':time.time()}).encode())

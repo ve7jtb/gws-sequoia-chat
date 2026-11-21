@@ -18,7 +18,8 @@ No mailbox modification/deletion operation is exposed.
 
 This is an encrypted-mail preview, not a general-purpose Gmail reader. The
 current list attempts encrypted-message opening for each row; ordinary mail
-fails closed. Some shared UI/PIN labels still say Chat. Gmail sender certificates
+fails closed. Version 0.4.1 labels sign-in, inbox/Compose, confirmation and native PIN dialogs
+for the selected Gmail or Chat service. Gmail sender certificates
 must already be independently imported and trusted; the email test does not rely
 on automatic attached-key trust or send a linked Chat certificate.
 
@@ -49,6 +50,23 @@ and authenticated inner MIME remained intact. The outgoing test used the
 installed helper test harness; the return exercised the IWA inbox, reader, HTML
 view and download UI. Local account details, device identifiers, credentials and
 private test reports are excluded from this repository.
+
+### Service-specific labels — 0.4.1
+
+The selected service drives the page heading, sign-in/reconnect buttons,
+inbox/conversation controls, Compose destination/help, send confirmation and
+reader prompts. Gmail hides Chat conversation controls; Chat hides Gmail search.
+Changing services clears pending message selections and send reviews. The
+service selector is disabled during a native operation so its labels cannot
+switch while a request is running.
+
+Native routes choose fixed PIN descriptions: **Sign and encrypt Gmail email**
+and **Decrypt and verify Gmail email**, or **Sign and encrypt Chat bundle** and
+**Decrypt and verify Chat bundle**. Browser-supplied arbitrary prompt text is
+not accepted. The Mac preview was updated to 0.4.1 and both service views were
+checked. The 18 Python tests include both services' signing/decryption labels;
+JavaScript syntax and inert HTML rendering checks also pass. No cryptographic
+operation or message send was needed for this interface update.
 
 ## Google Chat preview
 
@@ -99,7 +117,7 @@ records**, including public-key hashes and PIN/touch policies, matched before
 and after. Together these tests cover formatted bundles in both directions,
 including actual IWA HTML display and browser attachment download.
 
-Offline validation includes seventeen Python tests, a Rust signed/compressed/
+Offline validation includes eighteen Python tests, a Rust signed/compressed/
 encrypted multipart round trip with wrong-signer/wrong-recipient/tampering
 rejections, and a JavaScript inert-rendering/escaping test:
 

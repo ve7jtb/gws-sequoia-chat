@@ -64,6 +64,13 @@ def compose_mime(chat,request,sender,recipient):
     if len(raw)>LIMIT:raise ValueError('Encoded MIME exceeds 256 KiB')
     return raw
 
+def crypto_prompt(op,service):
+    """Fixed labels selected by the native route, never arbitrary browser text."""
+    if service not in ('Chat','Gmail') or op not in ('seal','open'):
+        raise ValueError('Unsupported cryptographic prompt')
+    action='Sign and encrypt' if op=='seal' else 'Decrypt and verify'
+    return action+' '+service+(' email' if service=='Gmail' else ' bundle')
+
 class ChatBridge:
     def __init__(self,root,cfg,emit):
         self.root=Path(root);self.cfg=cfg;self.emit=emit
@@ -88,11 +95,11 @@ class ChatBridge:
             p=Path(td)/'public.pgp';p.write_bytes(raw);info=self.chat.public_info(p);self.chat.sq('inspect',p,batch=True)
         if not all(a in ('ML-DSA-65 + Ed25519','ML-KEM-768 + X25519') for a in info['algorithms']):raise ValueError('Level 3 hybrid v6 only')
         return raw,info
-    def crypto(self,op,peer,payload):
+    def crypto(self,op,peer,payload,service="Chat"):
         if len(payload)>LIMIT:raise ValueError('Message too large')
         serials=subprocess.check_output([self.cfg['ykman'],'list','--serials'],stderr=subprocess.DEVNULL,timeout=25).decode().split()
         if self.cfg['serial'] not in serials:raise ValueError('Expected YubiKey not connected')
-        prompt='Sign and encrypt Google Chat bundle' if op=='seal' else 'Decrypt and verify Google Chat bundle'
+        prompt=crypto_prompt(op,service)
         self.emit({'type':'progress','message':prompt+' — use the native PIN dialog, then touch if requested.'})
         # The PIN never reaches Chrome. Supply only a bounded anonymous pipe to
         # the one-shot worker; both components share this operation's PIN.

@@ -438,6 +438,15 @@ heading, bold, italic and list formatting, and its downloaded attachment matched
 all **308 bytes exactly**. All 24 PIV slot records, including public-key hashes
 and PIN/touch policies, matched before and after each hardware test.
 
+IWA preview **0.4.1** follows the selected service throughout sign-in,
+inbox/conversations, Compose, send confirmation and decryption prompts. Native
+PIN dialogs say **“Sign and encrypt Gmail email”** / **“Decrypt and verify Gmail
+email”**, or the corresponding **Chat bundle** labels. Switching services hides
+irrelevant controls and clears pending message selections; the service selector
+is disabled while a native operation runs. Both Gmail and Chat views were
+checked in the installed Mac preview, with 18 Python tests and the HTML-rendering
+test passing. This label update required no mail sends or YubiKey operations.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with
