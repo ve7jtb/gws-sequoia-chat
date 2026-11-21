@@ -10,7 +10,49 @@ from email.parser import BytesParser
 from chat_bridge import compose_mime
 
 SCOPES=','.join('https://www.googleapis.com/auth/'+s for s in ('gmail.readonly','gmail.send'))
-FIELDS={'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
+FIELDS={'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
+
+def encrypted_payload(m,msg):
+    """Recognize a complete supported envelope, never a subject or filename.
+
+    Gmail sometimes rewrites PGP/MIME to multipart/mixed; use the same strict
+    parser as decryption so a normal mixed message cannot acquire a lock badge.
+    This recognizes encryption packaging, not a verified signature or sender.
+    """
+    try:return m.pgp_payload(msg)
+    except ValueError:return None
+
+def ordinary_message(msg):
+    """Return bounded, explicitly unverified content without a token operation.
+
+    HTML is data only: the IWA's inert renderer drops attributes and active
+    elements. Attachments are explicit downloads, never automatically opened.
+    """
+    plain,html,files=[],[],[];remaining=131072;omitted=0
+    for part in msg.walk():
+        if part.is_multipart():continue
+        if part.get_filename() or part.get_content_disposition()=='attachment':
+            data=part.get_payload(decode=True) or b''
+            if len(data)>remaining or len(files)>=10:omitted+=1;continue
+            remaining-=len(data)
+            name=Path((part.get_filename() or 'attachment.bin').replace('\\','/')).name
+            files.append({'name':name[:150],'size':len(data),'data':base64.b64encode(data).decode()})
+        elif part.get_content_type() in ('text/plain','text/html'):
+            try:value=part.get_content()
+            except (LookupError,UnicodeError):value=(part.get_payload(decode=True) or b'').decode('utf-8',errors='replace')
+            (plain if part.get_content_type()=='text/plain' else html).append(value[:32768])
+    result={'verified':False,'encrypted':False,'subject':str(msg.get('Subject','(No subject)'))[:1000],
+            'sender':str(msg.get('From',''))[:1000],'text':'\n'.join(plain)[:32768],
+            'html':'\n'.join(html)[:32768],'attachments':files,'omittedAttachments':omitted,
+            'notice':'Unencrypted Gmail message — signature and sender not verified. Display is limited to 32,768 characters per text/HTML view and 128 KiB of attachments.'}
+
+    # Native Messaging has a smaller frame cap than Gmail's MIME limit. JSON
+    # escaping can expand hostile/control-heavy text; enforce the wire budget.
+    while len(json.dumps(result).encode())>400000:
+        result['text']=result['text'][:len(result['text'])//2]
+        result['html']=result['html'][:len(result['html'])//2]
+    return result
+
 
 def upload_encrypted_mail(b,api,path):
     """Stage only ciphertext under gws's fixed working directory.
@@ -45,9 +87,16 @@ def action(b,r):
         if len(r['query'])>1024:raise ValueError('Search too long')
         account();data=api('users','messages','list','--params',json.dumps({'userId':'me','maxResults':10,'q':r['query'],'labelIds':['INBOX'],'pageToken':r['page']}));rows=[]
         for item in data.get('messages',[]):
-            mid=m.message_id(item['id']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':mid,'format':'metadata','metadataHeaders':['From','Subject','Date']}));h={x['name'].lower():x['value'] for x in v.get('payload',{}).get('headers',[])}
-            rows.append({'name':mid,'text':h.get('from','')+' — '+h.get('subject',''),'time':h.get('date',''),'encrypted':True})
+            mid=m.message_id(item['id']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':mid,'format':'raw'}));msg=m.parse_message(m.raw_message(v['raw']))
+            rows.append({'name':mid,'text':str(msg.get('From',''))[:1000]+' — '+str(msg.get('Subject',''))[:1000],'time':str(msg.get('Date',''))[:200],'encrypted':encrypted_payload(m,msg) is not None})
         return {'messages':rows,'next':data.get('nextPageToken','')}
+    if op=='chat-mail-read':
+        account();v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
+        msg=m.parse_message(m.raw_message(v['raw']))
+        if encrypted_payload(m,msg) is not None:return {'encrypted':True}
+        # An invalid declared crypto envelope is never silently treated as mail.
+        if msg.get_content_type()=='multipart/encrypted':raise ValueError('Unsupported or malformed encrypted envelope')
+        return ordinary_message(msg)
     if op=='chat-mail-open':
         account();contact,peer=b.peer(r['contact']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
         outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer),service='Gmail');mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])

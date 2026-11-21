@@ -447,6 +447,25 @@ is disabled while a native operation runs. Both Gmail and Chat views were
 checked in the installed Mac preview, with 18 Python tests and the HTML-rendering
 test passing. This label update required no mail sends or YubiKey operations.
 
+IWA preview **0.4.2** also opens ordinary unencrypted Gmail messages without a
+YubiKey PIN or trusted-contact selection. The reader explicitly labels their
+sender and signature as **not verified**. Plain text, inert HTML and explicit
+attachment downloads use the same safe display path. Each text/HTML view is
+limited to 32,768 characters, with at most ten attachments / 128 KiB combined;
+omitted attachments are reported.
+
+The inbox shows a lock only for a recognized encrypted PGP/MIME envelope,
+including Gmail's supported rewritten form—not because of its subject or a
+`.pgp` filename alone. This indicator describes encryption packaging, not
+signature verification or sender trust, and does not recognize every encrypted
+mail format. Classification fetches up to ten raw messages in memory per page;
+it does not create a persistent mailbox cache.
+
+The installed Mac preview was checked with an ordinary message opening without
+a PIN prompt and an encrypted test message retaining its lock. All **21 Python
+tests** and the HTML-rendering test passed, including MIME classification,
+unverified ordinary mail, bounded output and exact attachment bytes.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

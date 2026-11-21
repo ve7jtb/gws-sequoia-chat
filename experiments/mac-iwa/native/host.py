@@ -147,7 +147,7 @@ def operation_error(op):
     Connection failures happen before the hardware operation. Keep them separate
     from signing/decryption failures so users do not unnecessarily retry a PIN.
     """
-    if op in ('chat-mail-login','chat-mail-connect','chat-mail-list'):
+    if op in ('chat-mail-login','chat-mail-connect','chat-mail-list','chat-mail-read'):
         return 'Gmail connection failed. Complete Google sign-in with Gmail read and send permissions, then reconnect Gmail. No YubiKey operation was attempted.'
     if op in ('chat-login','chat-spaces','chat-messages'):
         return 'Google Chat connection failed. Complete Google sign-in and all three Chat permissions, then reconnect. No YubiKey operation was attempted.'

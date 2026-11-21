@@ -16,9 +16,22 @@ search and ten-message pages use Gmail; composition sends signed/encrypted
 PGP/MIME with the same trusted contacts, HTML alternatives and attachment limits.
 No mailbox modification/deletion operation is exposed.
 
-This is an encrypted-mail preview, not a general-purpose Gmail reader. The
-current list attempts encrypted-message opening for each row; ordinary mail
-fails closed. Version 0.4.1 labels sign-in, inbox/Compose, confirmation and native PIN dialogs
+Version **0.4.2** reads ordinary unencrypted Gmail messages without a YubiKey
+prompt or trusted-contact selection. These messages are explicitly marked
+**signature and sender not verified**, including any unverified signatures they
+may contain. Plain text and HTML use the existing inert renderer; remote images,
+links and active markup do not execute. Attachments require explicit download.
+The ordinary reader limits each text/HTML view to 32,768 characters and attachments to ten
+files / 128 KiB combined, reporting omitted attachments.
+
+The inbox checks complete MIME envelopes before showing the encrypted indicator,
+including Gmail's strict rewritten PGP/MIME form. Subjects and attachment names
+alone do not qualify. A lock denotes encryption packaging, not sender trust or a
+verified signature. The preview recognizes supported PGP/MIME, not all possible
+encrypted email formats. Listing fetches up to ten raw messages in memory to
+classify them accurately; it does not persist message bodies or a mailbox cache.
+
+Version 0.4.1 labels sign-in, inbox/Compose, confirmation and native PIN dialogs
 for the selected Gmail or Chat service. Gmail sender certificates
 must already be independently imported and trusted; the email test does not rely
 on automatic attached-key trust or send a linked Chat certificate.
@@ -117,7 +130,7 @@ records**, including public-key hashes and PIN/touch policies, matched before
 and after. Together these tests cover formatted bundles in both directions,
 including actual IWA HTML display and browser attachment download.
 
-Offline validation includes eighteen Python tests, a Rust signed/compressed/
+Offline validation includes twenty-one Python tests, a Rust signed/compressed/
 encrypted multipart round trip with wrong-signer/wrong-recipient/tampering
 rejections, and a JavaScript inert-rendering/escaping test:
 
