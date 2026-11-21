@@ -69,6 +69,26 @@ After reconnecting Gmail, reopening the existing Proton message again showed
 Trusted**, and **Saved locally**. Trust did not need to be granted again. No mail
 was sent and no YubiKey operation was performed.
 
+The **saved-certificate-only Proton verification test** used the installed
+reader and Sequoia worker with a local test harness, rather than a new UI mode:
+
+- The harness preserved the exact signed MIME bytes but replaced the worker's
+  candidate-key list with only Proton's saved public certificate. The reader
+  returned **Not encrypted / Valid signature / Trusted certificate**.
+- A negative control supplied no verification certificates and returned
+  **unknown-key**, confirming the worker did not independently use the embedded
+  attachment as a key source.
+- A separate local copy physically removed the key attachment. Proton includes
+  that attachment inside the signed MIME entity, so removing it changes signed
+  content; the original detached signature correctly became **invalid**.
+
+Excluding an attachment as a verification-key source is different from deleting
+its signed bytes. The former proves the saved certificate works independently;
+the latter tests tamper detection and cannot retain the original valid signature.
+Read-only hashes confirmed saved certificates and trust bindings were unchanged.
+No email was sent, no YubiKey operation ran, and no local message copies or test
+artifacts are included in the public repository.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires

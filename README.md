@@ -521,6 +521,16 @@ Read-only local storage checks confirmed that the public certificate and exact
 email/full-fingerprint trust binding persisted. No mail was sent or YubiKey
 operation performed.
 
+An isolated **saved-certificate-only Proton verification test** also passed
+through the installed reader and Sequoia worker: **Not encrypted / Valid
+signature / Trusted certificate**. The test supplied only the saved public
+certificate to the worker and excluded the attached key as a verification-key
+source, preserving the signed bytes. A no-certificate control returned
+**unknown-key**. Proton's key attachment is itself inside the signed MIME content;
+physically removing it from a local copy changed that content and correctly
+produced an **invalid signature**. This helper-level test left saved certificates
+and trust unchanged and performed no mail sends or YubiKey operations.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with
