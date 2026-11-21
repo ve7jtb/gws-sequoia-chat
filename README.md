@@ -503,6 +503,16 @@ Explicitly trusting the same email and full fingerprint again displayed
 **Not encrypted / Valid signature / Trusted certificate**. The restored binding
 was confirmed in local storage. No email was sent or YubiKey operation performed.
 
+The live Proton **delete / verify attached key / save / trust** test also passed.
+Deleting the saved certificate removed both its local public copies and trust
+bindings. Reopening the existing message still showed **Valid signature /
+Untrusted certificate / Not saved**, using the attached public key; encryption
+remained **Not encrypted**. Saving it again did not grant trust. Explicit trust
+confirmation restored **Valid signature / Trusted certificate / Saved locally**,
+with the exact email/full-fingerprint binding confirmed in local storage. The
+test left the certificate and trust restored, without sending mail or using the
+YubiKey.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

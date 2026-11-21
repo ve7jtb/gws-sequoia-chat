@@ -42,6 +42,24 @@ certificate**. Read-only storage checks confirmed both removal and restoration
 of the exact email/fingerprint binding. Trust was left restored; no certificate
 was deleted, no mail was sent and no YubiKey operation was performed.
 
+A separate live Proton deletion/restoration test then passed in the Mac IWA:
+
+1. **Delete saved certificate** removed both possible local public-certificate
+   copies and every associated trust binding, confirmed with read-only storage
+   checks.
+2. Reopening the existing message verified with its attached key and showed
+   **Not encrypted / Valid signature / Untrusted certificate**, plus **Not saved**.
+   Verification did not automatically save the key or restore trust.
+3. **Save certificate (no trust)** restored the public certificate only; the
+   reader still showed **Saved locally / Not trusted**.
+4. Explicit **Mark trusted** confirmation for the same sender email and full
+   primary fingerprint restored **Saved locally / Trusted**, while the signature
+   remained valid and the message remained unencrypted. Local storage confirmed
+   the restored certificate and exact trust binding.
+
+The test finished with the original certificate and trust restored. No email was
+sent and no YubiKey operation was performed.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires
