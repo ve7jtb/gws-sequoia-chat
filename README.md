@@ -22,15 +22,34 @@ Supported software profiles:
 
 Both use v6 certificates and RFC 9980 hybrid algorithms. The wrapper rejects classical-only certificates rather than silently falling back. Mixed v6 recipient/signer certificates are filtered to their hybrid subkeys without changing primary-key packets, binding signatures, or the primary fingerprint; Sequoia validates those bindings. Sequoia performs cryptographic validation, key selection, expiry/revocation checks and the private operations.
 
+Certificate previews and trust selections list only email addresses with current,
+policy-valid self-certifications. Unsigned, expired or revoked User IDs do not
+establish an email binding; expired or revoked certificates are rejected. The
+native helper's complete fingerprint must agree with the Python packet parser.
+Saved contacts are checked again when loaded and before sending or opening mail
+or Chat: another valid email on the same certificate cannot keep an expired or
+revoked selected address usable. These checks authenticate the certificate's
+claim, not ownership of an email account. Trust still requires the user's
+independent fingerprint verification and explicit email selection.
+
 ## Install
 
 Requirements: Python 3.9+, `sq` with RFC 9980 support (tested with sq 1.5.0 / sequoia-openpgp 2.4.1), and its native crypto dependencies. Obtain Sequoia through its [installation documentation](https://sequoia-pgp.org/download/), using a supported, patched crypto backend. Ordinary older `sq` packages may not implement the hybrid algorithms; check `sq key generate --help` for `mldsa65-ed25519` and `mldsa87-ed448`.
 
 ```sh
 python3 install.py --sq /absolute/path/to/sq
+cargo build --locked --release --manifest-path identity-helper/Cargo.toml
+cp identity-helper/target/release/chat-software-identity bin/chat-software-identity
 ```
 
 The installer downloads official gws v0.22.5 and verifies its published SHA-256. It copies only the executables; dynamically linked Sequoia libraries must remain installed. The current shell wrapper is tested on macOS Apple Silicon; Linux is intended but untested. Windows binaries exist upstream, but this wrapper currently requires a POSIX environment such as WSL. Native Android/iOS clients are not included. The local browser UI is tested on macOS.
+
+The Rust helper is required for public-certificate inspection, even when you do
+not use its identity generator. It checks live self-certified email bindings,
+certificate expiry, and UID/certificate revocations before offering addresses
+for selection or trust. Raw or unsigned User ID claims are not trustable. Rust
+and the native dependencies for Sequoia's OpenSSL backend are needed to build it.
+Fingerprint verification and explicit user trust are still required.
 
 ## Separate Google authorization
 
@@ -141,7 +160,7 @@ Source license: MIT. Google Workspace CLI and Sequoia retain their own licenses.
 
 ## Level 3 identity with compatibility certificates
 
-The optional `identity-helper` generates three certificate views from eight
+The optional identity-generation mode of `identity-helper` creates three certificate views from eight
 independent private components. It is a standalone Sequoia Rust program; it
 neither invokes PQ Mail nor accesses a YubiKey.
 
@@ -197,8 +216,8 @@ Keep the launcher running while using the app. It starts an HTTP helper on
 It does not listen on the LAN. Close the browser when finished and press Ctrl-C
 in the launcher to stop the helper. Reloading the page loses its in-memory
 capability; launch again for a fresh page. This is a local browser preview, not
-an installed/offline PWA. Python 3.9 or newer and the project's installed `gws`
-and `sq` binaries are required. Start it outside restricted sandboxes so gws can
+an installed/offline PWA. Python 3.9 or newer and the project's installed `gws`,
+`sq`, and `chat-software-identity` binaries are required. Start it outside restricted sandboxes so gws can
 read its macOS Keychain item safely.
 
 1. Select a previously configured gws profile and **Connect / reconnect**.
@@ -253,10 +272,13 @@ A compromised local OS/browser remains outside this boundary.
 python3 -B -m unittest -v test_chat test_webapp
 ```
 
-The combined suite passed **25 tests on macOS**: the 14 CLI tests plus 11 browser
+The combined suite passed **27 tests on macOS**: the 14 CLI tests plus 13 browser
 helper tests covering real password-protected Level 3/5 hybrid round trips,
 wrong passwords/signers, tampering, MIME path and HTML safety, explicit one-time
-send confirmation, trust persistence/removal and loopback access controls.
+send confirmation, trust persistence/removal and loopback access controls. The
+certificate-policy regressions reject an appended unsigned User ID during
+preview/trust and reject cached contacts whose selected email binding is no
+longer valid before either Chat or Gmail fetches/decrypts a message.
 The new helper tests mock Google transport and never access account credentials.
 A browser walkthrough also exercised connection, Older/Newer paging, composition,
 password unlock, send review/completion, verified text/HTML reading and session
@@ -320,7 +342,10 @@ display that generic outer subject instead of the protected inner subject.
 
 Opening encrypted mail requires the selected software identity and a previously
 trusted hybrid signer. Sequoia must decrypt and verify before plaintext is shown;
-verified inner From/To headers must match the selected identities. Unencrypted
+verified inner From/To headers must match the selected identities. Standard
+PGP/MIME with a signed body but no inner address headers is also supported: the
+viewer explicitly warns that its outer From/To/Subject headers are not signed.
+The outer sender must still match the selected trusted signer. Unencrypted
 mail can be read with safe formatting and explicit **unverified** status. This
 preview does not verify detached `multipart/signed` mail, handle inline PGP,
 S/MIME, classical/v4 certificates, or unsigned encrypted messages. Those formats
@@ -329,18 +354,41 @@ must not be mistaken for verified hybrid mail.
 The complete offline command is:
 
 ```sh
+TEST_SQ="$PWD/bin/sq" cargo test --locked --manifest-path identity-helper/Cargo.toml
 python3 -B -m unittest -v test_chat test_webapp test_mail_transport
 node --check web/app.js
 node --check web/mail.js
 ```
 
-**35 tests passed on macOS**, including ten new Gmail tests with real protected
+**Four Rust tests and 39 Python tests passed on macOS on 2026-11-21**; both
+JavaScript syntax checks also passed. Rust tests cover self-certified mailbox
+bindings, unsigned/expired/revoked User IDs, expired/revoked primary certificates,
+and the software identity generator's encrypted-key round trips. The Python suite
+includes twelve Gmail tests with real protected
 Level 3/5 Sequoia keys and mocked Gmail transport. They cover RFC 3156 wrappers,
 text/HTML/files, protected subjects, wrong passwords, tampering, forged outer
 headers, unverified ordinary mail, search/paging metadata, one-time send review,
-account matching and separation of Chat/Gmail credentials. No live Gmail send or
-receive is claimed for this new module yet; it needs Gmail API setup and user
-consent. The earlier live **Chat** decryption result above remains separate.
+account matching and separation of Chat/Gmail credentials. These regression
+tests use disposable software keys and mocked transport; they access no account
+credentials or hardware, send no email, and change no keys or touch policies.
+
+A live two-way Gmail test passed on 2026-11-20 between the standalone Level 3
+software v6 identity and PQ Mail's Level 3 YubiKey identity. Both recipients
+successfully decrypted and verified the other's hybrid signature using pinned
+public certificates. Testing used the local updated readers. The Mac development app has been rebuilt
+with this compatibility patch; public release packages have not been updated.
+
+Gmail delivery rewrote the outgoing root `multipart/encrypted` into
+`multipart/mixed`; the ciphertext was unchanged. Both media-upload and raw-message
+API sends reproduced this behavior. The reader accepts only the observed two-leaf
+shape: one `application/pgp-encrypted` version-control part and one armored
+ciphertext part (`text/plain` or `application/octet-stream`). Extra parts,
+non-armor text and multiple armor blocks are rejected. Decryption and signature
+verification still precede display; unsigned outer content is never merged into
+the verified body. The test message was classified as Spam, so the diagnostic
+searched its exact Message-ID across folders without changing mailbox labels.
+The current browser Inbox view does not include Spam. The earlier live **Chat**
+result above is a separate test.
 
 ## Experimental Mac IWA with a native YubiKey helper
 

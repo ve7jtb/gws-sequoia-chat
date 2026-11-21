@@ -38,7 +38,7 @@ async function loadMail(){
 }
 function displayMessage(r){
   clearReader();$('reader').hidden=false;$('reader-label').textContent=r.signatureValid?'VERIFIED MESSAGE':'UNVERIFIED EMAIL';
-  $('read-subject').textContent=r.subject;$('verification').textContent=r.signatureValid?'Signature valid · Trusted hybrid signer · Decrypted':r.notice || 'Not cryptographically verified';
+  $('read-subject').textContent=r.subject;$('verification').textContent=r.signatureValid?'Signature valid · Trusted hybrid signer · Decrypted'+(r.headersAuthenticated===false?' · Outer headers are not signed':''):r.notice || 'Not cryptographically verified';
   $('verification').classList.toggle('unverified',!r.signatureValid);
   $('read-addresses').textContent=r.sender+' → '+r.recipient;$('read-fingerprint').textContent=r.fingerprint || 'No verified OpenPGP fingerprint';$('read-text').textContent=r.text;
   if(r.html){$('read-html').srcdoc=r.html;$('read-html').hidden=false;}

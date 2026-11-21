@@ -7,6 +7,7 @@ use pgp::{cert::prelude::*, crypto::Password, packet::key::{self, Key4}, policy:
           serialize::Serialize, types::{KeyFlags, PublicKeyAlgorithm}, Cert, Packet};
 use std::{fs::{self, OpenOptions}, io::Write, os::unix::fs::{OpenOptionsExt, PermissionsExt}, path::Path, time::Duration};
 use zeroize::Zeroizing;
+mod public_policy;
 
 /// Preserve every private component, but replace each secret packet with its
 /// password-encrypted equivalent before serialization. Do not write a temporary
@@ -86,6 +87,13 @@ fn create(dir: &Path, email: &str, password: &Password) -> Result<()> {
 }
 fn main() -> Result<()> {
     let args: Vec<_>=std::env::args().collect();
+    // Public inspection is deliberately dispatched before any identity creation
+    // or password prompt. It validates certificate claims without using secrets,
+    // accounts, key stores, or hardware, and returns only bounded public JSON.
+    if args.get(1).map(String::as_str) == Some("inspect-public") {
+        ensure!(args.len() == 3, "Usage: chat-software-identity inspect-public CERTIFICATE");
+        return public_policy::inspect(Path::new(&args[2]));
+    }
     ensure!(args.len()==3,"Usage: chat-software-identity EMAIL NEW-DIRECTORY");
     ensure!(!Path::new(&args[2]).exists(),"Output already exists");
     let pass=Zeroizing::new(rpassword::prompt_password("New OpenPGP backup password (12+ characters; not Google password or YubiKey PIN): ")?);

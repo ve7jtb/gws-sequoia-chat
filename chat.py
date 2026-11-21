@@ -186,13 +186,15 @@ def public_packets(path):
 
 
 def public_info(path):
-    """Read metadata; Sequoia separately validates bindings and revocations.
+    """Return public metadata with policy-validated mailbox bindings.
 
     Mixed certificates are permitted, but encryption and verification operate
     on a filtered public view retaining only hybrid subkeys. No signature or
     primary-key packet is rewritten, so the primary fingerprint is unchanged.
     """
-    primary, algorithms, userids = None, [], []
+    # Packet parsing bounds the input and enforces the frontend's supported
+    # profile. It cannot authenticate UID claims; delegate that to Sequoia below.
+    primary, algorithms = None, []
     for kind, body, _ in public_packets(path):
         if kind in (6, 14):
             require(len(body) >= 10 and body[0] == 6, 'Only v6 certificates accepted')
@@ -202,13 +204,23 @@ def public_info(path):
             else:
                 require(primary is not None, 'Subkey before primary')
             algorithms.append(ALGORITHMS.get(body[5], 'Classical algorithm ' + str(body[5])))
-        elif kind == 13:
-            userids.append(body.decode('utf-8', 'strict'))
     require(primary and algorithms, 'Missing public primary key')
-    emails = [address.lower() for _, address in email.utils.getaddresses(userids)]
+    # No raw UID is eligible for trust or sender/recipient selection. The helper
+    # checks live self-certifications, primary-key validity, and UID/cert
+    # revocations on every use (including reloading saved contacts). A matching
+    # fingerprint makes the native/Python interpretation explicit. This still
+    # requires the user's independent fingerprint verification to grant trust.
+    validated = json.loads(run([ROOT/'bin/chat-software-identity', 'inspect-public', path],
+                               cap=1024*1024, timeout=30))
+    require(validated.get('fingerprint') == primary, 'Certificate fingerprint mismatch')
+    emails = sorted({canonical_email(address) for address in validated.get('emails', [])})
+    require(emails, 'No current self-certified email address')
     return {'fingerprint': primary, 'algorithms': algorithms, 'emails': emails}
 
 
+# Preserve signed packet bytes when projecting a hybrid-only certificate view.
+# Re-signing or rewriting a key packet would change the identity. This filters
+# available algorithms but is not itself certificate-policy validation.
 def hybrid_public(path):
     public_info(path)
     result, keep = bytearray(), True

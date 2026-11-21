@@ -167,6 +167,10 @@ class LocalApp:
                 'identities':[{k:v for k,v in x.items() if k not in ('public','secret')} for x in self.identities.values()],
                 'contacts':[{k:v for k,v in x.items() if k!='public'} for x in self.contacts.values()]}
     @contextlib.contextmanager
+    # GWS reads a process-global environment variable for profile selection.
+    # action() holds the application lock across this context, including the
+    # metadata worker pool, so one browser request cannot switch another's
+    # account while a command is being constructed.
     def using_profile(self, profile):
         chat.require(profile in self.profiles(),'Select an existing gws profile')
         previous=os.environ.get('GWS_CHAT_PROFILE');os.environ['GWS_CHAT_PROFILE']=profile
@@ -177,6 +181,10 @@ class LocalApp:
     def api(self,*args):
         chat.require(self.profile is not None,'Connect an account first')
         with self.using_profile(self.profile): return chat.gws(*args)
+    # Preview handles public data only. public_info supplies current certified
+    # mailbox bindings; sq inspect adds a parseability check. Neither grants
+    # local trust: the separate confirmation records the user's email and full
+    # fingerprint choice after independent verification.
     def contact_preview(self,data):
         raw=base64.b64decode(data['certificate'],validate=True)
         chat.require(len(raw)<=1024*1024,'Certificate exceeds 1 MiB')
@@ -202,6 +210,9 @@ class LocalApp:
             if route=='discard':
                 self.drafts.clear();return {'discarded':True}
             if route=='clear':
+                # Clearing disconnects this browser session and discards pending
+                # sends. It does not revoke Google authorization or delete gws's
+                # separately encrypted refresh-credential storage.
                 self.drafts.clear();self.profile=None
                 self.mail.profile=None;self.mail.address=None
                 if self.login and self.login.poll() is None: self.login.terminate()
@@ -239,6 +250,9 @@ class LocalApp:
             if route=='send': return self.send(data)
             if route=='open': return self.open(data)
             raise ValueError('Unknown operation')
+    # Preparation returns an opaque review handle and keeps its ciphertext,
+    # account, peer fingerprint and destination together in server memory.
+    # The browser cannot replace those fields in the later send request.
     def prepare(self,data):
         chat.require(self.profile is not None,'Connect an account first')
         own=self.identities[data['identity']];peer=self.contacts[data['contact']]
@@ -268,6 +282,9 @@ class LocalApp:
     def open(self,data):
         own=self.identities[data['identity']];peer=self.contacts[data['contact']]
         recipient=chat.canonical_email(data['recipient']);chat.check_cert(own['public'],recipient)
+        # Revalidate the selected email, not merely another live UID on this
+        # cached certificate. Its binding may have expired since contact load.
+        chat.check_cert(peer['public'],peer['email'],peer['info']['fingerprint'])
         with tempfile.TemporaryDirectory() as tmp:
             directory=Path(tmp)/'download'
             with self.using_profile(self.profile):chat.receive(chat.message_name(data['message']),directory)

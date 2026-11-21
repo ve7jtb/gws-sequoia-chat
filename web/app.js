@@ -91,6 +91,9 @@ async function loadSpaces(more=false) {
   spaces = more ? [...spaces,...(result.spaces || [])] : (result.spaces || []);
   nextSpace = result.nextPageToken || '';renderSpaces();
 }
+// Object URLs retain decoded attachments while the reader is open. Revoke
+// every one on navigation/clear so old messages do not accumulate behind the
+// UI. This releases references, not a guarantee of zeroization in browser RAM.
 function clearReader() {
   for (const url of downloads) URL.revokeObjectURL(url); downloads=[];
   for (const id of ['read-subject','verification','read-addresses','read-fingerprint','read-text','read-files']) $(id).replaceChildren();
@@ -180,6 +183,9 @@ on('unlock-form','submit',async()=>{
     }
   }finally{password='';}
 },'Processing with Sequoia…');
+// A review handle authorizes one server-held ciphertext/destination pair.
+// Discard it on cancellation; editing browser form fields must not modify an
+// already reviewed payload or resurrect an earlier send capability.
 async function discardReview(){review=null;await api('discard');}
 on('cancel-send','click',async()=>{$('review').close();await discardReview();status('Prepared bundle discarded. Nothing was sent.');});
 $('review').addEventListener('cancel',()=>{discardReview().catch(()=>{});});

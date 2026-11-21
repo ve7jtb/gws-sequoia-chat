@@ -50,6 +50,42 @@ class MailTests(unittest.TestCase):
                 result=self.open(level);self.assertTrue(result['signatureValid']);self.assertEqual(result['subject'],'Protected subject')
                 self.assertIn('Protected mail body',result['text']);self.assertIn('<b>formatting</b>',result['html']);self.assertNotIn('<img',result['html'])
                 self.assertEqual(base64.b64decode(result['attachments'][0]['data']),b'test attachment')
+    def test_standard_body_only_pgp_mime_marks_outer_headers_unverified(self):
+        from email.message import EmailMessage
+        import email.policy
+        own,_=self.f.ids('3','alice');_,peer=self.f.ids('3','bob')
+        msg=EmailMessage(policy=email.policy.SMTP);msg.set_content('Standard PGP/MIME body')
+        with tempfile.TemporaryDirectory() as tmp:
+            cert=Path(tmp)/'recipient.pgp';cert.write_bytes(chat.hybrid_public(self.app.contacts[peer]['public']))
+            cipher=self.service.crypto(['encrypt','--for-file',cert,'--signer-file',self.app.identities[own]['secret'],
+                '--profile','rfc9580','--compression','zip','-'],msg.as_bytes(),PASSWORD)
+        self.raw=mail.encrypted_envelope('alice@example.test','bob@example.test',cipher)
+        result=self.open();self.assertTrue(result['signatureValid']);self.assertFalse(result['headersAuthenticated'])
+        self.assertIn('Standard PGP/MIME body',result['text'])
+        self.raw=self.raw.replace(b'From: alice@example.test',b'From: attacker@example.test')
+        with self.assertRaises(ValueError):self.open()
+
+    def test_gmail_rewritten_envelope_and_ambiguity_rejection(self):
+        from email.message import EmailMessage
+        import email.policy
+        r=self.prepare();original=mail.parse_message(self.app.drafts[r['review']]['raw'])
+        cipher=mail.pgp_payload(original)
+        rewritten=EmailMessage(policy=email.policy.SMTP)
+        rewritten['From']='alice@example.test';rewritten['To']='bob@example.test';rewritten.set_type('multipart/mixed')
+        payload=EmailMessage(policy=email.policy.SMTP);payload.set_content(cipher.decode('ascii'))
+        control=EmailMessage(policy=email.policy.SMTP);control.set_content(b'Version: 1\r\n',maintype='application',subtype='pgp-encrypted',cte='base64')
+        rewritten.attach(payload);rewritten.attach(control);self.raw=rewritten.as_bytes()
+        with patch.object(mail,'gws_memory',self.fake):self.assertTrue(self.app.action('mail-read',{'message':'abc'})['encrypted'])
+        result=self.open();self.assertTrue(result['signatureValid']);self.assertIn('Protected mail body',result['text'])
+        payload.replace_header('Content-Type','application/octet-stream');self.raw=rewritten.as_bytes()
+        self.assertTrue(self.open()['signatureValid'])
+        payload.set_content('Unverified prefix\n'+cipher.decode('ascii'));self.raw=rewritten.as_bytes()
+        with self.assertRaises(ValueError):self.open()
+        payload.set_content(cipher.decode('ascii')+cipher.decode('ascii'));self.raw=rewritten.as_bytes()
+        with self.assertRaises(ValueError):self.open()
+        payload.set_content(cipher.decode('ascii'));extra=EmailMessage();extra.set_content('Unverified extra');rewritten.attach(extra);self.raw=rewritten.as_bytes()
+        with self.assertRaises(ValueError):self.open()
+
     def test_outer_headers_cannot_override_verified_identity(self):
         r=self.prepare();self.raw=self.app.drafts[r['review']]['raw'].replace(b'From: alice@example.test',b'From: attacker@example.test')
         result=self.open();self.assertEqual(result['sender'],'alice@example.test')

@@ -108,6 +108,39 @@ class WebAppTests(unittest.TestCase):
         p=self.f.paths['3','alice']/'public.pgp';info=chat.public_info(p)
         with self.assertRaises(ValueError):self.f.app.action('trust-contact',{'certificate':base64.b64encode(chat.read(p)).decode(),'email':'alice@example.test','fingerprint':info['fingerprint'],'confirmed':False})
         with self.assertRaises(ValueError):self.f.app.contact_preview({'certificate':base64.b64encode(chat.read(p.parent/'secret.pgp')).decode()})
+    def test_unsigned_userid_is_not_offered_or_trusted(self):
+        # An unauthenticated UID on a disposable, otherwise valid certificate
+        # must not become eligible for preview, trust, or sender selection.
+        p=self.f.paths['3','alice']/'public.pgp';info=chat.public_info(p)
+        uid=b'unsigned@example.test'
+        raw=b''.join(packet for _,_,packet in chat.public_packets(p))+bytes([0xcd,len(uid)])+uid
+        data={'certificate':base64.b64encode(raw).decode(),'email':uid.decode(),
+              'fingerprint':info['fingerprint'],'confirmed':True}
+        _,preview=self.f.app.contact_preview(data)
+        self.assertNotIn(uid.decode(),preview['emails'])
+        self.assertIn('alice@example.test',preview['emails'])
+        before=dict(self.f.app.contacts)
+        with self.assertRaises(ValueError):self.f.app.action('trust-contact',data)
+        self.assertEqual(before,self.f.app.contacts)
+        injected=self.f.root/'unsigned-userid-public.pgp';injected.write_bytes(raw)
+        with self.assertRaises(ValueError):chat.check_cert(injected,uid.decode(),info['fingerprint'])
+    def test_cached_contact_email_is_revalidated_before_chat_or_mail_open(self):
+        # Model a formerly trusted UID expiring while another certified UID
+        # stays valid. Both receive paths must reject the selected email before
+        # downloading anything or asking for the software identity password.
+        own,_=self.f.ids('3','bob');_,cid=self.f.ids('3','alice')
+        peer=self.f.app.contacts[cid];original=chat.public_info
+        def current(path):
+            result=original(path)
+            if Path(path)==peer['public']:result={**result,'emails':['other@example.test']}
+            return result
+        data={'identity':own,'contact':cid,'recipient':'bob@example.test',
+              'message':MESSAGE,'password':PASSWORD}
+        with patch.object(chat,'public_info',side_effect=current), patch.object(chat,'receive') as receive, \
+             patch.object(self.f.app.mail,'fetch') as fetch, patch.object(webapp,'sq_memory') as crypto:
+            with self.assertRaises(ValueError):self.f.app.open(data)
+            with self.assertRaises(ValueError):self.f.app.mail.open(data)
+            receive.assert_not_called();fetch.assert_not_called();crypto.assert_not_called()
     def test_trust_persists_and_removal_persists(self):
         app=webapp.LocalApp(self.f.root);_,cid=self.f.ids('5','bob');self.assertIn(cid,app.contacts)
         app.action('remove-trust',{'contact':cid});self.assertNotIn(cid,webapp.LocalApp(self.f.root).contacts)

@@ -10,6 +10,7 @@ publish = false
 anyhow = "1"
 rpassword = "7"
 zeroize = "1"
+serde_json = "1"
 sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
 
 [dev-dependencies]
