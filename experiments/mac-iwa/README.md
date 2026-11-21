@@ -16,6 +16,23 @@ search and ten-message pages use Gmail; composition sends signed/encrypted
 PGP/MIME with the same trusted contacts, HTML alternatives and attachment limits.
 No mailbox modification/deletion operation is exposed.
 
+Version **0.4.5** shows all saved public OpenPGP certificates in **Contacts**,
+with v4/v6 version, algorithms, full primary fingerprint and saved trusted email
+bindings. The local inventory works without connecting to Gmail or Chat.
+**Remove trust** targets one email/fingerprint and keeps the public certificate;
+**Delete saved certificate** removes its saved copies and all associated local
+trust. Both actions have a confirmation dialog and update recipient selectors.
+No device keys, identities or messages are removed. A deleted key can still be
+supplied by a message attachment for mathematical verification, without restoring
+trust or automatically saving the certificate again.
+
+The installed Mac preview showed the saved Proton verification certificate and
+hybrid sending contact with their email bindings. Both confirmation dialogs and
+Cancel paths were checked without deleting existing contacts. Thirty Python
+tests, two Rust tests and display tests passed; temporary v4/v6 fixtures exercised
+actual trust removal, deletion, unrelated-binding preservation and subsequent
+attached-key verification without trust.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires

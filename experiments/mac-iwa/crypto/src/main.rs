@@ -117,6 +117,10 @@ fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
 fn execute()->Result<()> {
  let mut input=Zeroizing::new(Vec::new());io::stdin().take((LIMIT*4+1) as u64).read_to_end(&mut input)?;ensure!(input.len()<=LIMIT*4,"Input too large");
  let mut v:serde_json::Value=serde_json::from_slice(&input)?;input.clear();
+ if field(&v,"op")?=="inspect-public" {
+  let cert=public(field(&v,"certificate")?)?;
+  println!("{}",serde_json::json!({"fingerprint":cert.fingerprint().to_hex(),"version":cert.primary_key().key().version(),"algorithms":cert.keys().map(|k|format!("{}",k.key().pk_algo())).collect::<Vec<_>>(),"emails":current_emails(&cert)}));return Ok(());
+ }
  if field(&v,"op")?=="verify-detached" {
   // Malformed or unsupported signatures get an explicit failure, never a
   // successful result inherited from an earlier message. No hardware is used.

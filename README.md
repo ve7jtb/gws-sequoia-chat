@@ -489,6 +489,13 @@ showed **Not encrypted / Valid signature / Trusted certificate**. Public materia
 and the email/fingerprint binding persist locally; classical verification keys
 do not become hybrid encryption recipients.
 
+IWA preview **0.4.5** lists saved certificates in **Contacts**, including version,
+algorithms, full fingerprint and trusted email bindings. Separate confirmed
+controls remove one email's trust or delete the saved certificate and its local
+trust. The installed Mac list and confirmation dialogs were checked; actual
+removal/deletion passed with temporary v4/v6 fixtures. All 30 Python tests, two
+Rust tests and display tests passed. Existing user contacts were preserved.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

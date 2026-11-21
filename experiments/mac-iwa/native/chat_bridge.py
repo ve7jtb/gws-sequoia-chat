@@ -29,6 +29,9 @@ FIELDS={'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messa
 
 FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
 
+from cert_store import FIELDS as CERT_FIELDS
+FIELDS.update(CERT_FIELDS)
+
 def validate(request):
     op=request.get('op')
     if op not in FIELDS or set(request)!=(FIELDS[op]|{'op'}):raise ValueError('Unsupported fields')
@@ -122,6 +125,9 @@ class ChatBridge:
         op=validate(request);chat=self.chat
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if op in CERT_FIELDS:
+                from cert_store import action
+                return action(self,request)
             if op.startswith('chat-mail-') and op!='chat-mail-login':
                 from gmail_bridge import action
                 return action(self,request)

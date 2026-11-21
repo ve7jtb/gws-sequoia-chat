@@ -97,7 +97,8 @@ def signed_message(b,raw,msg):
     result['sender']=str(msg.get('From',''))[:1000]
     contacts=b.contacts();certificates=[];budget=200000
     # Verification-only certificates never enter the hybrid encryption selector.
-    saved=list(b.data.glob('mail-cert-*.pgp'))
+    from cert_store import certificates as saved_certificates
+    saved=[paths[0] for paths in saved_certificates(b.data).values()]
     mail_trust=[json.loads(p.read_text()) for p in b.data.glob('mail-trust-*.json')]
     contacts=contacts+mail_trust
     candidates=[b.data/(c['fingerprint']+'.pgp') for c in b.contacts()]+saved

@@ -3,7 +3,7 @@
 const $=id=>document.getElementById(id);
 const isMail=()=>$("transport").value==="mail";
 const service=()=>isMail()?"Gmail":"Chat";
-let certificateReview=null;
+let certificateReview=null,managementReview=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
 const say=(text,error=false)=>{$('result').textContent=text;$('result').classList.toggle('error',error);};
 function call(op,data={}) {
@@ -23,6 +23,22 @@ function call(op,data={}) {
 function event(id,fn){$(id).addEventListener('click',()=>Promise.resolve().then(fn).catch(e=>say(e.message,true)));}
 function options(id,rows,value,label){const el=$(id),old=el.value;el.replaceChildren();for(const row of rows){const o=document.createElement('option');o.value=value(row);o.textContent=label(row);el.append(o);}if([...el.options].some(o=>o.value===old))el.value=old;}
 function renderContacts(){for(const id of ['recipient','signer'])options(id,contacts,c=>c.id,c=>c.email);$('contact-list').replaceChildren();for(const c of contacts){const el=document.createElement('div');el.className='contact';el.textContent=c.email+'\n'+c.fingerprint;$('contact-list').append(el);}}
+// Local inventory is independent of Gmail/Chat login and never prompts for PINs.
+async function refreshCertificates(){const r=await call('chat-cert-list');contacts=r.contacts;renderContacts();renderSavedCertificates(r.certificates);}
+function renderSavedCertificates(rows){
+ $('saved-certificates').replaceChildren();
+ if(!rows.length)$('saved-certificates').textContent='No saved certificates.';
+ for(const c of rows){
+  const row=document.createElement('div');row.className='contact';const info=document.createElement('p');
+  info.textContent='OpenPGP v'+c.version+' · '+c.algorithms.join(' / ')+'\n'+c.fingerprint+'\nTrusted emails (saved bindings): '+(c.trustedEmails.join(', ')||'None')+'\n'+(c.hybridContact?'Hybrid sending contact':'Verification certificate');row.append(info);
+  for(const email of c.trustedEmails){const button=document.createElement('button');button.textContent='Remove trust for '+email+'…';button.addEventListener('click',()=>reviewCertificateChange('chat-cert-untrust',c.fingerprint,email));row.append(button);}
+  const del=document.createElement('button');del.textContent='Delete saved certificate…';del.addEventListener('click',()=>reviewCertificateChange('chat-cert-delete',c.fingerprint));row.append(del);$('saved-certificates').append(row);
+ }
+}
+function reviewCertificateChange(op,fingerprint,email){managementReview={op,fingerprint,...(email?{email}:{})};$('manage-cert-title').textContent=op==='chat-cert-delete'?'Delete saved public certificate?':'Remove certificate trust?';$('manage-cert-details').textContent='Full primary fingerprint: '+fingerprint+(email?'\nEmail: '+email:'');$('manage-cert-help').textContent=op==='chat-cert-delete'?'Removes this locally saved public certificate and all its local email trust bindings. You can re-import the public certificate later. No YubiKey keys, identities, mail or sender attachments are deleted.':'Removes trust only for this email and fingerprint. The public certificate remains saved and can still verify signatures, but this binding will no longer be trusted.';$('manage-cert-apply').textContent=op==='chat-cert-delete'?'Delete saved certificate':'Remove trust';$('manage-cert-confirm').showModal();}
+event('refresh-certificates',refreshCertificates);
+event('manage-cert-cancel',()=>{managementReview=null;$('manage-cert-confirm').close();});
+event('manage-cert-apply',async()=>{const r=managementReview;managementReview=null;$('manage-cert-confirm').close();if(!r)throw Error('Review the selected certificate first.');const {op,...fields}=r;const result=await call(op,{...fields,confirmed:true});contacts=result.contacts;renderContacts();renderSavedCertificates(result.certificates);review=null;openMessage=null;$('reader').hidden=true;$('read-certificates').replaceChildren();say(op==='chat-cert-delete'?'Saved public certificate and its local trust removed.':'Trust removed for the selected email; certificate kept.');});
 // Service labels are derived together so hidden controls and dialogs cannot
 // retain wording from the previously selected transport.
 function serviceLabels(){
@@ -49,7 +65,7 @@ function serviceLabels(){
  $('decrypt').textContent='Decrypt '+name+' with YubiKey';
 }
 function tab(name){document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
-document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>tab(b.dataset.tab)));
+document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));}));
 async function bootstrap(){const r=await call('chat-state');contacts=r.contacts;renderContacts();$('account').textContent='Configured sending identity: '+r.account+' · YubiKey '+r.serial;say('Ready. Sign in to that Google account or reconnect its saved session.');tab('inbox');}
 async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
 async function messages(token=''){const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openMessage=m.name;$('open').showModal();});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}

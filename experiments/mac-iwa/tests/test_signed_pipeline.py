@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
 import gmail_bridge as g
+import cert_store
 def check_fixture(kind):
  fixture=json.loads(Path(os.environ['IWA_PUBLIC_TEST_FIXTURES']+'/'+kind+'.json').read_text())
  email='test@example.invalid' if kind=='v6' else 'sender@example.invalid'
@@ -35,6 +36,19 @@ def check_fixture(kind):
   b=SimpleNamespace(root=root,data=root,contacts=lambda:[])
   result=g.signed_message(b,raw,msg);assert result['certificateTrust']=='trusted'
   assert all('certificate' not in x for x in g.public_result(result)['signatures'])
+  listed=cert_store.inventory(b);row=next(c for c in listed if c['fingerprint']==fp)
+  assert row['version']==(6 if kind=='v6' else 4)
+  assert row['trustedEmails']==[email]
+  cert_store.action(b,{'op':'chat-cert-untrust','fingerprint':fp,'email':email,'confirmed':True})
+  assert g.signed_message(b,raw,msg)['certificateTrust']=='untrusted'
+  assert any(p.exists() for p in cert_store.paths(root,fp))
+  cert_store.action(b,{'op':'chat-cert-delete','fingerprint':fp,'confirmed':True})
+  assert not any(p.exists() for p in cert_store.paths(root,fp))
+  # An attached key can still verify mathematically after deletion, but cannot
+  # restore the user's removed trust or save itself back into the inventory.
+  result=g.signed_message(b,raw,msg)
+  assert result['signatureStatus']=='valid' and result['certificateTrust']=='untrusted'
+  assert not result['certificateActions'][0]['saved']
   bad=raw.replace(b'Signed test body.',b'TAMPERED body.');result=g.signed_message(b,bad,g.BytesParser(policy=g.policy.default).parsebytes(bad));assert result['signatureStatus']=='invalid'
 
  print('PASS',kind,'real MIME attached certificate, valid/untrusted, valid/trusted, tamper rejection; no PIN')
