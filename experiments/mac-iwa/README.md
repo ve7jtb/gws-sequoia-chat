@@ -60,6 +60,15 @@ A separate live Proton deletion/restoration test then passed in the Mac IWA:
 The test finished with the original certificate and trust restored. No email was
 sent and no YubiKey operation was performed.
 
+The subsequent **restart persistence test** passed after fully quitting the IWA
+and confirming it was no longer running. On relaunch, Contacts still listed
+Proton's saved public certificate and its trusted sender email. Read-only storage
+checks confirmed the same full-primary-fingerprint/email binding persisted.
+After reconnecting Gmail, reopening the existing Proton message again showed
+**Encryption: Not encrypted**, **Signature: Valid**, **Certificate trust:
+Trusted**, and **Saved locally**. Trust did not need to be granted again. No mail
+was sent and no YubiKey operation was performed.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires

@@ -513,6 +513,14 @@ with the exact email/full-fingerprint binding confirmed in local storage. The
 test left the certificate and trust restored, without sending mail or using the
 YubiKey.
 
+A full IWA quit-and-relaunch test also passed. After confirming the app had
+stopped, reopening Contacts showed Proton's saved certificate and the same
+trusted sender email. Reconnecting Gmail and reopening the existing message
+still displayed **Not encrypted / Valid signature / Trusted certificate**.
+Read-only local storage checks confirmed that the public certificate and exact
+email/full-fingerprint trust binding persisted. No mail was sent or YubiKey
+operation performed.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with
