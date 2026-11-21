@@ -43,6 +43,18 @@ slot records**, public-key hashes and PIN/touch policies remained unchanged.
 This verifies transmitted MIME and attachment interoperability; it is not a claim
 that every external client's visual HTML layout is identical.
 
+The reverse **Sequoia → IWA** formatted test also passed on **2026-11-21**.
+The standalone peer sent a signed/encrypted bundle with plain-text and HTML
+alternatives and a 308-byte binary attachment. The IWA decrypted it through the
+existing YubiKey PKCS#11 backend and verified its hybrid signature against the
+trusted peer certificate. Visual inspection confirmed the heading, bold and
+italic text, and both bullet-list items. The IWA's **Save attachment** action
+completed, and the downloaded file matched all **308 bytes exactly**, including
+all byte values from 0 through 255 in the synthetic fixture. All **24 PIV slot
+records**, including public-key hashes and PIN/touch policies, matched before
+and after. Together these tests cover formatted bundles in both directions,
+including actual IWA HTML display and browser attachment download.
+
 Offline validation includes twelve Python tests, a Rust signed/compressed/
 encrypted multipart round trip with wrong-signer/wrong-recipient/tampering
 rejections, and a JavaScript inert-rendering/escaping test:

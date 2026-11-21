@@ -423,6 +423,12 @@ explicit verified-attachment downloads. A live formatted attachment test on
 **2026-11-21** passed Sequoia decryption/signature verification, exact plain-text
 and HTML-markup checks, and byte-for-byte recovery of a 66-byte binary fixture.
 All 24 PIV slot records and PIN/touch policies remained unchanged.
+The reverse **Sequoia → IWA** formatted test also passed on **2026-11-21**:
+YubiKey decryption and trusted hybrid-signature verification succeeded; visual
+inspection confirmed heading, bold, italic and bullet-list rendering. The IWA
+attachment download matched all **308 bytes exactly**. All 24 PIV slot records
+and PIN/touch policies remained unchanged.
+
 Google credentials use gws's separate Keychain-backed encrypted storage. See the
 [experiment README](experiments/mac-iwa/README.md) for installation, limits and
 security boundaries.
