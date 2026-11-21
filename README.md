@@ -417,8 +417,12 @@ PIN/touch policies remained unchanged.
 
 The Chat preview includes connection/reconnection, paged conversations/messages,
 explicit certificate trust, and separate preparation/send confirmation. It uses
-ML-DSA-65 + Ed25519 signing and ML-KEM-768 + X25519 encryption. Composition is
-currently text-only; the reader displays verified text and attachment metadata.
+ML-DSA-65 + Ed25519 signing and ML-KEM-768 + X25519 encryption. Composition supports simple heading/bold/italic/list formatting, plain-text and
+HTML alternatives, and attachments. The reader offers inert formatted text and
+explicit verified-attachment downloads. A live formatted attachment test on
+**2026-11-21** passed Sequoia decryption/signature verification, exact plain-text
+and HTML-markup checks, and byte-for-byte recovery of a 66-byte binary fixture.
+All 24 PIV slot records and PIN/touch policies remained unchanged.
 Google credentials use gws's separate Keychain-backed encrypted storage. See the
 [experiment README](experiments/mac-iwa/README.md) for installation, limits and
 security boundaries.

@@ -3,6 +3,8 @@
 No arbitrary gws commands, URLs, executable paths, slots or PINs are accepted
 from the browser. Google credentials remain in this installation's gws profile.
 """
+from email.parser import BytesParser
+from email import policy
 import base64
 import contextlib
 import fcntl
@@ -22,18 +24,43 @@ from urllib.parse import urlsplit
 LIMIT=262144
 FIELDS={'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messages':{'space','page'},
         'chat-preview':{'certificate'},'chat-trust':{'certificate','email','fingerprint','confirmed'},
-        'chat-prepare':{'space','contact','subject','body'},'chat-send':{'review','confirmed'},
+        'chat-prepare':{'space','contact','subject','body','html','attachments'},'chat-send':{'review','confirmed'},
         'chat-open':{'message','contact'}}
 
 def validate(request):
     op=request.get('op')
     if op not in FIELDS or set(request)!=(FIELDS[op]|{'op'}):raise ValueError('Unsupported fields')
     for k,v in request.items():
-        if k=='confirmed':
+        if k=='attachments':
+            validate_attachments(v)
+        elif k=='confirmed':
             if v is not True:raise ValueError('Confirmation required')
         elif not isinstance(v,str) or len(v)>400000:raise ValueError('Invalid text')
     if 'page' in request and len(request['page'])>4096:raise ValueError('Page token too long')
     return op
+
+def validate_attachments(files):
+    # Browser-provided names are labels only, never native filesystem paths.
+    if not isinstance(files,list) or len(files)>10:raise ValueError('At most ten attachments')
+    total=0
+    for item in files:
+        if not isinstance(item,dict) or set(item)!={'name','data'}:raise ValueError('Invalid attachment')
+        name=item['name']
+        if not isinstance(name,str) or not 1<=len(name)<=150 or any(ord(c)<32 or c in '/\\' for c in name):raise ValueError('Invalid filename')
+        if not isinstance(item['data'],str) or len(item['data'])>180000:raise ValueError('Attachment too large')
+        total+=len(base64.b64decode(item['data'],validate=True))
+        if total>131072:raise ValueError('Attachments exceed 128 KiB')
+
+def compose_mime(chat,request,sender,recipient):
+    validate_attachments(request['attachments'])
+    # Construct entirely in memory; no plaintext attachment staging files.
+    raw=chat.mime_bytes(sender,recipient,request['subject'],request['body'],request['html'] or None)
+    msg=BytesParser(policy=policy.SMTP).parsebytes(raw)
+    for item in request['attachments']:
+        msg.add_attachment(base64.b64decode(item['data'],validate=True),maintype='application',subtype='octet-stream',filename=item['name'])
+    raw=msg.as_bytes()
+    if len(raw)>LIMIT:raise ValueError('Encoded MIME exceeds 256 KiB')
+    return raw
 
 class ChatBridge:
     def __init__(self,root,cfg,emit):
@@ -139,7 +166,7 @@ class ChatBridge:
             if op=='chat-prepare':
                 space=chat.space_name(request['space']);contact,peer=self.peer(request['contact'])
                 own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
-                mime=chat.mime_bytes(self.cfg['chat_email'],contact['email'],request['subject'],request['body'])
+                mime=compose_mime(chat,request,self.cfg['chat_email'],contact['email'])
                 sealed=self.crypto('seal',peer,mime)
                 rid=secrets.token_hex(24);out=chat.private_dir(self.data/('draft-'+rid))
                 chat.write_new(out/'message.pgp',sealed);chat.write_new(out/'pq-mail-sender-key.pgp',Path(self.cfg['cert']).read_bytes())
@@ -164,5 +191,5 @@ class ChatBridge:
                 mime=chat.inspect_mime(clear,contact['email'],self.cfg['chat_email'])
                 # Render text only. No HTML resources or scripts execute in the
                 # IWA and no decrypted data is intentionally persisted here.
-                return {'verified':True,'sender':contact['email'],'fingerprint':contact['fingerprint'],'subject':mime['subject'],'text':'\n'.join(mime['plain']),'attachments':[{'name':name,'size':len(data)} for name,data in mime['files']]}
+                return {'verified':True,'sender':contact['email'],'fingerprint':contact['fingerprint'],'subject':mime['subject'],'text':'\n'.join(mime['plain']),'html':'\n'.join(mime['html']),'attachments':[{'name':name,'size':len(data),'data':base64.b64encode(data).decode()} for name,data in mime['files']]}
             raise ValueError('Unknown operation')

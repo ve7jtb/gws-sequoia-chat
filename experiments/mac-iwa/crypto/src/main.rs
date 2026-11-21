@@ -105,7 +105,7 @@ mod tests {
   let p=StandardPolicy::new();let mut reader=DecryptorBuilder::from_bytes(blob)?.with_policy(&p,None,helper)?;let mut out=Vec::new();reader.read_to_end(&mut out)?;Ok(out)
  }
  #[test] fn signed_compressed_encrypted_roundtrip_and_rejections(){
-  let alice=identity();let bob=identity();let mallory=identity();let payload=b"Content-Type: text/plain\r\n\r\nSynthetic IWA Chat test";
+  let alice=identity();let bob=identity();let mallory=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");
   let sealed=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
   assert_eq!(decrypt(&bob,&alice,&sealed).unwrap(),payload);
   assert!(decrypt(&bob,&mallory,&sealed).is_err());

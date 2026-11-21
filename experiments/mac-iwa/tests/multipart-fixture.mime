@@ -1,0 +1,33 @@
+From: alice@example.invalid
+To: bob@example.invalid
+Subject: Formatted attachment test
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="iwa-test-mixed"
+
+--iwa-test-mixed
+Content-Type: multipart/alternative; boundary="iwa-test-alternatives"
+
+--iwa-test-alternatives
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hello bold and italic.
+
+--iwa-test-alternatives
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+<h2>Test</h2><p>Hello <strong>bold</strong> and <em>italic</em>.</p>
+
+--iwa-test-alternatives--
+
+--iwa-test-mixed
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="fixture.bin"
+MIME-Version: 1.0
+
+AP90ZXN0IGZpbGUNCg==
+
+--iwa-test-mixed--

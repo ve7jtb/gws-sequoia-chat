@@ -22,10 +22,37 @@ is consumed before a network attempt, preventing an automatic duplicate send
 following an ambiguous network failure. Public sender certificates travel in a
 separate linked Chat message. Attached keys never automatically become trusted.
 
-This first preview composes text only, limits bundles to 256 KiB, displays
-verified text without active HTML, and lists embedded attachment names/sizes.
-It does not yet provide attachment composition or export. It supports only the
-configured Level 3 hybrid profile, not arbitrary OpenPGP algorithms.
+Version 0.3.0 adds bold, italic, headings and lists through simple Markdown
+controls, with optional HTML alongside the plain-text alternative. Up to ten
+attachments (128 KiB combined) fit within the 256 KiB encoded MIME limit.
+The reader can switch between plain text and an inert HTML formatting allowlist,
+and explicitly save verified attachments. It never creates remote images,
+scripts, links, event handlers or other HTML attributes. Attachments are offered
+as downloads, not automatically opened. Only the configured Level 3 hybrid
+profile is supported.
+
+### Formatted attachment interoperability — 2026-11-21
+
+The installed IWA sent a signed/encrypted multipart bundle to the standalone
+Sequoia peer through Google Chat. The peer decrypted it and verified the hybrid
+signature against the explicitly selected public certificate. Its saved checks
+confirmed `multipart/mixed` containing `multipart/alternative`, exact plain text,
+and HTML heading, bold, italic and list markup. The synthetic binary attachment
+matched all **66 bytes exactly**, including its non-text bytes. All **24 PIV
+slot records**, public-key hashes and PIN/touch policies remained unchanged.
+This verifies transmitted MIME and attachment interoperability; it is not a claim
+that every external client's visual HTML layout is identical.
+
+Offline validation includes twelve Python tests, a Rust signed/compressed/
+encrypted multipart round trip with wrong-signer/wrong-recipient/tampering
+rejections, and a JavaScript inert-rendering/escaping test:
+
+```sh
+python3 -B -m unittest discover -s tests -v
+node tests/test_format.cjs
+cargo test --locked --manifest-path crypto/Cargo.toml
+```
+
 
 Google refresh credentials remain in this installation's **separate gws profile**
 with gws's macOS Keychain-backed encryption, not PQ Mail's PRF vault. Public
@@ -51,7 +78,7 @@ keys and reload the existing extension. Sign in through the IWA, reconnect, then
 review/import the peer's public certificate and independently confirm its full
 primary fingerprint before trusting it.
 
-Offline validation passes ten Python protocol/bridge tests plus a Rust hybrid
+Offline validation passes twelve Python protocol/bridge tests plus a Rust hybrid
 round-trip test covering wrong signer, wrong recipient and modified ciphertext.
 On **2026-11-21**, the installed Mac IWA and standalone gws/Sequoia peer
 passed a live two-way signed and encrypted Google Chat test:

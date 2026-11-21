@@ -30,3 +30,21 @@ class ChatTests(unittest.TestCase):
    b=self.bridge(d);b.cfg={'chat_email':'me@example.invalid'};b.peer=Mock(return_value=({'email':'peer@example.invalid'},Path(d)/'peer.pgp'));b.chat.public_packets.side_effect=[b'wrong',b'expected'];b.crypto=Mock()
    with self.assertRaises(ValueError):b.action({'op':'chat-open','message':'spaces/TEST/messages/M','contact':'peer'})
    b.crypto.assert_not_called()
+
+class MimeTests(unittest.TestCase):
+ def test_attachment_validation(self):
+  import base64
+  for files in [[{'name':'../bad','data':''}],[{'name':'ok','data':'!'}],[{'name':'x','data':base64.b64encode(b'x'*131073).decode()}]]:
+   with self.assertRaises(ValueError):mod.validate_attachments(files)
+ def test_multipart_alternatives_and_exact_file(self):
+  from email.message import EmailMessage
+  from email import policy
+  from email.parser import BytesParser
+  import base64
+  def make(sender,to,subject,text,html):
+   m=EmailMessage(policy=policy.SMTP);m['From']=sender;m['To']=to;m['Subject']=subject;m.set_content(text);m.add_alternative(html,subtype='html');return m.as_bytes()
+  chat=Mock();chat.mime_bytes.side_effect=make
+  payload=b'\x00\xffsynthetic attachment\r\n'
+  request={'subject':'Test','body':'Hello','html':'<p><strong>Hello</strong></p>','attachments':[{'name':'test.bin','data':base64.b64encode(payload).decode()}]}
+  raw=mod.compose_mime(chat,request,'a@example.invalid','b@example.invalid');m=BytesParser(policy=policy.default).parsebytes(raw)
+  self.assertEqual(m.get_content_type(),'multipart/mixed');self.assertEqual(m.get_body(('plain',)).get_content().strip(),'Hello');self.assertIn('<strong>',m.get_body(('html',)).get_content());self.assertEqual(next(m.iter_attachments()).get_payload(decode=True),payload)
