@@ -466,6 +466,20 @@ a PIN prompt and an encrypted test message retaining its lock. All **21 Python
 tests** and the HTML-rendering test passed, including MIME classification,
 unverified ordinary mail, bounded output and exact attachment bytes.
 
+IWA preview **0.4.3** verifies signed, unencrypted PGP/MIME with separate
+**Encryption**, **Signature** and **Certificate trust** results. Public
+verification needs no YubiKey PIN. Saved certificates and attached public keys
+can verify v4 classical or v6 hybrid signatures; attachments never acquire trust
+automatically. Trust is matched to the saved email and full primary fingerprint,
+while outer email headers remain explicitly unauthenticated.
+
+The installed Mac preview verified the existing Proton test message as **not
+encrypted / valid signature / untrusted certificate**, using its attached key.
+No message was sent, PIN requested or trust changed. Regression coverage passed
+26 Python tests (including real v4/v6 MIME pipelines), two Rust tests and the
+HTML/security-label tests. Inline/clear-signed and nested signed envelopes remain
+unsupported; see the [IWA limits](experiments/mac-iwa/README.md).
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

@@ -67,9 +67,49 @@ fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,p
    c.write_all(&signed)?;c.finalize()?;
   }Ok(out)
 }
+// Public verification is deliberately independent of token configuration and PINs.
+// Sequoia checks cryptographic validity, certificate bindings and policy; the
+// native host separately decides whether the primary fingerprint is trusted.
+struct PublicVerify { certs:Vec<Cert>, results:Vec<serde_json::Value> }
+impl VerificationHelper for PublicVerify {
+ fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>> {Ok(self.certs.clone())}
+ fn check(&mut self,structure:MessageStructure)->Result<()> {
+  for layer in structure.iter() {
+   if let MessageLayer::SignatureGroup{results}=layer { for result in results {
+    self.results.push(match result {
+     Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo())}),
+     Err(pgp::parse::stream::VerificationError::MissingKey{..})=>serde_json::json!({"status":"unknown-key"}),
+     Err(_)=>serde_json::json!({"status":"invalid"})
+    });
+   }}
+  }
+  Ok(())
+ }
+}
+fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
+ let encoded=v["certificates"].as_array().context("Certificates required")?;
+ ensure!(encoded.len()<=32,"Too many certificates");
+ // Unusable attachments are not trusted and must not prevent trying saved keys.
+ let certs=encoded.iter().filter_map(|x|x.as_str().and_then(|s|public(s).ok())).collect();
+ let payload=B64.decode(field(v,"payload")?)?;ensure!(payload.len()<=LIMIT,"Payload too large");
+ let signature=B64.decode(field(v,"signature")?)?;ensure!(signature.len()<=65536,"Signature too large");
+ let p=StandardPolicy::new();
+ let helper=PublicVerify{certs,results:Vec::new()};
+ let mut verifier=pgp::parse::stream::DetachedVerifierBuilder::from_bytes(&signature)?.with_policy(&p,None,helper)?;
+ verifier.verify_bytes(&payload)?;
+ let results=verifier.into_helper().results;
+ ensure!(!results.is_empty() && results.len()<=16,"No supported signatures");
+ Ok(serde_json::json!({"signatures":results}))
+}
 fn execute()->Result<()> {
  let mut input=Zeroizing::new(Vec::new());io::stdin().take((LIMIT*4+1) as u64).read_to_end(&mut input)?;ensure!(input.len()<=LIMIT*4,"Input too large");
  let mut v:serde_json::Value=serde_json::from_slice(&input)?;input.clear();
+ if field(&v,"op")?=="verify-detached" {
+  // Malformed or unsupported signatures get an explicit failure, never a
+  // successful result inherited from an earlier message. No hardware is used.
+  let result=verify_public(&v).unwrap_or_else(|_|serde_json::json!({"signatures":[{"status":"invalid"}]}));
+  println!("{}",result);return Ok(());
+ }
  let pin=Zeroizing::new(v["pin"].take().as_str().context("PIN required")?.as_bytes().to_vec());
  let cfg=&v["config"];let path=|n|->Result<PathBuf>{Ok(PathBuf::from(field(cfg,n)?))};
  let config=Config{python:path("python")?,adapters:path("adapters")?,openssl:path("openssl")?,provider:path("provider")?,module:path("module")?,serial:field(cfg,"serial")?.into()};
@@ -103,6 +143,29 @@ mod tests {
  fn decrypt(own:&Cert,peer:&Cert,blob:&[u8])->Result<Vec<u8>> {
   let helper=Open{verify:Verify{cert:peer.clone(),expected:selected(peer,true)?.fingerprint(),encryption_required:true},own:own.clone(),key:key(own,false)};
   let p=StandardPolicy::new();let mut reader=DecryptorBuilder::from_bytes(blob)?.with_policy(&p,None,helper)?;let mut out=Vec::new();reader.read_to_end(&mut out)?;Ok(out)
+ }
+ #[test] fn detached_public_verification_v4_v6_and_tampering(){
+  use pgp::serialize::SerializeInto;
+  for hybrid in [false,true] {
+   let cert=if hybrid {identity()} else {CertBuilder::new().add_userid("sender@example.invalid").add_signing_subkey().generate().unwrap().0};
+   let p=StandardPolicy::new();let kp=cert.keys().secret().with_policy(&p,None).for_signing().next().unwrap().key().clone().into_keypair().unwrap();
+   let public=cert.clone().strip_secret_key_material().to_vec().unwrap();
+   let payload=format!("Content-Type: multipart/mixed; boundary=inside\r\n\r\n--inside\r\nContent-Type: text/plain\r\n\r\nSigned test body.\r\n--inside\r\nContent-Type: application/pgp-keys\r\nContent-Disposition: attachment; filename=public.pgp\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--inside--\r\n",B64.encode(&public)).into_bytes();
+   let mut signature=Vec::new();{
+    let mut signer=Signer::new(Message::new(&mut signature),kp).unwrap().detached().build().unwrap();signer.write_all(&payload).unwrap();signer.finalize().unwrap();
+   }
+   let public=cert.strip_secret_key_material().to_vec().unwrap();
+   let mut request=serde_json::json!({"payload":B64.encode(&payload),"signature":B64.encode(&signature),"certificates":[B64.encode(&public)]});
+   let result=verify_public(&request).unwrap();assert_eq!(result["signatures"][0]["status"],"valid");
+   if let Ok(folder)=std::env::var("IWA_PUBLIC_TEST_FIXTURES") {
+    // Test-only public fixtures, never production account or secret material.
+    std::fs::write(std::path::Path::new(&folder).join(if hybrid{"v6.json"}else{"v4.json"}),serde_json::to_vec(&request).unwrap()).unwrap();
+   }
+   request["payload"]=serde_json::json!(B64.encode(b"tampered"));
+   assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"invalid");
+   request["certificates"]=serde_json::json!([]);
+   assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"unknown-key");
+  }
  }
  #[test] fn signed_compressed_encrypted_roundtrip_and_rejections(){
   let alice=identity();let bob=identity();let mallory=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");

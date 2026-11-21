@@ -74,3 +74,30 @@ class GmailTests(unittest.TestCase):
   self.assertIsNotNone(gmail_bridge.encrypted_payload(mail,encrypted))
   encrypted.attach(EmailMessage())
   self.assertIsNone(gmail_bridge.encrypted_payload(mail,encrypted))
+
+class SignedMailTests(unittest.TestCase):
+ def envelope(self):
+  raw=(b'From: sender@example.invalid\r\nSubject: Unauthenticated subject\r\nContent-Type: multipart/signed; boundary="signed"; protocol="application/pgp-signature"\r\n\r\nPreamble\r\n--signed\r\nContent-Type: text/plain\r\nX-Folded: a\r\n b\r\n\r\nSigned body\r\n\r\n--signed\r\nContent-Type: application/pgp-signature\r\n\r\nfake signature\r\n--signed--\r\n')
+  return raw,gmail_bridge.BytesParser(policy=gmail_bridge.policy.default).parsebytes(raw)
+ def test_exact_signed_entity_and_transport_newlines(self):
+  raw,msg=self.envelope();payload,signature,part=gmail_bridge.signed_parts(raw,msg)
+  self.assertEqual(payload,b'Content-Type: text/plain\r\nX-Folded: a\r\n b\r\n\r\nSigned body\r\n')
+  self.assertEqual(gmail_bridge.signed_parts(raw.replace(b'\r\n',b'\n'),msg)[0],payload)
+ def test_trust_is_separate_from_validity_and_bound_to_email(self):
+  raw,msg=self.envelope()
+  with tempfile.TemporaryDirectory() as d:
+   b=Mock();b.root=b.data=Path(d);(b.data/'ABC.pgp').write_bytes(b'public only')
+   b.contacts.return_value=[{'fingerprint':'ABC','email':'sender@example.invalid'}]
+   worker=Mock(returncode=0,stdout=json.dumps({'signatures':[{'status':'valid','fingerprint':'ABC','algorithm':'Ed25519'}]}).encode())
+   with patch.object(gmail_bridge.subprocess,'run',return_value=worker) as run:
+    r=gmail_bridge.signed_message(b,raw,msg);self.assertTrue(r['verified']);self.assertFalse(r['encrypted']);self.assertEqual(r['certificateTrust'],'trusted')
+    self.assertNotIn('pin',json.loads(run.call_args.kwargs['input']))
+    b.contacts.return_value[0]['email']='different@example.invalid'
+    r=gmail_bridge.signed_message(b,raw,msg);self.assertTrue(r['verified']);self.assertEqual(r['certificateTrust'],'untrusted')
+    worker.stdout=json.dumps({'signatures':[{'status':'invalid'}]}).encode()
+    r=gmail_bridge.signed_message(b,raw,msg);self.assertFalse(r['verified']);self.assertEqual(r['signatureStatus'],'invalid')
+    b.crypto.assert_not_called()
+ def test_malformed_signed_message_not_unsigned(self):
+  raw,msg=self.envelope();msg.set_boundary('different')
+  b=Mock();r=gmail_bridge.signed_message(b,raw,msg)
+  self.assertEqual(r['signatureStatus'],'invalid');b.contacts.assert_not_called()

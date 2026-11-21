@@ -3,7 +3,8 @@
 Only encrypted PGP/MIME is sent. Plaintext, HTML and files remain in memory until
 wrapped by the signed/encrypted OpenPGP packet stream. No Gmail delete API exists.
 """
-import base64,json,time,secrets,re,sys,importlib.util,tempfile
+import base64,json,time,secrets,re,sys,importlib.util,tempfile,subprocess
+from email.utils import getaddresses
 from pathlib import Path
 from email import policy
 from email.parser import BytesParser
@@ -54,6 +55,77 @@ def ordinary_message(msg):
     return result
 
 
+def signed_parts(raw,msg):
+    """Extract RFC 3156 signed bytes without MIME regeneration or header folding.
+
+    Transport line endings are canonical CRLF. The delimiter's preceding CRLF
+    belongs to the boundary, not the signed entity. Reject ambiguous envelopes.
+    """
+    if msg.get_content_type()!='multipart/signed':return None
+    if msg.get_param('protocol','').lower()!='application/pgp-signature':return None
+    parts=list(msg.iter_parts())
+    if len(parts)!=2 or parts[1].get_content_type()!='application/pgp-signature' or msg.defects:
+        raise ValueError('Malformed signed envelope')
+    boundary=msg.get_boundary()
+    if not boundary or len(boundary)>70:raise ValueError('Invalid boundary')
+    canonical=re.sub(br'\r?\n',b'\r\n',raw)
+    body=canonical.split(b'\r\n\r\n',1)[1]
+    delimiters=list(re.finditer(br'(?m)^--'+re.escape(boundary.encode('ascii'))+br'(--)?[ \t]*\r?$',body))
+    if len(delimiters)!=3 or delimiters[0][1] or delimiters[1][1] or not delimiters[2][1]:
+        raise ValueError('Ambiguous signed boundary')
+    content=body[delimiters[0].end()+1:delimiters[1].start()-2]
+    signature=parts[1].get_payload(decode=True) or b''
+    if len(content)>262144 or len(signature)>65536:raise ValueError('Signed message exceeds verification limit')
+    return content,signature,parts[0]
+
+def signed_message(b,raw,msg):
+    """Verify public material only; attachments never enroll or grant trust."""
+    result=ordinary_message(msg)
+    result.update(signatureStatus='not-signed',certificateTrust='not-applicable',signatures=[])
+    if msg.get_content_type()!='multipart/signed':
+        if any(p.get_content_type()=='multipart/signed' for p in msg.walk()) or '-----BEGIN PGP SIGNED MESSAGE-----' in result['text']:
+            result.update(signatureStatus='unsupported',certificateTrust='unknown')
+        return result
+    result.update(signatureStatus='unsupported',certificateTrust='unknown')
+    try:parts=signed_parts(raw,msg)
+    except (ValueError,IndexError,UnicodeError):
+        result['signatureStatus']='invalid';return result
+    if parts is None:return result
+    payload,signature,content=parts
+    # Display only the entity actually covered by the detached signature.
+    result.update(ordinary_message(content));result['subject']=str(msg.get('Subject','(No subject)'))[:1000]
+    result['sender']=str(msg.get('From',''))[:1000]
+    contacts=b.contacts();certificates=[];budget=200000
+    candidates=[b.data/(c['fingerprint']+'.pgp') for c in contacts]
+    for path in candidates[:24]:
+        data=path.read_bytes()
+        if len(data)<=budget:certificates.append(base64.b64encode(data).decode());budget-=len(data)
+    for part in msg.walk():
+        if part.get_content_type()!='application/pgp-keys' or part.is_multipart():continue
+        data=part.get_payload(decode=True) or b''
+        if len(data)<=budget and len(certificates)<32:
+            certificates.append(base64.b64encode(data).decode());budget-=len(data)
+    request={'op':'verify-detached','payload':base64.b64encode(payload).decode(),
+             'signature':base64.b64encode(signature).decode(),'certificates':certificates}
+    worker=subprocess.run([str(b.root/'runtime/sequoia-iwa-crypto')],input=json.dumps(request).encode(),
+                          stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+    if worker.returncode or len(worker.stdout)>16384:raise ValueError('Public signature verification failed')
+    signatures=json.loads(worker.stdout)['signatures']
+    if not 1<=len(signatures)<=16 or any(x.get('status') not in ('valid','invalid','unknown-key') for x in signatures):
+        raise ValueError('Invalid verification result')
+    addresses=getaddresses(msg.get_all('From',[]))
+    email=addresses[0][1].lower() if len(addresses)==1 else ''
+    for sig in signatures:
+        # Trust is an explicit saved email + full primary fingerprint binding.
+        sig['trusted']=sig['status']=='valid' and any(c['fingerprint'].upper()==sig.get('fingerprint','').upper() and c['email'].lower()==email for c in contacts)
+    result['signatures']=signatures
+    result['signatureStatus']='valid' if all(x['status']=='valid' for x in signatures) else ('invalid' if any(x['status']=='invalid' for x in signatures) else 'unknown-key')
+    result['certificateTrust']='trusted' if all(x['trusted'] for x in signatures) else 'untrusted'
+    result['verified']=result['signatureStatus']=='valid'
+    result['notice']='Outer From, To and Subject headers are not authenticated by this PGP/MIME body signature. Attached keys are not saved or trusted automatically.'
+    return result
+
+
 def upload_encrypted_mail(b,api,path):
     """Stage only ciphertext under gws's fixed working directory.
 
@@ -92,11 +164,11 @@ def action(b,r):
         return {'messages':rows,'next':data.get('nextPageToken','')}
     if op=='chat-mail-read':
         account();v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
-        msg=m.parse_message(m.raw_message(v['raw']))
+        raw=m.raw_message(v['raw']);msg=m.parse_message(raw)
         if encrypted_payload(m,msg) is not None:return {'encrypted':True}
         # An invalid declared crypto envelope is never silently treated as mail.
         if msg.get_content_type()=='multipart/encrypted':raise ValueError('Unsupported or malformed encrypted envelope')
-        return ordinary_message(msg)
+        return signed_message(b,raw,msg)
     if op=='chat-mail-open':
         account();contact,peer=b.peer(r['contact']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
         outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer),service='Gmail');mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])

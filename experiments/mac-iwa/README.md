@@ -16,6 +16,44 @@ search and ten-message pages use Gmail; composition sends signed/encrypted
 PGP/MIME with the same trusted contacts, HTML alternatives and attachment limits.
 No mailbox modification/deletion operation is exposed.
 
+Version **0.4.3** verifies signed, unencrypted **PGP/MIME** using Sequoia,
+without a PIN or a connected YubiKey. The reader reports **Encryption**,
+**Signature** and **Certificate trust** independently. Supported v4 classical
+and v6 hybrid signatures are checked against saved contact certificates and
+attached `application/pgp-keys` public certificates. Attached certificates are
+never automatically saved or trusted. Trust requires the full primary-key
+fingerprint and the displayed From email to match an explicitly trusted contact.
+The outer From, To and Subject remain unauthenticated by the body signature.
+
+Invalid/policy-rejected signatures, missing certificates and unsupported formats
+have distinct results; none is displayed as a valid trusted signature. This
+preview verifies a root RFC 3156 multipart/signed envelope, preserving its signed
+bytes rather than regenerating MIME. Inline/clear-signed messages and nested
+signed wrappers are not yet verified. Verification is bounded to 256 KiB of
+signed content, 64 KiB of signatures and 200,000 bytes of candidate certificates.
+No keyserver lookup, trust changes or hardware operations occur during verification.
+
+The installed Mac preview verified the existing Proton test as **not encrypted,
+valid signature, untrusted certificate**, using its attached public key, without
+a PIN, mail send or trust change. The public-fixture pipeline also passed v4/v6
+valid-untrusted, valid-trusted and tamper-rejection cases. To reproduce the full
+26 Python / two Rust tests (use an absolute target directory):
+
+```sh
+mkdir -p /tmp/iwa-public-fixtures
+export IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures
+export CARGO_TARGET_DIR=/tmp/iwa-crypto-target
+cargo test --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+cargo build --locked --release --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+export IWA_CRYPTO_TEST_BIN="$CARGO_TARGET_DIR/release/sequoia-iwa-crypto"
+python3 -m unittest discover -s experiments/mac-iwa/tests -p 'test_*.py'
+node experiments/mac-iwa/tests/test_format.cjs
+```
+
+These fixtures contain temporary public certificates and signatures, not private
+keys or user messages. Without the two fixture environment variables, the two
+Python integration tests are skipped; the other 24 run normally.
+
 Version **0.4.2** reads ordinary unencrypted Gmail messages without a YubiKey
 prompt or trusted-contact selection. These messages are explicitly marked
 **signature and sender not verified**, including any unverified signatures they
