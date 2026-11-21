@@ -11,7 +11,7 @@ class HostTests(unittest.TestCase):
   for raw in (b'\x01',struct.pack('=I',10)+b'{}'):
    with self.assertRaises(ValueError):host.frame_read(io.BytesIO(raw))
  def test_limits(self):
-  for size in (0,4097,0xffffffff):
+  for size in (0,host.MAX_FRAME+1,0xffffffff):
    with self.assertRaises(ValueError):host.frame_read(io.BytesIO(struct.pack('=I',size)))
  def test_closed_operations(self):
   for obj in ({'op':'reset'},{'op':'test','serial':'OTHER'},{'op':'sign','pin':'test'},{'op':'test','path':'/tmp/x'}):

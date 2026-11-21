@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Experimental Chrome Native Messaging host; deliberately no general RPC.
 
-Only status and one fixed synthetic Level 3 test are exposed. Paths, serial,
+A closed Chat API and fixed synthetic Level 3 test are exposed. Paths, serial,
 certificate and executable are administrator/user-installed local configuration,
 never supplied by the browser. No token write/provisioning API is implemented.
 """
@@ -21,7 +21,8 @@ import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_FRAME = 4096
+sys.path.insert(0,str(ROOT/'native'))
+MAX_FRAME = 524288
 
 
 def frame_read(stream):
@@ -48,6 +49,9 @@ def frame_write(value):
 
 
 def validate_request(request):
+    if isinstance(request.get('op'),str) and request['op'].startswith('chat-'):
+        from chat_bridge import validate
+        return validate(request)
     if set(request) != {'op'} or request['op'] not in ('status', 'test'):
         raise ValueError('Unsupported operation')
     return request['op']
@@ -143,6 +147,7 @@ def main():
     # Chrome authenticates the extension against allowed_origins in the host
     # manifest. Recheck its caller argument here; do not accept arbitrary callers.
     if len(sys.argv) < 2 or sys.argv[1] != 'chrome-extension://'+cfg['extension_id']+'/': return 1
+    op = None
     try:
         while True:
             request = frame_read(sys.stdin.buffer)
@@ -150,11 +155,19 @@ def main():
             op = validate_request(request)
             if op == 'status':
                 frame_write({'type':'result','connected':detected(cfg),'serial':cfg['serial'],'backend':'Sequoia Level3Signer / Level3Decryptor → existing PKCS#11 helpers'})
-            else: frame_write(run_test(cfg))
+            elif op == 'test': frame_write(run_test(cfg))
+            else:
+                from chat_bridge import ChatBridge
+                frame_write({'type':'result','data':ChatBridge(ROOT,cfg,frame_write).action(request)})
     except Exception:
         # Avoid reflecting low-level errors, PINs, or environment data. Full
         # public test diagnostics remain only in the local hardware result folder.
-        frame_write({'type':'error','message':'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'})
+        message = 'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'
+        if op in ('chat-login','chat-spaces','chat-messages'):
+            message = 'Google Chat connection failed. Complete Google sign-in and all three Chat permissions, then reconnect. No YubiKey operation was attempted.'
+        elif op and op.startswith('chat-'):
+            message = 'Chat operation stopped. Check the selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
+        frame_write({'type':'error','message':message})
         return 1
     return 0
 

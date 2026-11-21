@@ -9,7 +9,7 @@ chrome.runtime.onConnectExternal.addListener(port => {
   let native = null;
   port.onMessage.addListener(request => {
     // Never proxy arbitrary methods, shell commands, paths, PINs or payloads.
-    if (busy || native || !request || Object.keys(request).length !== 1 || !['status','test'].includes(request.op)) {
+    if (busy || native || !request || JSON.stringify(request).length > 500000 || !['status','test','chat-state','chat-login','chat-spaces','chat-messages','chat-preview','chat-trust','chat-prepare','chat-send','chat-open'].includes(request.op)) {
       port.postMessage({type:'error',message:'Busy or unsupported operation.'}); return;
     }
     busy = true;

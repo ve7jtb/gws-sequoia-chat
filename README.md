@@ -395,7 +395,9 @@ result above is a separate test.
 The separate [Mac IWA experiment](experiments/mac-iwa/README.md) packages a signed
 Isolated Web App, a restricted Chrome extension and a Native Messaging host. It
 reuses the Sequoia PKCS#11 PIV adapter without a loopback HTTP server. It is a
-fixed hardware-test UI, not a replacement for the main Mail/Chat browser app.
+Google Chat preview alongside the separate main Mail/Chat browser app. The IWA
+uses its own gws OAuth session and native PIN dialogs; it does not share PQ
+Mail’s vault or Google session.
 
 On **2026-11-21**, Chrome Canary 160 completed the full IWA-to-YubiKey path:
 Level 3 hybrid signing verified by both Sequoia and PQ Mail, plus authenticated
@@ -404,6 +406,22 @@ PIN dialogs authorized the operations. All 24 PIV slot records, including public
 keys and PIN/touch policies, matched before and after. No email was sent and no
 keys were provisioned. Timings including touch wait were 3,114 ms for signing
 and 1,010 / 897 ms for the two decryptions; these are single-run observations.
+
+The **two-way encrypted Google Chat test also passed on 2026-11-21**. The
+IWA decrypted and verified the standalone Sequoia peer's hybrid bundle, including
+recognizing its embedded attachment. In the return direction, the IWA signed
+with the YubiKey and encrypted to the peer's v6 certificate; standalone Sequoia
+retrieved it through its separate Google session, decrypted it, and verified the
+hybrid signature. Recovered text matched exactly. All 24 PIV slot records and
+PIN/touch policies remained unchanged.
+
+The Chat preview includes connection/reconnection, paged conversations/messages,
+explicit certificate trust, and separate preparation/send confirmation. It uses
+ML-DSA-65 + Ed25519 signing and ML-KEM-768 + X25519 encryption. Composition is
+currently text-only; the reader displays verified text and attachment metadata.
+Google credentials use gws's separate Keychain-backed encrypted storage. See the
+[experiment README](experiments/mac-iwa/README.md) for installation, limits and
+security boundaries.
 
 The experiment requires local native dependencies, an unpacked extension and
 experimental Canary flags. It does not establish production macOS IWA support

@@ -1,9 +1,79 @@
-# Sequoia YubiKey Lab — experimental Mac IWA
+# Sequoia Chat Lab — experimental Mac IWA
 
 A signed Isolated Web App calls a tightly scoped Chrome extension, which calls
 an installed native host through Chrome Native Messaging. There is no listening
-HTTP server. This is a hardware integration experiment, not a mail/chat client.
+HTTP server for the IWA. The preview now adds Google Chat through a separately
+authorized gws session; gws itself uses its usual OAuth callback listener.
 The repository’s main loopback Mail/Chat application remains separate.
+
+## Google Chat preview
+
+Version 0.2.0 adds Google sign-in/reconnect, paged conversations and messages,
+trusted public-certificate review, and signed/encrypted text composition. The
+configured Level 3 identity uses ML-DSA-65 + Ed25519 and ML-KEM-768 + X25519
+through the existing PKCS#11 backend. The native worker verifies its signature
+before encrypting; received plaintext is released only after authenticated
+decryption and verification against the selected trusted certificate.
+
+**Prepare encrypted message** prompts for the PIN outside Chrome. A separate
+review confirms the recipient, fingerprints and conversation before sending.
+The prepared ciphertext expires after ten minutes and its send authorization
+is consumed before a network attempt, preventing an automatic duplicate send
+following an ambiguous network failure. Public sender certificates travel in a
+separate linked Chat message. Attached keys never automatically become trusted.
+
+This first preview composes text only, limits bundles to 256 KiB, displays
+verified text without active HTML, and lists embedded attachment names/sizes.
+It does not yet provide attachment composition or export. It supports only the
+configured Level 3 hybrid profile, not arbitrary OpenPGP algorithms.
+
+Google refresh credentials remain in this installation's **separate gws profile**
+with gws's macOS Keychain-backed encryption, not PQ Mail's PRF vault. Public
+contact certificates, fingerprints, ciphertext, and send metadata are persisted
+locally. Decrypted message bodies and PINs are not deliberately written to disk;
+process memory, swap and crash dumps are not guaranteed to be securely erased.
+The browser displays decrypted plaintext after successful verification.
+
+Build the worker (with the adapter's OpenSSL prerequisites installed):
+
+```sh
+cargo test --locked --manifest-path crypto/Cargo.toml
+cargo build --locked --release --manifest-path crypto/Cargo.toml
+```
+
+After installing the baseline native runtime below, run `install_chat.py --help`
+and supply that installation, this repository's transport root, the gws and sq
+binaries (and the built `bin/chat-software-identity` policy helper in the
+transport root), your OAuth desktop-client registration JSON, the built worker, and the
+sending email. This copies registration metadata only, never another profile's
+Google account tokens. Rebuild/update the signed IWA without changing its build
+keys and reload the existing extension. Sign in through the IWA, reconnect, then
+review/import the peer's public certificate and independently confirm its full
+primary fingerprint before trusting it.
+
+Offline validation passes ten Python protocol/bridge tests plus a Rust hybrid
+round-trip test covering wrong signer, wrong recipient and modified ciphertext.
+On **2026-11-21**, the installed Mac IWA and standalone gws/Sequoia peer
+passed a live two-way signed and encrypted Google Chat test:
+
+- **Sequoia → IWA:** the IWA downloaded the linked bundle and public certificate,
+  decrypted through the YubiKey, and verified the hybrid signature against the
+  independently trusted peer. It displayed the expected text and recognized the
+  embedded attachment.
+- **IWA → Sequoia:** the IWA signed through the YubiKey and encrypted to the
+  peer's v6 certificate. The peer retrieved the message using its separate gws
+  account, decrypted with its password-protected software identity, and verified
+  the hybrid signature against the explicitly selected sender fingerprint. The
+  recovered plaintext matched the synthetic message exactly.
+- All **24 PIV slot records** were identical before and after, including full
+  public-key hashes and PIN/touch policies. No keys or policies were changed.
+
+Google connection and message listing also passed after reconnecting the saved
+IWA session. A sign-in fix now exposes gws's Google authorization URL explicitly
+when gws does not open a browser; Google connection errors are distinguished
+from hardware errors. That final sign-in-link UI correction has offline checks;
+the successful live authorization used the same gws link opened manually.
+The hardware-only IWA result below is a separate earlier test.
 
 ## Current scope
 
@@ -24,7 +94,9 @@ management-key, certificate-write or touch-policy commands in the test API.
 
 `app/` is packaged as a signed `.swbn`. `extension/` allows precisely its
 `isolated-app://` origin, and additionally checks the caller's root URL and
-frame ID. Only `status` and `test` requests without additional fields are accepted.
+frame ID. Requests use a closed schema: hardware status/test and the explicitly
+listed Chat actions in `native/chat_bridge.py`. Arbitrary commands, URLs, executable
+paths, PINs and slot mappings are not accepted from the browser.
 The native host manifest permits exactly the matching extension ID; the host
 also checks Chrome's caller argument and bounds incoming native-message frames.
 The host argument check is defense in depth, not authentication against another
@@ -82,7 +154,7 @@ must point at the matching fixed local configuration and preserve owner-only
 private files. Hardware dependencies are local prerequisites, not bundled into
 the web bundle. This preview is not a self-contained public installer.
 
-Five protocol tests cover valid framing, truncated/oversized input, non-object
+Protocol tests cover valid framing, truncated/oversized input, non-object
 messages and rejection of extra fields/arbitrary operations. Direct native-host
 checks additionally confirmed correct-caller status and wrong-caller rejection.
 `wbn-sign info` verified the bundle signature. Canary installed and opened the
@@ -115,8 +187,8 @@ not included in this repository.
 1. Build the existing [`sequoia-pqmail-piv` adapter and hardware test](https://github.com/ve7jtb/sequoia/tree/development/yubikey6-piv/piv-adapter), following that fork's prerequisites. Prepare its `PqMailInterop` Java classes and the existing PQ Mail JAR/libraries. `piv-test` can depend on a separately installed OpenSSL; inspect `otool -L` and retain those dependencies. This experiment does not build or silently replace your PKCS#11 backend.
 2. Run the build commands above. Copy `config.example.json` to ignored `private/config-input.json` and set the absolute paths, matching **public-only** v6 certificate, and explicit Level 3 serial. The test selects only 9c/84/9d/85; arbitrary slot mappings and Level 5 are not supported here.
 3. Run `python3 install_native.py --config private/config-input.json`. It copies existing runtimes into a new directory under Application Support and registers the host only in this experiment's Canary profile. It refuses to overwrite an existing destination; `--destination` can select a new one. The source installer is additional packaging convenience; the successful hardware test used an equivalent local runtime copy, not a clean-machine installer test.
-4. Run `python3 launch_canary.py`. In that profile, enable extension Developer mode and load the generated `extension/` directory with **Load unpacked**. Launch **Sequoia YubiKey Lab** from `chrome://iwa-dev`.
-5. Choose **Check connection**, then **Run signing & decryption test**. Confirm the fixed test, enter PINs only in the native dialogs, and touch as requested. A failure is not retried automatically. Keep the device connected for the after snapshot.
+4. Run `python3 launch_canary.py`. In that profile, enable extension Developer mode and load the generated `extension/` directory with **Load unpacked**. Launch **Sequoia Chat Lab** from `chrome://iwa-dev`.
+5. Choose **Check YubiKey**, then **Hardware test → Run signing & decryption test**. Confirm the fixed test, enter PINs only in the native dialogs, and touch as requested. A failure is not retried automatically. Keep the device connected for the after snapshot.
 
 This requires user approval of developer-mode installation. The extension and
 IWA are local experimental code; neither is a Chrome Web Store release. The
