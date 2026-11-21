@@ -496,6 +496,13 @@ trust. The installed Mac list and confirmation dialogs were checked; actual
 removal/deletion passed with temporary v4/v6 fixtures. All 30 Python tests, two
 Rust tests and display tests passed. Existing user contacts were preserved.
 
+A subsequent live Proton trust-removal/restoration test passed in the installed
+Mac IWA. Removing the sender's email/fingerprint trust kept the public certificate
+and displayed **Not encrypted / Valid signature / Untrusted certificate**.
+Explicitly trusting the same email and full fingerprint again displayed
+**Not encrypted / Valid signature / Trusted certificate**. The restored binding
+was confirmed in local storage. No email was sent or YubiKey operation performed.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

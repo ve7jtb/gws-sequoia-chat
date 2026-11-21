@@ -33,6 +33,15 @@ tests, two Rust tests and display tests passed; temporary v4/v6 fixtures exercis
 actual trust removal, deletion, unrelated-binding preservation and subsequent
 attached-key verification without trust.
 
+The subsequent live Proton test exercised **Remove trust** in Contacts, then
+reopened the existing message: **Encryption: Not encrypted**, **Signature:
+Valid**, **Certificate trust: Untrusted**. The public certificate remained saved.
+After confirming **Mark trusted** for the same sender email and full primary
+fingerprint, the reader showed **Not encrypted / Valid signature / Trusted
+certificate**. Read-only storage checks confirmed both removal and restoration
+of the exact email/fingerprint binding. Trust was left restored; no certificate
+was deleted, no mail was sent and no YubiKey operation was performed.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires
