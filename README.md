@@ -531,6 +531,15 @@ physically removing it from a local copy changed that content and correctly
 produced an **invalid signature**. This helper-level test left saved certificates
 and trust unchanged and performed no mail sends or YubiKey operations.
 
+A local **Proton body-tampering test** also passed through the installed IWA
+verification path. The original copy verified as **Valid signature / Trusted
+certificate**. Altering its body while preserving the signature and attached-key
+bytes produced **Invalid signature**. The reader marked that altered message
+untrusted, but did not revoke the saved certificate's email/fingerprint trust.
+Hashes confirmed every saved certificate and trust binding, and the original
+local message copy, were unchanged. Gmail was not accessed or modified; no mail
+was sent and no YubiKey operation was performed.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with

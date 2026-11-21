@@ -89,6 +89,21 @@ Read-only hashes confirmed saved certificates and trust bindings were unchanged.
 No email was sent, no YubiKey operation ran, and no local message copies or test
 artifacts are included in the public repository.
 
+The **Proton body-tampering test** exercised the installed IWA reader and
+Sequoia worker through a local harness. The untouched local copy first returned
+**Valid signature / Trusted certificate**. The test then changed text in the
+signed body of a separate copy, retaining the exact detached-signature and
+attached-public-key bytes. That copy returned **Invalid signature** with
+`verified: false`, despite the certificate's saved trust binding still existing.
+
+The current reader labels the altered message's certificate trust **Untrusted**
+when signature verification fails. This is a message verification result, not a
+mutation of the saved email/full-primary-fingerprint trust. Before/after hashes
+confirmed that all saved certificates and trust bindings remained unchanged,
+as did the original local message copy. Gmail was not accessed or modified, no
+mail was sent and no YubiKey operation was performed. Local message copies and
+test artifacts remain excluded from the public repository.
+
 Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
 [the sender email]** beneath a successfully verified signed Gmail message.
 Saving stores only the public certificate for later verification. Trust requires
