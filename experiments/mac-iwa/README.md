@@ -93,12 +93,16 @@ The **Proton body-tampering test** exercised the installed IWA reader and
 Sequoia worker through a local harness. The untouched local copy first returned
 **Valid signature / Trusted certificate**. The test then changed text in the
 signed body of a separate copy, retaining the exact detached-signature and
-attached-public-key bytes. That copy returned **Invalid signature** with
-`verified: false`, despite the certificate's saved trust binding still existing.
+attached-public-key bytes. That copy returned **Invalid signature / Trusted certificate** with
+`verified: false` in preview 0.4.6.
 
-The current reader labels the altered message's certificate trust **Untrusted**
-when signature verification fails. This is a message verification result, not a
-mutation of the saved email/full-primary-fingerprint trust. Before/after hashes
+Signature validity and saved email/full-primary-fingerprint trust are displayed
+independently. Invalid signatures retain a prominent warning that the message
+may have been altered or forged and must not be relied upon, even when the
+candidate certificate is trusted. A candidate key is not an authenticated sender.
+Results without an identified certificate show unknown trust; invalid signatures
+do not offer certificate save/trust actions. Rust, Python pipeline and renderer
+regressions cover the invalid/trusted combination. Before/after hashes
 confirmed that all saved certificates and trust bindings remained unchanged,
 as did the original local message copy. Gmail was not accessed or modified, no
 mail was sent and no YubiKey operation was performed. Local message copies and

@@ -10,3 +10,10 @@ assert.ok(validUntrusted.includes('Signature: Valid'));
 assert.ok(validUntrusted.includes('Certificate trust: Not trusted'));
 assert.ok(ctx.mailSecuritySummary({encrypted:false,signatureStatus:'invalid',certificateTrust:'untrusted'}).includes('Signature: Invalid'));
 console.log('PASS independent encryption, signature and trust indicators');
+
+const tampered=ctx.mailSecuritySummary({encrypted:false,signatureStatus:'invalid',certificateTrust:'trusted'});
+assert.ok(tampered.includes('Signature: Invalid'));
+assert.ok(tampered.includes('Certificate trust: Trusted'));
+assert.ok(tampered.includes('WARNING: Invalid signature'));
+assert.ok(tampered.includes('does not authenticate'));
+console.log('PASS invalid signature retains saved trust with explicit warning');

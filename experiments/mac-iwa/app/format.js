@@ -12,5 +12,5 @@ if(typeof module!=='undefined')module.exports={formatMessage,escapeText};
 function mailSecuritySummary(r){
  const statuses={'valid':'Valid','invalid':'Invalid or rejected by policy','unknown-key':'Cannot verify — certificate unavailable','unsupported':'Unsupported signature format','not-signed':'Not signed'};
  const trust={'trusted':'Trusted for the displayed From address (outer header unauthenticated)','untrusted':'Not trusted for the displayed From address','unknown':'Unknown','not-applicable':'Not applicable'};
- return 'Encryption: '+(r.encrypted?'Encrypted':'Not encrypted')+'\nSignature: '+(statuses[r.signatureStatus]||'Not verified')+'\nCertificate trust: '+(trust[r.certificateTrust]||'Unknown');
+ return 'Encryption: '+(r.encrypted?'Encrypted':'Not encrypted')+'\nSignature: '+(statuses[r.signatureStatus]||'Not verified')+'\nCertificate trust: '+(trust[r.certificateTrust]||'Unknown')+(r.signatureStatus==='invalid'?'\nWARNING: Invalid signature. This message may have been altered or forged. A trusted certificate does not authenticate it. Do not rely on its content or claimed sender.':'');
 }

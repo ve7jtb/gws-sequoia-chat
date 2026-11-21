@@ -36,6 +36,11 @@ def check_fixture(kind):
   b=SimpleNamespace(root=root,data=root,contacts=lambda:[])
   result=g.signed_message(b,raw,msg);assert result['certificateTrust']=='trusted'
   assert all('certificate' not in x for x in g.public_result(result)['signatures'])
+  altered=raw.replace(b'Signed test body.',b'TAMPERED body.')
+  tampered=g.signed_message(b,altered,g.BytesParser(policy=g.policy.default).parsebytes(altered))
+  assert tampered['signatureStatus']=='invalid' and tampered['certificateTrust']=='trusted'
+  assert not tampered['verified'] and 'forged' in tampered['warning']
+  assert tampered['certificateActions']==[]
   listed=cert_store.inventory(b);row=next(c for c in listed if c['fingerprint']==fp)
   assert row['version']==(6 if kind=='v6' else 4)
   assert row['trustedEmails']==[email]

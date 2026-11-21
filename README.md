@@ -534,8 +534,10 @@ and trust unchanged and performed no mail sends or YubiKey operations.
 A local **Proton body-tampering test** also passed through the installed IWA
 verification path. The original copy verified as **Valid signature / Trusted
 certificate**. Altering its body while preserving the signature and attached-key
-bytes produced **Invalid signature**. The reader marked that altered message
-untrusted, but did not revoke the saved certificate's email/fingerprint trust.
+bytes produced **Invalid signature / Trusted certificate** in preview 0.4.6.
+Signature validity and saved email/fingerprint trust are independent. The reader
+shows an explicit warning that the message may have been altered or forged and
+that certificate trust does not authenticate it; the message remains unverified.
 Hashes confirmed every saved certificate and trust binding, and the original
 local message copy, were unchanged. Gmail was not accessed or modified; no mail
 was sent and no YubiKey operation was performed.

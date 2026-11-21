@@ -121,8 +121,9 @@ def signed_message(b,raw,msg):
     addresses=getaddresses(msg.get_all('From',[]))
     email=addresses[0][1].lower() if len(addresses)==1 else ''
     for sig in signatures:
-        # Trust is an explicit saved email + full primary fingerprint binding.
-        sig['trusted']=sig['status']=='valid' and email in [a.lower() for a in sig.get('emails',[])] and any(c['fingerprint'].upper()==sig.get('fingerprint','').upper() and c['email'].lower()==email for c in contacts)
+        # Saved trust is an email + full primary fingerprint binding, independent
+        # of signature validity. Invalid results carry only a candidate identity.
+        sig['trusted']=bool(sig.get('fingerprint')) and any(c['fingerprint'].upper()==sig.get('fingerprint','').upper() and c['email'].lower()==email for c in contacts)
     result['signatures']=signatures
     result['certificateActions']=[]
     for sig in signatures:
@@ -132,8 +133,9 @@ def signed_message(b,raw,msg):
             'canTrust':email in [a.lower() for a in sig.get('emails',[])],
             'saved':saved_path.exists(),'trusted':sig['trusted'],'algorithm':sig['algorithm']})
     result['signatureStatus']='valid' if all(x['status']=='valid' for x in signatures) else ('invalid' if any(x['status']=='invalid' for x in signatures) else 'unknown-key')
-    result['certificateTrust']='trusted' if all(x['trusted'] for x in signatures) else 'untrusted'
+    result['certificateTrust']='trusted' if all(x['trusted'] for x in signatures) else ('unknown' if any(not x.get('fingerprint') for x in signatures) else 'untrusted')
     result['verified']=result['signatureStatus']=='valid'
+    result['warning']='WARNING: Invalid signature. The message may have been altered or forged. Saved certificate trust does not authenticate this message; do not rely on its content or claimed sender.' if result['signatureStatus']=='invalid' else ''
     result['notice']='Outer From, To and Subject headers are not authenticated by this PGP/MIME body signature. Attached keys are not saved or trusted automatically.'
     return result
 

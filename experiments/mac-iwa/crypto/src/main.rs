@@ -91,6 +91,10 @@ impl VerificationHelper for PublicVerify {
    if let MessageLayer::SignatureGroup{results}=layer { for result in results {
     self.results.push(match result {
      Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo()),"certificate":B64.encode(good.ka.cert().to_vec()?),"emails":current_emails(good.ka.cert())}),
+     // A bad signature can still identify a candidate certificate whose local
+     // trust is meaningful. This is NOT proof that this key authored the message.
+     // Never infer identity merely from From or an unverified issuer string.
+     Err(pgp::parse::stream::VerificationError::BadSignature{ka,..})=>serde_json::json!({"status":"invalid","fingerprint":ka.cert().fingerprint().to_hex(),"signingFingerprint":ka.key().fingerprint().to_hex(),"algorithm":format!("{}",ka.key().pk_algo()),"candidateOnly":true}),
      Err(pgp::parse::stream::VerificationError::MissingKey{..})=>serde_json::json!({"status":"unknown-key"}),
      Err(_)=>serde_json::json!({"status":"invalid"})
     });
@@ -179,7 +183,11 @@ mod tests {
     std::fs::write(std::path::Path::new(&folder).join(if hybrid{"v6.json"}else{"v4.json"}),serde_json::to_vec(&request).unwrap()).unwrap();
    }
    request["payload"]=serde_json::json!(B64.encode(b"tampered"));
-   assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"invalid");
+   let bad=verify_public(&request).unwrap();
+   assert_eq!(bad["signatures"][0]["status"],"invalid");
+   assert_eq!(bad["signatures"][0]["fingerprint"],result["signatures"][0]["fingerprint"]);
+   assert_eq!(bad["signatures"][0]["candidateOnly"],true);
+   assert!(bad["signatures"][0].get("certificate").is_none());
    request["certificates"]=serde_json::json!([]);
    assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"unknown-key");
   }

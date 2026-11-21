@@ -92,7 +92,7 @@ async function readOrdinary(message){
  if(r.encrypted){say('This message is encrypted. Reload the inbox to open it with the trusted signer.');return;}
 
  $('read-subject').textContent=r.subject;
- $('verified').textContent=mailSecuritySummary(r)+'\n'+(r.signatures||[]).filter(s=>s.fingerprint).map(s=>'Primary fingerprint: '+s.fingerprint+' · '+s.algorithm).join('\n')+'\n'+r.notice+' From (outer header): '+r.sender+(r.omittedAttachments?' '+r.omittedAttachments+' attachment(s) omitted by size/count limits.':'');
+ $('verified').textContent=mailSecuritySummary(r)+'\n'+(r.signatures||[]).filter(s=>s.fingerprint).map(s=>(s.candidateOnly?'Candidate certificate (sender NOT authenticated): ':'Primary fingerprint: ')+s.fingerprint+' · '+s.algorithm).join('\n')+'\n'+r.notice+' From (outer header): '+r.sender+(r.omittedAttachments?' '+r.omittedAttachments+' attachment(s) omitted by size/count limits.':'');
  $('verified').classList.toggle('error',r.signatureStatus!=='valid'||r.certificateTrust!=='trusted');
  $('read-body').textContent=r.text;
  renderSafeHtml($('read-html'),r.html||'');
