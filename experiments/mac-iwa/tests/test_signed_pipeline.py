@@ -5,7 +5,9 @@ sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
 import gmail_bridge as g
 def check_fixture(kind):
  fixture=json.loads(Path(os.environ['IWA_PUBLIC_TEST_FIXTURES']+'/'+kind+'.json').read_text())
+ email='test@example.invalid' if kind=='v6' else 'sender@example.invalid'
  raw=b'From: sender@example.invalid\r\nSubject: Signed public fixture\r\nContent-Type: multipart/signed; boundary=outer; protocol="application/pgp-signature"\r\n\r\n--outer\r\n'+base64.b64decode(fixture['payload'])+b'\r\n--outer\r\nContent-Type: application/pgp-signature\r\nContent-Transfer-Encoding: base64\r\n\r\n'+fixture['signature'].encode()+b'\r\n--outer--\r\n'
+ raw=raw.replace(b'From: sender@example.invalid',('From: '+email).encode())
  with tempfile.TemporaryDirectory() as d:
   root=Path(d);(root/'runtime').mkdir();(root/'runtime/sequoia-iwa-crypto').symlink_to(os.environ['IWA_CRYPTO_TEST_BIN'])
   b=SimpleNamespace(root=root,data=root,contacts=lambda:[])
@@ -14,8 +16,25 @@ def check_fixture(kind):
   assert result['signatureStatus']=='valid',result
   assert result['certificateTrust']=='untrusted' and not result['encrypted']
   fp=result['signatures'][0]['fingerprint'];(root/(fp+'.pgp')).write_bytes(base64.b64decode(fixture['certificates'][0]))
-  b.contacts=lambda:[{'fingerprint':fp,'email':'sender@example.invalid'}]
+  b.contacts=lambda:[{'fingerprint':fp,'email':email}]
   result=g.signed_message(b,raw,msg);assert result['certificateTrust']=='trusted'
+  # Saving is independent of trust; exact certificate bytes persist across
+  # new helper instances without exposing the key as an encryption recipient.
+  b.contacts=lambda:[]
+  b.chat=SimpleNamespace(write_new=lambda path,data:path.write_bytes(data))
+  request={'op':'chat-mail-cert-save','fingerprint':fp}
+  g.save_signer(b,result,request)
+  assert not list(root.glob('mail-trust-*.json'))
+  result=g.signed_message(b,raw,msg);assert result['certificateTrust']=='untrusted'
+  assert result['certificateActions'][0]['saved']
+  for bad_email in ('other@example.invalid',''):
+   try:g.save_signer(b,result,{'op':'chat-mail-cert-trust','fingerprint':fp,'email':bad_email,'confirmed':True})
+   except ValueError:pass
+   else:raise AssertionError('Unrelated email acquired trust')
+  g.save_signer(b,result,{'op':'chat-mail-cert-trust','fingerprint':fp,'email':email,'confirmed':True})
+  b=SimpleNamespace(root=root,data=root,contacts=lambda:[])
+  result=g.signed_message(b,raw,msg);assert result['certificateTrust']=='trusted'
+  assert all('certificate' not in x for x in g.public_result(result)['signatures'])
   bad=raw.replace(b'Signed test body.',b'TAMPERED body.');result=g.signed_message(b,bad,g.BytesParser(policy=g.policy.default).parsebytes(bad));assert result['signatureStatus']=='invalid'
 
  print('PASS',kind,'real MIME attached certificate, valid/untrusted, valid/trusted, tamper rejection; no PIN')

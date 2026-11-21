@@ -88,7 +88,7 @@ class SignedMailTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d:
    b=Mock();b.root=b.data=Path(d);(b.data/'ABC.pgp').write_bytes(b'public only')
    b.contacts.return_value=[{'fingerprint':'ABC','email':'sender@example.invalid'}]
-   worker=Mock(returncode=0,stdout=json.dumps({'signatures':[{'status':'valid','fingerprint':'ABC','algorithm':'Ed25519'}]}).encode())
+   worker=Mock(returncode=0,stdout=json.dumps({'signatures':[{'status':'valid','fingerprint':'ABC','algorithm':'Ed25519','emails':['sender@example.invalid']}]}).encode())
    with patch.object(gmail_bridge.subprocess,'run',return_value=worker) as run:
     r=gmail_bridge.signed_message(b,raw,msg);self.assertTrue(r['verified']);self.assertFalse(r['encrypted']);self.assertEqual(r['certificateTrust'],'trusted')
     self.assertNotIn('pin',json.loads(run.call_args.kwargs['input']))

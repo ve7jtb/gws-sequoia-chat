@@ -16,6 +16,26 @@ search and ten-message pages use Gmail; composition sends signed/encrypted
 PGP/MIME with the same trusted contacts, HTML alternatives and attachment limits.
 No mailbox modification/deletion operation is exposed.
 
+Version **0.4.4** offers **Save certificate (no trust)** and **Mark trusted for
+[the sender email]** beneath a successfully verified signed Gmail message.
+Saving stores only the public certificate for later verification. Trust requires
+a confirmation showing the full primary fingerprint and exact sender email;
+the native helper re-fetches and verifies the message and checks a current,
+policy-valid, non-revoked self-certified mailbox before writing that binding.
+Neither action changes the encryption indicator or authenticates outer headers.
+Verification-only classical certificates are stored separately from the Level 3
+hybrid contacts used for encrypted sending. Attached keys never gain automatic
+trust, and no PIN or hardware operation is required.
+
+The installed Mac preview passed both Proton-message actions: saving showed
+**Saved locally / Not trusted**, then the explicit fingerprint/email confirmation
+changed only certificate trust to **Trusted**. Encryption stayed **Not encrypted**
+and the signature stayed **Valid**. The public certificate and exact email/full-
+fingerprint binding were confirmed on disk and reloaded by the next helper
+operation. No message was sent and no PIN, token key or policy was changed.
+All 26 Python tests, two Rust tests and HTML/security-label tests passed, including
+v4/v6 save-without-trust, rejected unrelated emails and persisted trust reload.
+
 Version **0.4.3** verifies signed, unencrypted **PGP/MIME** using Sequoia,
 without a PIN or a connected YubiKey. The reader reports **Encryption**,
 **Signature** and **Certificate trust** independently. Supported v4 classical

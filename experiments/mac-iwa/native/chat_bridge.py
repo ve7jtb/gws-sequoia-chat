@@ -27,7 +27,7 @@ FIELDS={'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messa
         'chat-prepare':{'space','contact','subject','body','html','attachments'},'chat-send':{'review','confirmed'},
         'chat-open':{'message','contact'}}
 
-FIELDS.update({'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
+FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
 
 def validate(request):
     op=request.get('op')

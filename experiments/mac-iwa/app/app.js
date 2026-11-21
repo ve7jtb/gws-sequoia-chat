@@ -3,6 +3,7 @@
 const $=id=>document.getElementById(id);
 const isMail=()=>$("transport").value==="mail";
 const service=()=>isMail()?"Gmail":"Chat";
+let certificateReview=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
 const say=(text,error=false)=>{$('result').textContent=text;$('result').classList.toggle('error',error);};
 function call(op,data={}) {
@@ -54,6 +55,21 @@ async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-c
 async function messages(token=''){const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openMessage=m.name;$('open').showModal();});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}
 // Ordinary mail never borrows the green trusted-signature result from a
 // previously opened encrypted message, and never asks for a YubiKey PIN.
+// Certificate actions carry only a message identifier and a full fingerprint.
+// The helper re-fetches and verifies the message, never trusting UI assertions.
+function renderCertificateActions(message,items){
+ $('read-certificates').replaceChildren();
+ for(const c of items||[]){
+  const row=document.createElement('div');const label=document.createElement('p');
+  label.textContent='Signing certificate · '+c.algorithm+'\n'+c.fingerprint+'\n'+(c.saved?'Saved locally':'Not saved')+' · '+(c.trusted?'Trusted for '+c.email:'Not trusted');row.append(label);
+  if(!c.saved){const save=document.createElement('button');save.textContent='Save certificate (no trust)';save.addEventListener('click',async()=>{try{await call('chat-mail-cert-save',{message,fingerprint:c.fingerprint});await readOrdinary(message);say('Public certificate saved locally. Saving does not grant trust.');}catch(e){say(e.message,true);}});row.append(save);}
+  if(c.canTrust&&!c.trusted){const trust=document.createElement('button');trust.textContent='Mark trusted for '+c.email+'…';trust.addEventListener('click',()=>{certificateReview={message,fingerprint:c.fingerprint,email:c.email};$('mail-cert-details').textContent='Email: '+c.email+'\nFull primary fingerprint: '+c.fingerprint+'\nAlgorithm: '+c.algorithm;$('mail-cert-confirm').showModal();});row.append(trust);}
+  if(!c.canTrust){const warning=document.createElement('p');warning.textContent='Trust unavailable: the From email is not a current self-certified mailbox on this certificate.';row.append(warning);}
+  $('read-certificates').append(row);
+ }
+}
+event('mail-cert-cancel',()=>{certificateReview=null;$('mail-cert-confirm').close();});
+event('mail-cert-trust',async()=>{const selected=certificateReview;certificateReview=null;$('mail-cert-confirm').close();if(!selected)throw Error('Review the certificate first.');await call('chat-mail-cert-trust',{...selected,confirmed:true});await readOrdinary(selected.message);say('Certificate saved and trusted only for '+selected.email+' and its full primary fingerprint.');});
 async function readOrdinary(message){
  $('reader').hidden=true;
  const r=await call('chat-mail-read',{message});
@@ -65,7 +81,7 @@ async function readOrdinary(message){
  $('read-body').textContent=r.text;
  renderSafeHtml($('read-html'),r.html||'');
  $('read-html').hidden=!!r.text||!r.html;$('read-body').hidden=!$('read-html').hidden;
- renderFiles(r.attachments);$('reader').hidden=false;
+ renderFiles(r.attachments);renderCertificateActions(message,r.certificateActions);$('reader').hidden=false;
  say('Gmail message opened — not encrypted; signature: '+r.signatureStatus+'; certificate trust: '+r.certificateTrust+'.');
 }
 event('login',async()=>{const result=await call(isMail()?'chat-mail-login':'chat-login');const url=new URL(result.authorizationUrl);if(url.origin!=='https://accounts.google.com'||!['/o/oauth2/auth','/o/oauth2/v2/auth'].includes(url.pathname))throw Error('Unexpected sign-in address');const link=document.getElementById('google-auth');link.href=url.href;link.hidden=false;say('Click Continue to Google sign-in, complete consent, then choose Connect / reconnect '+service()+'.');});
@@ -76,8 +92,8 @@ event('older',async()=>{if(!next)return;pages[++page]=next;await messages(next);
 event('prepare',async()=>{review=null;if((!isMail()&&!$('space').value)||!$('recipient').value||!$('subject').value||!$('body').value)throw Error('Select a conversation and trusted recipient, then enter a subject and message.');const r=await call(isMail()?'chat-mail-prepare':'chat-prepare',{...(!isMail()?{space:$('space').value}:{}),contact:$('recipient').value,subject:$('subject').value,body:$('body').value,html:$('formatted').checked?formatMessage($('body').value):'',attachments:await attachmentData()});review=r.review;$('send-details').textContent='Subject: '+r.subject+'\n'+(isMail()?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;$('confirm-send').showModal();say(service()+' signature verified locally; encrypted message ready for review.');});
 event('cancel-send',()=>{$('confirm-send').close();review=null;});
 event('send',async()=>{const rid=review;review=null;$('confirm-send').close();if(!rid)throw Error('Prepare a new bundle first.');const r=await call(isMail()?'chat-mail-send':'chat-send',{review:rid,confirmed:true});say((isMail()?'Gmail message sent: ':'Chat message sent: ')+r.sent);$('subject').value='';$('body').value='';$('files').value='';$('file-list').textContent='';});
-event('cancel-open',()=>{$('open').close();openMessage=null;});event('decrypt',async()=>{const name=openMessage;$('open').close();$('reader').hidden=true;const r=await call(isMail()?'chat-mail-open':'chat-open',{message:name,contact:$('signer').value});if(!r.verified)throw Error('Signature verification failed.');$('read-subject').textContent=r.subject;$('verified').classList.remove('error');$('verified').textContent='Encryption: Encrypted (decrypted) · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.fingerprint;$('read-body').textContent=r.text;renderSafeHtml($('read-html'),r.html||'');$('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;say(service()+' decryption and signature verification passed.');});
-event('clear-reader',()=>{$('reader').hidden=true;$('read-html').replaceChildren();$('read-files').replaceChildren();$('read-subject').textContent=$('read-body').textContent=$('verified').textContent='';});
+event('cancel-open',()=>{$('open').close();openMessage=null;});event('decrypt',async()=>{const name=openMessage;$('read-certificates').replaceChildren();$('open').close();$('reader').hidden=true;const r=await call(isMail()?'chat-mail-open':'chat-open',{message:name,contact:$('signer').value});if(!r.verified)throw Error('Signature verification failed.');$('read-subject').textContent=r.subject;$('verified').classList.remove('error');$('verified').textContent='Encryption: Encrypted (decrypted) · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.fingerprint;$('read-body').textContent=r.text;renderSafeHtml($('read-html'),r.html||'');$('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;say(service()+' decryption and signature verification passed.');});
+event('clear-reader',()=>{$('read-certificates').replaceChildren();$('reader').hidden=true;$('read-html').replaceChildren();$('read-files').replaceChildren();$('read-subject').textContent=$('read-body').textContent=$('verified').textContent='';});
 event('preview',async()=>{cert=null;const f=$('certificate').files[0];if(!f||f.size>262144)throw Error('Select a public certificate up to 256 KiB.');let str='';for(const byte of new Uint8Array(await f.arrayBuffer()))str+=String.fromCharCode(byte);const encoded=btoa(str),info=await call('chat-preview',{certificate:encoded});cert={encoded,info};$('cert-info').textContent=info.fingerprint+'\n'+info.algorithms.join(' · ');options('email',info.emails,e=>e,e=>e);$('trust-confirm').checked=false;$('trust-panel').hidden=false;});
 event('trust',async()=>{if(!cert||!$('trust-confirm').checked)throw Error('Independently verify and confirm the full fingerprint first.');const r=await call('chat-trust',{certificate:cert.encoded,email:$('email').value,fingerprint:cert.info.fingerprint,confirmed:true});contacts=r.contacts;renderContacts();$('trust-panel').hidden=true;cert=null;say('Certificate saved; trust granted only for the selected email and primary fingerprint.');});
 event('test',async()=>{if(!window.confirm('Run the fixed hardware test? Three native PIN dialogs; no key or policy changes.'))return;const r=await call('test');$('test-details').textContent=JSON.stringify(r,null,2);say(r.passed&&r.unchanged?'PASS — signing, decryption and unchanged slot records.':'Test stopped; inspect local results.',!r.passed);});

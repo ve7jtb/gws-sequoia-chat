@@ -3,7 +3,7 @@
 Only encrypted PGP/MIME is sent. Plaintext, HTML and files remain in memory until
 wrapped by the signed/encrypted OpenPGP packet stream. No Gmail delete API exists.
 """
-import base64,json,time,secrets,re,sys,importlib.util,tempfile,subprocess
+import base64,json,time,secrets,re,sys,importlib.util,tempfile,subprocess,hashlib
 from email.utils import getaddresses
 from pathlib import Path
 from email import policy
@@ -11,7 +11,7 @@ from email.parser import BytesParser
 from chat_bridge import compose_mime
 
 SCOPES=','.join('https://www.googleapis.com/auth/'+s for s in ('gmail.readonly','gmail.send'))
-FIELDS={'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
+FIELDS={'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
 
 def encrypted_payload(m,msg):
     """Recognize a complete supported envelope, never a subject or filename.
@@ -96,7 +96,11 @@ def signed_message(b,raw,msg):
     result.update(ordinary_message(content));result['subject']=str(msg.get('Subject','(No subject)'))[:1000]
     result['sender']=str(msg.get('From',''))[:1000]
     contacts=b.contacts();certificates=[];budget=200000
-    candidates=[b.data/(c['fingerprint']+'.pgp') for c in contacts]
+    # Verification-only certificates never enter the hybrid encryption selector.
+    saved=list(b.data.glob('mail-cert-*.pgp'))
+    mail_trust=[json.loads(p.read_text()) for p in b.data.glob('mail-trust-*.json')]
+    contacts=contacts+mail_trust
+    candidates=[b.data/(c['fingerprint']+'.pgp') for c in b.contacts()]+saved
     for path in candidates[:24]:
         data=path.read_bytes()
         if len(data)<=budget:certificates.append(base64.b64encode(data).decode());budget-=len(data)
@@ -109,7 +113,7 @@ def signed_message(b,raw,msg):
              'signature':base64.b64encode(signature).decode(),'certificates':certificates}
     worker=subprocess.run([str(b.root/'runtime/sequoia-iwa-crypto')],input=json.dumps(request).encode(),
                           stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
-    if worker.returncode or len(worker.stdout)>16384:raise ValueError('Public signature verification failed')
+    if worker.returncode or len(worker.stdout)>500000:raise ValueError('Public signature verification failed')
     signatures=json.loads(worker.stdout)['signatures']
     if not 1<=len(signatures)<=16 or any(x.get('status') not in ('valid','invalid','unknown-key') for x in signatures):
         raise ValueError('Invalid verification result')
@@ -117,13 +121,51 @@ def signed_message(b,raw,msg):
     email=addresses[0][1].lower() if len(addresses)==1 else ''
     for sig in signatures:
         # Trust is an explicit saved email + full primary fingerprint binding.
-        sig['trusted']=sig['status']=='valid' and any(c['fingerprint'].upper()==sig.get('fingerprint','').upper() and c['email'].lower()==email for c in contacts)
+        sig['trusted']=sig['status']=='valid' and email in [a.lower() for a in sig.get('emails',[])] and any(c['fingerprint'].upper()==sig.get('fingerprint','').upper() and c['email'].lower()==email for c in contacts)
     result['signatures']=signatures
+    result['certificateActions']=[]
+    for sig in signatures:
+        if sig['status']!='valid' or not sig.get('certificate'):continue
+        fp=sig['fingerprint'];saved_path=b.data/('mail-cert-'+fp+'.pgp')
+        result['certificateActions'].append({'fingerprint':fp,'email':email,
+            'canTrust':email in [a.lower() for a in sig.get('emails',[])],
+            'saved':saved_path.exists(),'trusted':sig['trusted'],'algorithm':sig['algorithm']})
     result['signatureStatus']='valid' if all(x['status']=='valid' for x in signatures) else ('invalid' if any(x['status']=='invalid' for x in signatures) else 'unknown-key')
     result['certificateTrust']='trusted' if all(x['trusted'] for x in signatures) else 'untrusted'
     result['verified']=result['signatureStatus']=='valid'
     result['notice']='Outer From, To and Subject headers are not authenticated by this PGP/MIME body signature. Attached keys are not saved or trusted automatically.'
     return result
+
+
+def public_result(result):
+    for sig in result.get('signatures',[]):sig.pop('certificate',None);sig.pop('emails',None)
+    return result
+
+def save_signer(b,result,request):
+    """Reverified exact primary fingerprint, explicit email-scoped local trust.
+
+    Save stores only public bytes and never grants trust. Trust requires both
+    explicit confirmation and a current self-certified mailbox on that cert.
+    Existing unrelated email bindings are left untouched.
+    """
+    fp=request['fingerprint']
+    if not re.fullmatch(r'(?:[A-F0-9]{40}|[A-F0-9]{64})',fp):raise ValueError('Full fingerprint required')
+    matches=[s for s in result.get('signatures',[]) if s.get('status')=='valid' and s.get('fingerprint')==fp]
+    if not matches:raise ValueError('Certificate no longer verifies this message')
+    sig=matches[0];raw=base64.b64decode(sig['certificate'],validate=True)
+    trusting=request['op']=='chat-mail-cert-trust'
+    if trusting:
+        addresses=getaddresses([result['sender']]);email=request['email']
+        if request.get('confirmed') is not True or len(addresses)!=1 or addresses[0][1].lower()!=email or email not in [a.lower() for a in sig.get('emails',[])]:
+            raise ValueError('Sender email is not a current self-certified mailbox')
+    path=b.data/('mail-cert-'+fp+'.pgp')
+    if path.exists() and path.read_bytes()!=raw:raise ValueError('Review certificate update separately')
+    if not path.exists():b.chat.write_new(path,raw)
+    if trusting:
+        name=hashlib.sha256((email+'\0'+fp).encode()).hexdigest()
+        record=b.data/('mail-trust-'+name+'.json')
+        if not record.exists():b.chat.write_new(record,json.dumps({'email':email,'fingerprint':fp}).encode())
+    return {'saved':True,'trusted':trusting,'fingerprint':fp}
 
 
 def upload_encrypted_mail(b,api,path):
@@ -162,13 +204,15 @@ def action(b,r):
             mid=m.message_id(item['id']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':mid,'format':'raw'}));msg=m.parse_message(m.raw_message(v['raw']))
             rows.append({'name':mid,'text':str(msg.get('From',''))[:1000]+' — '+str(msg.get('Subject',''))[:1000],'time':str(msg.get('Date',''))[:200],'encrypted':encrypted_payload(m,msg) is not None})
         return {'messages':rows,'next':data.get('nextPageToken','')}
-    if op=='chat-mail-read':
+    if op in ('chat-mail-read','chat-mail-cert-save','chat-mail-cert-trust'):
         account();v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
         raw=m.raw_message(v['raw']);msg=m.parse_message(raw)
         if encrypted_payload(m,msg) is not None:return {'encrypted':True}
         # An invalid declared crypto envelope is never silently treated as mail.
         if msg.get_content_type()=='multipart/encrypted':raise ValueError('Unsupported or malformed encrypted envelope')
-        return signed_message(b,raw,msg)
+        result=signed_message(b,raw,msg)
+        if op!='chat-mail-read':return save_signer(b,result,r)
+        return public_result(result)
     if op=='chat-mail-open':
         account();contact,peer=b.peer(r['contact']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
         outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer),service='Gmail');mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])

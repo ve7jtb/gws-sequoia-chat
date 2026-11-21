@@ -3,6 +3,8 @@
 use anyhow::{ensure,bail,Context,Result};
 use base64::{Engine,engine::general_purpose::STANDARD as B64};
 use sequoia_openpgp as pgp;
+use pgp::serialize::SerializeInto;
+use pgp::cert::amalgamation::ValidAmalgamation;
 use pgp::{Cert,KeyHandle,crypto::{SessionKey,Decryptor},packet::{PKESK,SKESK},
  parse::{Parse,stream::{DecryptionHelper,VerificationHelper,DecryptorBuilder,VerifierBuilder,MessageStructure,MessageLayer}},
  policy::StandardPolicy,types::{PublicKeyAlgorithm as A,SymmetricAlgorithm,CompressionAlgorithm},
@@ -70,6 +72,17 @@ fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,p
 // Public verification is deliberately independent of token configuration and PINs.
 // Sequoia checks cryptographic validity, certificate bindings and policy; the
 // native host separately decides whether the primary fingerprint is trusted.
+// Only current, policy-valid, non-revoked self-certified mailboxes may acquire
+// local trust. A valid historical message does not revive an expired identity.
+fn current_emails(cert:&Cert)->Vec<String> {
+ let p=StandardPolicy::new();
+ if let Ok(valid)=cert.with_policy(&p,None) {
+  if valid.alive().is_ok() && !matches!(valid.revocation_status(),pgp::types::RevocationStatus::Revoked(_)) {
+   return valid.userids().filter(|u|!matches!(u.revocation_status(),pgp::types::RevocationStatus::Revoked(_))).filter_map(|u|u.userid().email_normalized().ok().flatten()).collect();
+  }
+ }
+ Vec::new()
+}
 struct PublicVerify { certs:Vec<Cert>, results:Vec<serde_json::Value> }
 impl VerificationHelper for PublicVerify {
  fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>> {Ok(self.certs.clone())}
@@ -77,7 +90,7 @@ impl VerificationHelper for PublicVerify {
   for layer in structure.iter() {
    if let MessageLayer::SignatureGroup{results}=layer { for result in results {
     self.results.push(match result {
-     Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo())}),
+     Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo()),"certificate":B64.encode(good.ka.cert().to_vec()?),"emails":current_emails(good.ka.cert())}),
      Err(pgp::parse::stream::VerificationError::MissingKey{..})=>serde_json::json!({"status":"unknown-key"}),
      Err(_)=>serde_json::json!({"status":"invalid"})
     });

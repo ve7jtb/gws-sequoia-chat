@@ -480,6 +480,15 @@ No message was sent, PIN requested or trust changed. Regression coverage passed
 HTML/security-label tests. Inline/clear-signed and nested signed envelopes remain
 unsupported; see the [IWA limits](experiments/mac-iwa/README.md).
 
+IWA preview **0.4.4** adds separate **Save certificate (no trust)** and
+**Mark trusted for the sender email** actions beneath verified signed mail.
+Trust confirmation displays the full fingerprint and exact email; the helper
+re-verifies the message and requires a current self-certified mailbox. The live
+Proton test passed both steps: saving left trust unset, then explicit confirmation
+showed **Not encrypted / Valid signature / Trusted certificate**. Public material
+and the email/fingerprint binding persist locally; classical verification keys
+do not become hybrid encryption recipients.
+
 Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
 `gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
 The preview supports inbox search/paging and encrypted PGP/MIME composition with
