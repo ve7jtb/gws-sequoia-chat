@@ -1,0 +1,10 @@
+{
+  "serial": "REPLACE_WITH_YOUR_LEVEL_3_SERIAL",
+  "ykman": "/usr/local/bin/ykman",
+  "app": "/absolute/path/to/PQ Mail.app/Contents/app",
+  "java": "/absolute/path/to/jdk/Contents/Home/bin/java",
+  "binary": "/absolute/path/to/sequoia-target/debug/piv-test",
+  "runner": "/absolute/path/to/sequoia/piv-adapter/hardware/run.py",
+  "cert": "/absolute/path/to/matching-public-certificate.asc",
+  "classpath": "/absolute/path/to/PqMailInterop-classes:/absolute/path/to/hybrid-mail.jar:/absolute/path/to/lib/*"
+}

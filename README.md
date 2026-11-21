@@ -341,3 +341,23 @@ headers, unverified ordinary mail, search/paging metadata, one-time send review,
 account matching and separation of Chat/Gmail credentials. No live Gmail send or
 receive is claimed for this new module yet; it needs Gmail API setup and user
 consent. The earlier live **Chat** decryption result above remains separate.
+
+## Experimental Mac IWA with a native YubiKey helper
+
+The separate [Mac IWA experiment](experiments/mac-iwa/README.md) packages a signed
+Isolated Web App, a restricted Chrome extension and a Native Messaging host. It
+reuses the Sequoia PKCS#11 PIV adapter without a loopback HTTP server. It is a
+fixed hardware-test UI, not a replacement for the main Mail/Chat browser app.
+
+On **2026-11-21**, Chrome Canary 160 completed the full IWA-to-YubiKey path:
+Level 3 hybrid signing verified by both Sequoia and PQ Mail, plus authenticated
+hybrid decryption of Sequoia and independent PQ Mail ciphertexts. Three native
+PIN dialogs authorized the operations. All 24 PIV slot records, including public
+keys and PIN/touch policies, matched before and after. No email was sent and no
+keys were provisioned. Timings including touch wait were 3,114 ms for signing
+and 1,010 / 897 ms for the two decryptions; these are single-run observations.
+
+The experiment requires local native dependencies, an unpacked extension and
+experimental Canary flags. It does not establish production macOS IWA support
+or native Web Smart Card support. Local credentials, device identifiers, browser
+profiles, development signing keys and hardware transcripts are excluded.

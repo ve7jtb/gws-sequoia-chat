@@ -1,0 +1,1 @@
+{"name":"sequoia-yubikey-iwa-experiment","version":"0.1.0","private":true,"type":"module","scripts":{"build":"node build.mjs"},"devDependencies":{"node":"24.22.3","wbn":"0.0.10","wbn-sign":"0.3.3"}}

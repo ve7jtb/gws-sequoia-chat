@@ -1,0 +1,9 @@
+node_modules/
+private/
+build/
+app/config.js
+extension/config.js
+extension/manifest.json
+__pycache__/
+app/.well-known/manifest.webmanifest
+app/icon.svg
