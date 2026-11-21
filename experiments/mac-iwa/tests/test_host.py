@@ -4,6 +4,13 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location('host',Path(__file__).parents[1]/'native/host.py')
 host=importlib.util.module_from_spec(spec);spec.loader.exec_module(host)
 class HostTests(unittest.TestCase):
+ def test_connection_errors_do_not_request_pin(self):
+  for op in ('chat-mail-login','chat-mail-connect','chat-mail-list'):
+   message=host.operation_error(op)
+   self.assertIn('Gmail read and send permissions',message)
+   self.assertIn('No YubiKey operation was attempted',message)
+  self.assertIn('Gmail operation stopped',host.operation_error('chat-mail-open'))
+  self.assertIn('Chat operation stopped',host.operation_error('chat-open'))
  def test_valid_frame(self):
   raw=b'{"op":"status"}'
   self.assertEqual(host.frame_read(io.BytesIO(struct.pack('=I',len(raw))+raw)),{'op':'status'})

@@ -2,9 +2,53 @@
 
 A signed Isolated Web App calls a tightly scoped Chrome extension, which calls
 an installed native host through Chrome Native Messaging. There is no listening
-HTTP server for the IWA. The preview now adds Google Chat through a separately
+HTTP server for the IWA. The preview adds Google Chat and Gmail through a separately
 authorized gws session; gws itself uses its usual OAuth callback listener.
 The repository’s main loopback Mail/Chat application remains separate.
+
+## Gmail preview (0.4.0)
+
+Choose **Gmail** in the service selector. Sign-in adds `gmail.readonly` and
+`gmail.send` to the existing Chat permissions. Enable **Gmail API** in the same
+Google Cloud project; OAuth consent alone does not enable the API. Reconnect
+checks that Gmail's account matches the configured sending identity. Inbox
+search and ten-message pages use Gmail; composition sends signed/encrypted
+PGP/MIME with the same trusted contacts, HTML alternatives and attachment limits.
+No mailbox modification/deletion operation is exposed.
+
+This is an encrypted-mail preview, not a general-purpose Gmail reader. The
+current list attempts encrypted-message opening for each row; ordinary mail
+fails closed. Some shared UI/PIN labels still say Chat. Gmail sender certificates
+must already be independently imported and trusted; the email test does not rely
+on automatic attached-key trust or send a linked Chat certificate.
+
+The integration keeps the native login and subsequent gws commands on the same
+OS Keychain account. Existing experimental logins used gws's `unknown-user`
+account because their launch environment omitted USER; the IWA installer pins
+that account in its own wrapper to preserve these encrypted credentials. Other
+gws installations are untouched. Gmail uploads stage only the encrypted message
+in a private temporary directory beneath gws's profile, respecting its upload
+path boundary; staging is removed on success or failure. Send authorization is
+consumed before upload, with no automatic retry. Connection errors distinguish
+Gmail consent/account problems from YubiKey operations and never expose raw CLI
+errors or tokens.
+
+### Two-way Gmail interoperability — 2026-11-21
+
+| Direction | Verified result |
+| --- | --- |
+| IWA Gmail helper → standalone Sequoia | Delivered encrypted payload matched the prepared payload. Sequoia decrypted and verified the expected hybrid signer, authenticated From/To and subject, exact plain text and HTML, and all **289 binary attachment bytes**. |
+| Standalone Sequoia → IWA Gmail | The IWA decrypted with the YubiKey and verified the trusted hybrid signer. Visual inspection confirmed heading, bold, italic and two list items. The actual browser attachment download matched all **308 bytes exactly**. |
+
+Both directions used **ML-DSA-65 + Ed25519** signing and **ML-KEM-768 + X25519**
+encryption with existing keys. All **24 PIV slot records**, including public-key
+hashes and PIN/touch policies, matched before/after each hardware operation.
+No keys or policies were changed. Gmail rewrote the outer PGP/MIME envelope to
+its two-part `multipart/mixed` form; the existing strict parser recognized it,
+and authenticated inner MIME remained intact. The outgoing test used the
+installed helper test harness; the return exercised the IWA inbox, reader, HTML
+view and download UI. Local account details, device identifiers, credentials and
+private test reports are excluded from this repository.
 
 ## Google Chat preview
 
@@ -55,7 +99,7 @@ records**, including public-key hashes and PIN/touch policies, matched before
 and after. Together these tests cover formatted bundles in both directions,
 including actual IWA HTML display and browser attachment download.
 
-Offline validation includes twelve Python tests, a Rust signed/compressed/
+Offline validation includes seventeen Python tests, a Rust signed/compressed/
 encrypted multipart round trip with wrong-signer/wrong-recipient/tampering
 rejections, and a JavaScript inert-rendering/escaping test:
 

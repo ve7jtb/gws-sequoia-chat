@@ -395,7 +395,7 @@ result above is a separate test.
 The separate [Mac IWA experiment](experiments/mac-iwa/README.md) packages a signed
 Isolated Web App, a restricted Chrome extension and a Native Messaging host. It
 reuses the Sequoia PKCS#11 PIV adapter without a loopback HTTP server. It is a
-Google Chat preview alongside the separate main Mail/Chat browser app. The IWA
+Google Chat and Gmail preview alongside the separate main Mail/Chat browser app. The IWA
 uses its own gws OAuth session and native PIN dialogs; it does not share PQ
 Mail’s vault or Google session.
 
@@ -428,6 +428,23 @@ YubiKey decryption and trusted hybrid-signature verification succeeded; visual
 inspection confirmed heading, bold, italic and bullet-list rendering. The IWA
 attachment download matched all **308 bytes exactly**. All 24 PIV slot records
 and PIN/touch policies remained unchanged.
+
+The **two-way encrypted Gmail test passed on 2026-11-21** using the same
+Level 3 YubiKey and Sequoia peer identities. IWA-helper → Sequoia verified the
+hybrid signature, authenticated sender/recipient and subject, exact plain-text
+and HTML alternatives, and all **289 attachment bytes**. Sequoia → IWA passed
+YubiKey decryption and trusted hybrid-signature verification; the IWA displayed
+heading, bold, italic and list formatting, and its downloaded attachment matched
+all **308 bytes exactly**. All 24 PIV slot records, including public-key hashes
+and PIN/touch policies, matched before and after each hardware test.
+
+Select **Gmail** in the IWA service selector, authorize `gmail.readonly` and
+`gmail.send`, and enable Gmail API in the OAuth project's Cloud configuration.
+The preview supports inbox search/paging and encrypted PGP/MIME composition with
+HTML and attachments. It does not request mailbox modification/deletion access.
+These live tests exercised the installed Gmail helper in both directions and the
+IWA inbox/reader/download UI for the return; outgoing preparation/send was driven
+through the helper test harness, not a complete automated Compose UI test.
 
 Google credentials use gws's separate Keychain-backed encrypted storage. See the
 [experiment README](experiments/mac-iwa/README.md) for installation, limits and

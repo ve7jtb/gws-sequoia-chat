@@ -27,6 +27,8 @@ FIELDS={'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messa
         'chat-prepare':{'space','contact','subject','body','html','attachments'},'chat-send':{'review','confirmed'},
         'chat-open':{'message','contact'}}
 
+FIELDS.update({'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
+
 def validate(request):
     op=request.get('op')
     if op not in FIELDS or set(request)!=(FIELDS[op]|{'op'}):raise ValueError('Unsupported fields')
@@ -113,10 +115,13 @@ class ChatBridge:
         op=validate(request);chat=self.chat
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if op.startswith('chat-mail-') and op!='chat-mail-login':
+                from gmail_bridge import action
+                return action(self,request)
             if op=='chat-state':
                 own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
                 return {'account':self.cfg['chat_email'],'serial':self.cfg['serial'],'identity':own,'contacts':self.contacts()}
-            if op=='chat-login':
+            if op in ('chat-login','chat-mail-login'):
                 # gws uses a browser OAuth flow and its own callback listener,
                 # not an IWA loopback API. It handles Google account tokens.
                 pidfile=self.data/'login.json'
@@ -131,7 +136,11 @@ class ChatBridge:
                 # only its authorization URL in an unlinked temporary stream;
                 # never return raw CLI output or OAuth callback/token data.
                 with tempfile.TemporaryFile() as output:
-                    child=subprocess.Popen([str(chat.ROOT/'gws-chat'),'auth','login','--scopes',chat.SCOPES],env=env,stdin=subprocess.DEVNULL,stdout=output,stderr=output,start_new_session=True)
+                    scopes=chat.SCOPES
+                    if op=='chat-mail-login':
+                        from gmail_bridge import SCOPES
+                        scopes+=','+SCOPES
+                    child=subprocess.Popen([str(chat.ROOT/'gws-chat'),'auth','login','--scopes',scopes],env=env,stdin=subprocess.DEVNULL,stdout=output,stderr=output,start_new_session=True)
                     pidfile.write_text(json.dumps({'pid':child.pid,'time':time.time()}))
                     for _ in range(100):
                         printed=os.pread(output.fileno(),32768,0).decode('utf-8',errors='replace')

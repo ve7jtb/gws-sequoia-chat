@@ -141,6 +141,23 @@ def run_test(cfg, emit=frame_write):
                 os.waitpid(pid,0)
 
 
+def operation_error(op):
+    """Return fixed, operation-specific guidance without exposing CLI secrets.
+
+    Connection failures happen before the hardware operation. Keep them separate
+    from signing/decryption failures so users do not unnecessarily retry a PIN.
+    """
+    if op in ('chat-mail-login','chat-mail-connect','chat-mail-list'):
+        return 'Gmail connection failed. Complete Google sign-in with Gmail read and send permissions, then reconnect Gmail. No YubiKey operation was attempted.'
+    if op in ('chat-login','chat-spaces','chat-messages'):
+        return 'Google Chat connection failed. Complete Google sign-in and all three Chat permissions, then reconnect. No YubiKey operation was attempted.'
+    if op and op.startswith('chat-mail-'):
+        return 'Gmail operation stopped. Check the Gmail connection, selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
+    if op and op.startswith('chat-'):
+        return 'Chat operation stopped. Check the selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
+    return 'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'
+
+
 def main():
     os.umask(0o077)
     cfg = json.loads((ROOT/'private/config.json').read_text())
@@ -162,11 +179,7 @@ def main():
     except Exception:
         # Avoid reflecting low-level errors, PINs, or environment data. Full
         # public test diagnostics remain only in the local hardware result folder.
-        message = 'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'
-        if op in ('chat-login','chat-spaces','chat-messages'):
-            message = 'Google Chat connection failed. Complete Google sign-in and all three Chat permissions, then reconnect. No YubiKey operation was attempted.'
-        elif op and op.startswith('chat-'):
-            message = 'Chat operation stopped. Check the selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
+        message = operation_error(op)
         frame_write({'type':'error','message':message})
         return 1
     return 0
