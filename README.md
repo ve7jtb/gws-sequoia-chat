@@ -611,3 +611,30 @@ MIME composition/reading and message verification now run in the IWA worker.
 YubiKey operations, PIN handling, authenticated decryption, OAuth credentials
 and trust persistence stay native. Baseline WASM is the default; wide arithmetic
 remains an opt-in benchmark. See the [implementation boundaries and regression tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06).
+
+### Live IWA MIME composer → Sequoia tests
+
+On **2026-11-22**, Mac IWA preview **0.6.2** composed and sent new synthetic
+signed-and-encrypted messages through both **Gmail and Google Chat** to the
+standalone Sequoia peer. These tests exercised the installed IWA Compose UI,
+including its formatting option, attachment picker and explicit send review.
+The browser worker built the MIME; the native helper used the existing Level 3
+YubiKey for **ML-DSA-65 + Ed25519** signatures and encrypted to the peer with
+**ML-KEM-768 + X25519**.
+
+| Sequoia-side check | Gmail | Google Chat |
+|---|---|---|
+| Received ciphertext matches the IWA's sent copy | Exact match | Exact match |
+| Decryption and hybrid signature verification | Passed | Passed |
+| Expected full signer fingerprint, signed From/To and subject | Matched | Matched |
+| Multipart plain-text and HTML alternatives | Exact match | Exact match |
+| Attachment filename and all **308 bytes** | Exact match | Exact match |
+
+The HTML comparison covered heading, bold, italic and list markup, with Unicode
+preserved in both text and HTML. The binary fixture contained every byte value;
+both recovered attachments matched the original byte-for-byte and had SHA-256
+`6a2eba9c8f2ebd7e2a9ff4746da112449e131cef2dc5ba68bc223c27ef26f769`.
+This run checked decoded HTML source on the CLI peer, not visual rendering there.
+The peer used its separate Google sessions and password-protected software
+identity. No YubiKey keys or touch policies were changed. Account details,
+ciphertexts, decrypted test content and local reports remain excluded from Git.
