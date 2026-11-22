@@ -57,8 +57,8 @@ fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
  Ok(serde_json::json!({"signatures":results}))
 }
 
-/// The caller supplies exact signed bytes extracted by the existing native MIME
-/// parser. Trust is deliberately absent: a valid signature does not grant trust.
+/// The caller supplies exact signed bytes extracted by the IWA MIME parser or
+/// authenticated native decryption. Trust is deliberately absent: a valid signature does not grant trust.
 /// A bad signature may name a candidate certificate, never an authenticated sender.
 #[wasm_bindgen]
 pub fn verify_detached(input:&str)->Result<String,JsValue>{

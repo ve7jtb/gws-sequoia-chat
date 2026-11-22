@@ -1,7 +1,8 @@
 # Experimental Sequoia WASM verifier
 
 This prototype exposes **detached public signature verification only** inside an
-IWA Web Worker. It does not replace normal Gmail verification. MIME extraction,
+IWA Web Worker. Preview 0.6 uses this baseline verifier for Gmail and decrypted
+Chat messages, with MIME parsing/composition in a separate browser module.
 OpenPGP encryption/decryption, YubiKey signing and OAuth remain native. The WASM
 worker has no extension/native connection and never falls back to native crypto.
 

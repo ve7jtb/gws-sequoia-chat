@@ -8,10 +8,10 @@ from email.utils import getaddresses
 from pathlib import Path
 from email import policy
 from email.parser import BytesParser
-from chat_bridge import compose_mime
+from chat_bridge import browser_mime
 
 SCOPES=','.join('https://www.googleapis.com/auth/'+s for s in ('gmail.readonly','gmail.send'))
-FIELDS={'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
+FIELDS={'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','mime'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
 
 def encrypted_payload(m,msg):
     """Recognize a complete supported envelope, never a subject or filename.
@@ -209,7 +209,11 @@ def action(b,r):
         return {'messages':rows,'next':data.get('nextPageToken','')}
     if op in ('chat-mail-read','chat-mail-cert-save','chat-mail-cert-trust'):
         account();v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
-        raw=m.raw_message(v['raw']);msg=m.parse_message(raw)
+        raw=m.raw_message(v['raw'])
+        if op=='chat-mail-read':
+            if len(raw)>262144:raise ValueError('Message exceeds browser MIME limit')
+            return {'raw':base64.b64encode(raw).decode()}
+        msg=m.parse_message(raw)
         if encrypted_payload(m,msg) is not None:return {'encrypted':True}
         # An invalid declared crypto envelope is never silently treated as mail.
         if msg.get_content_type()=='multipart/encrypted':raise ValueError('Unsupported or malformed encrypted envelope')
@@ -218,10 +222,11 @@ def action(b,r):
         return public_result(result)
     if op=='chat-mail-open':
         account();contact,peer=b.peer(r['contact']);v=api('users','messages','get','--params',json.dumps({'userId':'me','id':m.message_id(r['message']),'format':'raw'}))
-        outer=m.parse_message(m.raw_message(v['raw']));clear=b.crypto('open',peer,m.pgp_payload(outer),service='Gmail');mime=b.chat.inspect_mime(clear,contact['email'],b.cfg['chat_email'])
-        return {'verified':True,'sender':contact['email'],'fingerprint':contact['fingerprint'],'subject':mime['subject'],'text':'\n'.join(mime['plain']),'html':'\n'.join(mime['html']),'attachments':[{'name':n,'size':len(d),'data':base64.b64encode(d).decode()} for n,d in mime['files']]}
+        raw=m.raw_message(v['raw'])
+        if len(raw)>262144:raise ValueError('Message exceeds browser MIME limit')
+        return {'raw':base64.b64encode(raw).decode()}
     if op=='chat-mail-prepare':
-        account();contact,peer=b.peer(r['contact']);raw=compose_mime(b.chat,r,b.cfg['chat_email'],contact['email']);cipher=b.crypto('seal',peer,raw,service='Gmail')
+        account();contact,peer=b.peer(r['contact']);raw=browser_mime(r,b.cfg['chat_email'],contact['email']);cipher=b.crypto('seal',peer,raw,service='Gmail')
         # Standard ASCII armor without CRC, preserving the binary v6 packets.
         encoded=base64.b64encode(cipher).decode();armor=('-----BEGIN PGP MESSAGE-----\r\n\r\n'+'\r\n'.join(encoded[i:i+64] for i in range(0,len(encoded),64))+'\r\n-----END PGP MESSAGE-----\r\n').encode()
         rid=secrets.token_hex(24);out=b.chat.private_dir(b.data/('mail-draft-'+rid));b.chat.write_new(out/'message.eml',m.encrypted_envelope(b.cfg['chat_email'],contact['email'],armor));b.chat.write_new(out/'review.json',json.dumps({'created':time.time()}).encode())

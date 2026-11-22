@@ -565,9 +565,10 @@ Mac preview 0.5.2 includes a public-only Sequoia WASM verifier in a browser
 worker. Eight comparisons with the native OpenSSL verifier passed in the
 installed IWA: valid/altered/missing-certificate cases for v4 and Level 3 hybrid
 v6, plus valid original and invalid altered Proton messages. Saved certificates,
-trust and the original message stayed unchanged. Normal mail verification, MIME
-and encryption remain native; this is an explicit diagnostic, not a production
-backend switch. **Baseline WASM remains the default**; wide arithmetic runs only
+trust and the original message stayed unchanged. Preview 0.6 subsequently moves
+MIME composition/reading and ordinary/decrypted-message verification into an IWA
+worker. YubiKey signing/decryption, AEAD integrity checks, OAuth, transport and
+trust persistence remain native. See the [browser/native boundary and tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06). **Baseline WASM remains the default**; wide arithmetic runs only
 when its explicit benchmark button is selected.
 
 The wide-arithmetic build passed all eight cases in Canary 160 on Apple Silicon,
@@ -586,3 +587,27 @@ improvement for valid hybrid v6 has overlapping timing ranges and does not
 establish a general speedup. The wide module is 24,359 bytes smaller. Original
 messages, saved certificates and trust were unchanged; no token operations ran.
 See [build instructions, complete results and limitations](experiments/mac-iwa/wasm/README.md).
+
+
+### Live Gmail and Chat verification with baseline WASM
+
+Mac IWA preview **0.6.2** passed live encrypted-message reads on **2026-11-22**
+using the existing Level 3 YubiKey and the Sequoia peer:
+
+| Check | Gmail | Google Chat |
+|---|---|---|
+| Native YubiKey decryption | Passed | Passed |
+| Baseline WASM hybrid signature verification | Valid | Valid |
+| Saved sender certificate trust | Trusted | Trusted |
+| Text and 308-byte attachment displayed | Passed | Passed |
+
+Chat HTML rendering also passed. These tests reopened existing synthetic
+messages; no messages were sent and no keys or touch policies were changed.
+Original-message and saved-certificate/trust hashes remained unchanged. The
+308-byte result is the displayed attachment size; exact downloaded bytes were
+verified in the earlier interoperability tests, not repeated in this run.
+
+MIME composition/reading and message verification now run in the IWA worker.
+YubiKey operations, PIN handling, authenticated decryption, OAuth credentials
+and trust persistence stay native. Baseline WASM is the default; wide arithmetic
+remains an opt-in benchmark. See the [implementation boundaries and regression tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06).

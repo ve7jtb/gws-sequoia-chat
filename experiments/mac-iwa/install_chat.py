@@ -26,7 +26,7 @@ def main():
  client=target/'private/gws/client_secret.json'
  if not client.exists():shutil.copy2(a.oauth_client,client);client.chmod(0o600)
  shutil.copy2(a.crypto_bin,dest/'runtime/sequoia-iwa-crypto')
- for name in ('host.py','chat_bridge.py','gmail_bridge.py','cert_store.py'):shutil.copy2(ROOT/'native'/name,dest/'native'/name)
+ for name in ('host.py','chat_bridge.py','gmail_bridge.py','cert_store.py','browser_material.py'):shutil.copy2(ROOT/'native'/name,dest/'native'/name)
  subprocess.run(['/usr/bin/swiftc',str(ROOT/'native/PinPrompt.swift'),'-o',str(dest/'build/pin-prompt')],check=True)
  cfg['chat_email']=a.email;(dest/'private/config.json').write_text(json.dumps(cfg,indent=2))
  print('Chat helper installed. Authorize its separate Google session in the IWA.')

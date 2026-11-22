@@ -12,3 +12,5 @@ crypto/target/
 app/wasm/
 app/wasm-fixtures.json
 app/wasm-wide/
+
+app/vendor/

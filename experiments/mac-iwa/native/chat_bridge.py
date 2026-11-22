@@ -22,12 +22,12 @@ import time
 from urllib.parse import urlsplit
 
 LIMIT=262144
-FIELDS={'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messages':{'space','page'},
+FIELDS={'chat-decrypt':{'contact','payload','service'},'chat-verification-material':set(),'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messages':{'space','page'},
         'chat-preview':{'certificate'},'chat-trust':{'certificate','email','fingerprint','confirmed'},
-        'chat-prepare':{'space','contact','subject','body','html','attachments'},'chat-send':{'review','confirmed'},
+        'chat-prepare':{'space','contact','subject','mime'},'chat-send':{'review','confirmed'},
         'chat-open':{'message','contact'}}
 
-FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','body','html','attachments'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
+FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','mime'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
 
 from cert_store import FIELDS as CERT_FIELDS
 FIELDS.update(CERT_FIELDS)
@@ -67,6 +67,19 @@ def compose_mime(chat,request,sender,recipient):
     if len(raw)>LIMIT:raise ValueError('Encoded MIME exceeds 256 KiB')
     return raw
 
+def browser_mime(request,sender,recipient):
+    """Authorize browser-composed data against the selected native contact.
+
+    MIME construction/display belong to the IWA. This redundant metadata check
+    prevents a compromised request from signing a different address or subject.
+    """
+    raw=base64.b64decode(request['mime'],validate=True)
+    if len(raw)>LIMIT:raise ValueError('MIME exceeds 256 KiB')
+    msg=BytesParser(policy=policy.SMTP).parsebytes(raw,headersonly=True)
+    for name,value in [('From',sender),('To',recipient),('Subject',request['subject'])]:
+        if len(msg.get_all(name,[]))!=1 or str(msg[name])!=value:raise ValueError('Compose metadata mismatch')
+    return raw
+
 def crypto_prompt(op,service):
     """Fixed labels selected by the native route, never arbitrary browser text."""
     if service not in ('Chat','Gmail') or op not in ('seal','open'):
@@ -102,7 +115,7 @@ class ChatBridge:
         if len(payload)>LIMIT:raise ValueError('Message too large')
         serials=subprocess.check_output([self.cfg['ykman'],'list','--serials'],stderr=subprocess.DEVNULL,timeout=25).decode().split()
         if self.cfg['serial'] not in serials:raise ValueError('Expected YubiKey not connected')
-        prompt=crypto_prompt(op,service)
+        prompt=crypto_prompt('open' if op=='open-browser' else op,service)
         self.emit({'type':'progress','message':prompt+' — use the native PIN dialog, then touch if requested.'})
         # The PIN never reaches Chrome. Supply only a bounded anonymous pipe to
         # the one-shot worker; both components share this operation's PIN.
@@ -117,8 +130,13 @@ class ChatBridge:
             p=subprocess.run([str(self.root/'runtime/sequoia-iwa-crypto')],input=wire,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=150)
             del wire
             if p.returncode or len(p.stdout)>LIMIT*2:raise ValueError('Cryptographic operation failed; no retry')
-            result=base64.b64decode(json.loads(p.stdout)['data'],validate=True)
+            packet=json.loads(p.stdout)
+            result=base64.b64decode(packet['data'],validate=True)
             if len(result)>LIMIT:raise ValueError('Oversize cryptographic result')
+            if op=='open-browser':
+                signature=base64.b64decode(packet['signature'],validate=True)
+                if not 1<=len(signature)<=65536:raise ValueError('Invalid signature packet size')
+                return {'raw':packet['data'],'signature':packet['signature'],'encrypted':True}
             return result
         finally:pin[:]=b'\0'*len(pin)
     def action(self,request):
@@ -131,6 +149,14 @@ class ChatBridge:
             if op.startswith('chat-mail-') and op!='chat-mail-login':
                 from gmail_bridge import action
                 return action(self,request)
+            if op=='chat-decrypt':
+                if request['service'] not in ('Gmail','Chat'):raise ValueError('Unknown service')
+                contact,peer=self.peer(request['contact'])
+                clear=self.crypto('open-browser',peer,base64.b64decode(request['payload'],validate=True),service=request['service'])
+                return {**clear,'expectedEmail':contact['email'],'expectedFingerprint':contact['fingerprint'],'recipient':self.cfg['chat_email']}
+            if op=='chat-verification-material':
+                from browser_material import material
+                return material(self)
             if op=='chat-state':
                 own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
                 return {'account':self.cfg['chat_email'],'serial':self.cfg['serial'],'identity':own,'contacts':self.contacts()}
@@ -188,7 +214,7 @@ class ChatBridge:
             if op=='chat-prepare':
                 space=chat.space_name(request['space']);contact,peer=self.peer(request['contact'])
                 own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
-                mime=compose_mime(chat,request,self.cfg['chat_email'],contact['email'])
+                mime=browser_mime(request,self.cfg['chat_email'],contact['email'])
                 sealed=self.crypto('seal',peer,mime)
                 rid=secrets.token_hex(24);out=chat.private_dir(self.data/('draft-'+rid))
                 chat.write_new(out/'message.pgp',sealed);chat.write_new(out/'pq-mail-sender-key.pgp',Path(self.cfg['cert']).read_bytes())
@@ -209,9 +235,6 @@ class ChatBridge:
                 with tempfile.TemporaryDirectory() as td:
                     out=Path(td)/'incoming';chat.receive(chat.message_name(request['message']),out)
                     if chat.public_packets(out/'pq-mail-sender-key.pgp')!=chat.public_packets(peer):raise ValueError('Attached signer does not match trusted contact')
-                    clear=self.crypto('open',peer,chat.read(out/'message.pgp',LIMIT))
-                mime=chat.inspect_mime(clear,contact['email'],self.cfg['chat_email'])
-                # Render text only. No HTML resources or scripts execute in the
-                # IWA and no decrypted data is intentionally persisted here.
-                return {'verified':True,'sender':contact['email'],'fingerprint':contact['fingerprint'],'subject':mime['subject'],'text':'\n'.join(mime['plain']),'html':'\n'.join(mime['html']),'attachments':[{'name':name,'size':len(data),'data':base64.b64encode(data).decode()} for name,data in mime['files']]}
+                    cipher=chat.read(out/'message.pgp',LIMIT)
+                return {'encrypted':True,'cipher':base64.b64encode(cipher).decode()}
             raise ValueError('Unknown operation')

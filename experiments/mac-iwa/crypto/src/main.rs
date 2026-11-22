@@ -49,6 +49,32 @@ impl<D:Decryptor> DecryptionHelper for Open<D>{
   ensure!(decrypt(alg,&key),"Authentication failed");Ok(Some(self.own.clone()))
  }
 }
+// Browser decryption deliberately supplies no verification certificates. The
+// native process authenticates AEAD and extracts the literal bytes/signatures;
+// the baseline WASM verifier makes the signature decision before display.
+struct BrowserOpen<D:Decryptor> { inner:Open<D>, signatures:Vec<u8> }
+impl<D:Decryptor> VerificationHelper for BrowserOpen<D> {
+ fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>> {Ok(Vec::new())}
+ fn check(&mut self,s:MessageStructure)->Result<()> {
+  let mut encrypted=false; let mut count=0;
+  for layer in s.iter() {match layer {
+   MessageLayer::Encryption{aead_algo,..}=>{ensure!(aead_algo.is_some(),"AEAD required");encrypted=true;},
+   MessageLayer::SignatureGroup{results}=>for result in results {
+    // With an empty certificate set only MissingKey is expected. All other
+    // structural/policy failures fail closed instead of losing a signature.
+    let sig=match result {Err(pgp::parse::stream::VerificationError::MissingKey{sig})=>sig,_=>bail!("Unsupported signature structure")};
+    self.signatures.extend(pgp::Packet::Signature((*sig).clone()).to_vec()?);count+=1;
+   },
+   MessageLayer::Compression{..}=>{}
+  }}
+  ensure!(encrypted && count==1 && self.signatures.len()<=65536,"One signature and authenticated encryption required");Ok(())
+ }
+}
+impl<D:Decryptor> DecryptionHelper for BrowserOpen<D> {
+ fn decrypt(&mut self,pk:&[PKESK],sk:&[SKESK],hint:Option<SymmetricAlgorithm>,decrypt:&mut dyn FnMut(Option<SymmetricAlgorithm>,&SessionKey)->bool)->Result<Option<Cert>> {
+  self.inner.decrypt(pk,sk,hint,decrypt)
+ }
+}
 fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,payload:&[u8])->Result<Vec<u8>> {
  let sign=selected(&own,true)?;let kem=selected(&peer,false)?;let p=StandardPolicy::new();
   let mut signed=Zeroizing::new(Vec::new());{
@@ -137,6 +163,16 @@ fn execute()->Result<()> {
  let own=public(field(&v,"own")?)?;let peer=public(field(&v,"peer")?)?;
  let payload=Zeroizing::new(B64.decode(field(&v,"payload")?)?);ensure!(payload.len()<=LIMIT,"Payload too large");
  let p=StandardPolicy::new();
+ if field(&v,"op")?=="open-browser" {
+  let kem=selected(&own,false)?;
+  let inner=Open{verify:Verify{expected:selected(&peer,true)?.fingerprint(),cert:peer,encryption_required:true},own,key:Level3Decryptor::new(kem,Pkcs11Operation::new(config,pin)?)?};
+  let helper=BrowserOpen{inner,signatures:Vec::new()};
+  let mut reader=DecryptorBuilder::from_bytes(&payload)?.with_policy(&p,None,helper)?;
+  let mut clear=Zeroizing::new(Vec::new());reader.by_ref().take((LIMIT+1)as u64).read_to_end(&mut clear)?;
+  ensure!(clear.len()<=LIMIT,"Plaintext too large");
+  let helper=reader.into_helper();
+  println!("{}",serde_json::json!({"data":B64.encode(&*clear),"signature":B64.encode(helper.signatures)}));return Ok(());
+ }
  let result=match field(&v,"op")?{
  "seal"=>{
   let sign=selected(&own,true)?;
@@ -191,6 +227,24 @@ mod tests {
    request["certificates"]=serde_json::json!([]);
    assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"unknown-key");
   }
+ }
+ #[test] fn browser_decryption_exports_exact_literal_and_signature() {
+  let alice=identity();let bob=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");
+  let cipher=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
+  let open=|bytes:&[u8]|->Result<(Vec<u8>,Vec<u8>)>{
+   let inner=Open{verify:Verify{cert:alice.clone(),expected:selected(&alice,true)?.fingerprint(),encryption_required:true},own:bob.clone(),key:key(&bob,false)};
+   let helper=BrowserOpen{inner,signatures:Vec::new()};let p=StandardPolicy::new();
+   let mut reader=DecryptorBuilder::from_bytes(bytes)?.with_policy(&p,None,helper)?;
+   let mut clear=Vec::new();reader.read_to_end(&mut clear)?;Ok((clear,reader.into_helper().signatures))
+  };
+  let (clear,signature)=open(&cipher).unwrap();assert_eq!(clear,payload);
+  let public=alice.clone().strip_secret_key_material();
+  let request=serde_json::json!({"payload":B64.encode(&clear),"signature":B64.encode(&signature),"certificates":[B64.encode(public.to_vec().unwrap())]});
+  assert_eq!(verify_public(&request).unwrap()["signatures"][0]["status"],"valid");
+  if let Ok(folder)=std::env::var("IWA_PUBLIC_TEST_FIXTURES") {
+   std::fs::write(std::path::Path::new(&folder).join("browser-open.json"),serde_json::to_vec(&serde_json::json!({"packet":{"raw":B64.encode(clear),"signature":B64.encode(signature),"encrypted":true,"expectedEmail":"alice@example.invalid","expectedFingerprint":public.fingerprint().to_hex(),"recipient":"bob@example.invalid"},"material":{"certificates":[B64.encode(public.to_vec().unwrap())],"bindings":[{"email":"alice@example.invalid","fingerprint":public.fingerprint().to_hex()}],"saved":[public.fingerprint().to_hex()]}})).unwrap()).unwrap();
+  }
+  let mut bad=cipher;let n=bad.len();bad[n-8]^=1;assert!(open(&bad).is_err());
  }
  #[test] fn signed_compressed_encrypted_roundtrip_and_rejections(){
   let alice=identity();let bob=identity();let mallory=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");

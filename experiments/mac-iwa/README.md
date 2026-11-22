@@ -468,7 +468,8 @@ is involved. Do not remove your usual Chrome profile or PQ Mail installation.
 Preview 0.5.2 includes a separate browser-worker diagnostic for Sequoia detached
 signature verification using RustCrypto. Eight native-versus-WASM comparison
 cases passed under Node and visibly in the installed IWA, including v4, Level 3 hybrid v6 and the original/altered
-Proton message. MIME, encryption and normal mail verification remain native.
+Proton message. Preview 0.6 subsequently moves message MIME processing and
+normal verification into the IWA; see the browser MIME section below.
 See [build instructions, limits and test scope](wasm/README.md). Private Proton
 vectors are selected locally and are not bundled or published.
 
@@ -478,3 +479,71 @@ passed all eight v4/hybrid-v6/Proton tests in the installed IWA. Valid hybrid v6
 median time was 0.420 ms baseline versus 0.400 ms wide; v4 and Proton medians
 were unchanged. Short-call timer quantization and overlapping timing ranges
 limit the conclusion. See the [complete benchmark and reproduction notes](wasm/README.md).
+
+
+## Browser MIME and baseline WASM verification (preview 0.6)
+
+The IWA now composes multipart MIME (UTF-8 text/HTML alternatives and binary
+attachments) and parses ordinary mail, PGP/MIME signed bodies, and decrypted
+Chat/Gmail bundles in a disposable worker. PostalMime 4.2.1 is pinned and bundled;
+it fetches no remote code. Detached signatures use the baseline Sequoia WASM
+module, with no native fallback and no wide-arithmetic requirement. Signed MIME
+bytes are extracted without reserialization. The parser handles Gmail's strict
+two-leaf encrypted-envelope rewrite, including a text/plain armored payload.
+
+YubiKey signing and decapsulation, AEAD integrity validation, OAuth credentials,
+Google transport, and persistent public-certificate/trust storage stay native.
+Decryption supplies exact literal bytes and signature packets to the IWA; the
+browser verifies the signature and selected sender/recipient before display.
+The helper retains defense-in-depth checks when signing outgoing data or
+explicitly saving/trusting a certificate. It also checks compose address/subject
+metadata and constructs the outer encrypted Gmail transport wrapper. Thus this
+is a message-processing move, not elimination of every native MIME parser.
+
+Limits are 256 KiB per MIME message, 64 parts, 16 nesting levels, 32 KiB total
+headers, and ten displayed attachments totaling 128 KiB. Workers terminate after
+30 seconds and on completion. HTML remains inert; no links, remote resources,
+scripts or attachment previews execute. Signature validity, encryption and saved
+email/fingerprint trust remain separate indicators. Local `.eml` copies can be
+opened without upload, saving a certificate or changing trust.
+
+Regression checks cover v4 and hybrid v6 detached signatures, attached keys,
+body tampering, wrong sender, exact native-decrypted signature extraction,
+AEAD corruption rejection, Gmail's rewritten envelope, and browser-composed
+Unicode text/HTML plus a byte-for-byte 308-byte attachment round trip. The
+installed preview also visibly rejected the local tampered Proton message while
+retaining its saved trusted-certificate indicator. Live Gmail reading verified
+the original Proton message as valid/trusted through baseline WASM. Both Google
+sessions reconnected, Chat listed the test conversation, and the browser parser
+recognized the existing Gmail encrypted test (8,272 ciphertext bytes). All five
+original-message/public-certificate/trust snapshot hashes remained unchanged.
+Live encrypted Gmail and Chat reads then passed on 2026-11-22 with the
+configured Level 3 YubiKey: native decryption succeeded, the baseline WASM
+verifier accepted the hybrid signature, and the IWA displayed the trusted
+Sequoia peer and 308-byte attachment. Chat HTML rendering also passed. These
+were reads of existing test messages; no new email/Chat send, key generation or
+touch-policy change was performed. The attachment count here is the displayed
+size; this run did not repeat the earlier exact download-byte comparison.
+
+
+Reproduce the browser/native boundary checks (after `npm ci --ignore-scripts`
+in `experiments/mac-iwa` and building the baseline WASM assets):
+
+```sh
+mkdir -p /tmp/iwa-public-fixtures
+IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures cargo test --locked \
+  --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+mkdir -p experiments/mac-iwa/app/vendor/postal-mime
+cp experiments/mac-iwa/node_modules/postal-mime/dist/esm/*.js \
+  experiments/mac-iwa/app/vendor/postal-mime/
+IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures node --test \
+  experiments/mac-iwa/tests/message-mime.test.mjs
+python3 -m unittest discover -s experiments/mac-iwa/tests -p 'test*.py'
+node experiments/mac-iwa/tests/test_format.cjs
+```
+
+`IWA_PROTON_ORIGINAL` and `IWA_PROTON_TAMPERED` optionally point to local `.eml`
+fixtures for the additional Proton test; private mail is never bundled. The
+three native crypto tests generate only temporary software keys/public fixtures.
+The Python suite currently passes 31 tests with two optional native pipeline
+tests skipped when their external fixtures/runtime are not configured.
