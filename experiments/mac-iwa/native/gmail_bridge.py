@@ -188,11 +188,15 @@ def upload_encrypted_mail(b,api,path):
                    '--upload',str(staged),'--upload-content-type','message/rfc822')
 
 
-def action(b,r):
+def module(b):
     # The imported module has fixed installed paths, never browser-selected ones.
     sys.modules['chat']=b.chat
     spec=importlib.util.spec_from_file_location('iwa_mail',b.root/'runtime/chat/mail_transport.py')
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    return m
+
+def action(b,r):
+    m=module(b)
     def api(*args):return m.gws_memory('gmail',*args)
     def account():
         p=api('users','getProfile','--params',json.dumps({'userId':'me'}))
@@ -226,11 +230,8 @@ def action(b,r):
         if len(raw)>262144:raise ValueError('Message exceeds browser MIME limit')
         return {'raw':base64.b64encode(raw).decode()}
     if op=='chat-mail-prepare':
-        account();contact,peer=b.peer(r['contact']);raw=browser_mime(r,b.cfg['chat_email'],contact['email']);cipher=b.crypto('seal',peer,raw,service='Gmail')
-        # Standard ASCII armor without CRC, preserving the binary v6 packets.
-        encoded=base64.b64encode(cipher).decode();armor=('-----BEGIN PGP MESSAGE-----\r\n\r\n'+'\r\n'.join(encoded[i:i+64] for i in range(0,len(encoded),64))+'\r\n-----END PGP MESSAGE-----\r\n').encode()
-        rid=secrets.token_hex(24);out=b.chat.private_dir(b.data/('mail-draft-'+rid));b.chat.write_new(out/'message.eml',m.encrypted_envelope(b.cfg['chat_email'],contact['email'],armor));b.chat.write_new(out/'review.json',json.dumps({'created':time.time()}).encode())
-        return {'review':rid,'space':'Gmail','recipient':contact['email'],'fingerprint':contact['fingerprint'],'subject':r['subject']}
+        account();contact,peer=b.peer(r['contact']);raw=browser_mime(r,b.cfg['chat_email'],contact['email'])
+        return b.prepare_browser_signature(r,contact,peer,raw,'Gmail')
     if op=='chat-mail-send':
         account()
         if not re.fullmatch('[a-f0-9]{48}',r['review']):raise ValueError('Bad review')

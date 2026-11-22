@@ -125,3 +125,25 @@ established. Keep the baseline as the portable default. This measures the full
 public verifier, including parsing, not isolated curve or ML-DSA arithmetic.
 No native fallback or token operations ran. Original Proton message and saved
 certificate/trust file hashes remained unchanged.
+
+## Public encryption
+
+Preview 0.7 adds `encrypt_signed` to the baseline module. It accepts a verified
+native signed-packet stream, the exact browser-composed payload, and public sender
+and selected recipient certificates. It re-verifies the Level 3 hybrid signature,
+requires the expected v6 recipient fingerprint and current email binding, and
+selects exactly one live, non-revoked ML-KEM-768 + X25519 transport subkey. It then
+compresses the signed packets with ZLIB and encrypts them with fresh randomness
+provided by the WASM `getrandom` Web Crypto integration. No secret keys or PINs are
+accepted. The browser sends only the resulting ciphertext back for native packet
+inspection, one-use review and transport.
+
+`tests/encrypt.mjs` runs the browser-target baseline under Node and independently
+decrypts/verifies its output with `TEST_SQ`. Generate its disposable fixture with
+`IWA_ENCRYPTION_FIXTURE_DIR` and the native Rust test
+`browser_encryption_fixture_and_packet_guards`; use a private temporary directory
+and delete it afterward, since it contains a disposable software secret key.
+Pass that directory to `node tests/encrypt.mjs`. Set `IWA_CRYPTO_TEST_BIN` to also
+exercise the native public packet guard against WASM ciphertext. The test checks
+two exact-byte round trips, fresh ciphertext randomness, and rejection cases.
+The existing `tests/run.mjs` verification cases remain unchanged.

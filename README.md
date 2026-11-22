@@ -638,3 +638,34 @@ This run checked decoded HTML source on the CLI peer, not visual rendering there
 The peer used its separate Google sessions and password-protected software
 identity. No YubiKey keys or touch policies were changed. Account details,
 ciphertexts, decrypted test content and local reports remain excluded from Git.
+
+### Live baseline WASM encryption → Sequoia tests
+
+Mac IWA preview **0.7.0** passed live outgoing **Gmail and Google Chat** tests on
+**2026-11-22** with OpenPGP encryption in the baseline WASM worker. The native
+helper signed through the existing Level 3 YubiKey; WASM reverified the signed
+MIME and encrypted it with **ML-KEM-768 + X25519**. The standalone Sequoia peer
+used its separate Google sessions and password-protected software identity.
+
+| Sequoia-side check | Gmail | Google Chat |
+|---|---|---|
+| Received ciphertext matches the IWA's sent copy | Exact match | Exact match |
+| Decryption and **ML-DSA-65 + Ed25519** signature verification | Passed | Passed |
+| Expected signer fingerprint, signed From/To and subject | Matched | Matched |
+| Plain-text and HTML alternatives, including Unicode | Exact match | Exact match |
+| Attachment filename and all **308 bytes** | Exact match | Exact match |
+
+Both recovered attachments matched the original byte-for-byte and had SHA-256
+`6a2eba9c8f2ebd7e2a9ff4746da112449e131cef2dc5ba68bc223c27ef26f769`.
+HTML source preserved heading, bold, italic and list markup; the CLI peer did not
+render HTML. This run specifically tested browser encryption, unlike the 0.6.2
+composer tests above. YubiKey signing/decryption, PIN entry, OAuth credentials,
+trust persistence and transport remain native. No keys or touch policies were
+changed, and no private reports, messages or credentials are published.
+
+Offline checks also passed: 36 Python tests, four native Rust tests, seven MIME
+worker tests, eight v4/v6/Proton verification cases, and two independent native
+Sequoia round trips of WASM-encrypted data. Tests cover fresh randomness,
+recipient/mailbox mismatch, altered content, secret-key rejection, public packet
+validation and one-use completion tickets. Baseline remains the default, with no
+native encryption fallback. See the [encryption boundary](experiments/mac-iwa/README.md#browser-openpgp-encryption-preview-07).

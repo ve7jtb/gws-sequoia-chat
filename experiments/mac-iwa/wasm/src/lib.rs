@@ -1,4 +1,4 @@
-//! Experimental public-only verifier. No MIME parser, network, token, PIN,
+//! Public verification and encryption. No MIME parser, network, token, PIN,
 //! private-key operation, filesystem or trust-store mutation is exposed.
 use anyhow::{ensure,Context,Result};
 use base64::{Engine,engine::general_purpose::STANDARD as B64};
@@ -68,4 +68,51 @@ pub fn verify_detached(input:&str)->Result<String,JsValue>{
   Ok(serde_json::to_string(&verify_public(&request)?)?)
  };
  run().map_err(|_|JsValue::from_str("Verification request rejected"))
+}
+
+// Encryption accepts only public certificates and already-signed packets. The
+// recipient fingerprint and mailbox must match the native trusted selection.
+// Reverify the signature here before wrapping the unchanged packet stream.
+fn encrypt_public(v:&serde_json::Value)->Result<serde_json::Value> {
+ use std::io::{Read,Write};
+ use pgp::serialize::stream::{Message,Encryptor,Compressor};
+ use pgp::types::{PublicKeyAlgorithm as A,CompressionAlgorithm};
+ let own=public(field(v,"senderCertificate")?)?;
+ let peer=public(field(v,"recipientCertificate")?)?;
+ ensure!(peer.primary_key().key().version()==6 && own.primary_key().key().version()==6,"v6 required");
+ ensure!(peer.fingerprint().to_hex()==field(v,"recipientFingerprint")?,"Recipient mismatch");
+ ensure!(current_emails(&peer).iter().any(|e|e==field(v,"recipientEmail").unwrap_or("")),"Recipient mailbox mismatch");
+ let signed=B64.decode(field(v,"signed")?)?;
+ ensure!(!signed.is_empty() && signed.len()<=LIMIT,"Signed packet limit");
+ let payload=B64.decode(field(v,"payload")?)?;
+ ensure!(payload.len()<=LIMIT,"Payload limit");
+ let p=StandardPolicy::new();
+ let helper=PublicVerify{certs:vec![own.clone()],results:Vec::new()};
+ let mut verifier=pgp::parse::stream::VerifierBuilder::from_bytes(&signed)?.with_policy(&p,None,helper)?;
+ let mut clear=Vec::new();verifier.by_ref().take((LIMIT+1) as u64).read_to_end(&mut clear)?;
+ ensure!(clear==payload,"Signed payload mismatch");
+ let results=verifier.into_helper().results;
+ ensure!(results.len()==1 && results[0]["status"]=="valid" && results[0]["fingerprint"]==own.fingerprint().to_hex() && results[0]["algorithm"]==A::MLDSA65_Ed25519.to_string(),"One valid Level 3 hybrid signature required");
+ let recipients:Vec<_>=peer.keys().with_policy(&p,None).alive().revoked(false).for_transport_encryption().filter(|k|k.key().pk_algo()==A::MLKEM768_X25519).collect();
+ ensure!(recipients.len()==1,"Exactly one supported hybrid recipient required");
+ // RustCrypto obtains fresh randomness through getrandom's wasm_js backend;
+ // no session key or random seed is supplied by JavaScript or the native host.
+ let mut cipher=Vec::new();
+ {
+  let encrypted=Encryptor::for_recipients(Message::new(&mut cipher),recipients).build()?;
+  let mut compressed=Compressor::new(encrypted).algo(CompressionAlgorithm::Zlib).build()?;
+  compressed.write_all(&signed)?;compressed.finalize()?;
+ }
+ ensure!(cipher.len()<=LIMIT,"Ciphertext limit");
+ Ok(serde_json::json!({"cipher":B64.encode(cipher)}))
+}
+
+#[wasm_bindgen]
+pub fn encrypt_signed(input:&str)->Result<String,JsValue>{
+ let run=||->Result<String>{
+  ensure!(input.len()<=800000,"Request too large");
+  let request:serde_json::Value=serde_json::from_str(input)?;
+  Ok(serde_json::to_string(&encrypt_public(&request)?)?)
+ };
+ run().map_err(|_|JsValue::from_str("Encryption request rejected"))
 }

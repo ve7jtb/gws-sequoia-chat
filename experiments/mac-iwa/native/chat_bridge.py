@@ -31,6 +31,7 @@ FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-t
 
 from cert_store import FIELDS as CERT_FIELDS
 FIELDS.update(CERT_FIELDS)
+FIELDS['chat-encryption-complete']={'review','cipher'}
 
 def validate(request):
     op=request.get('op')
@@ -82,9 +83,9 @@ def browser_mime(request,sender,recipient):
 
 def crypto_prompt(op,service):
     """Fixed labels selected by the native route, never arbitrary browser text."""
-    if service not in ('Chat','Gmail') or op not in ('seal','open'):
+    if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','open'):
         raise ValueError('Unsupported cryptographic prompt')
-    action='Sign and encrypt' if op=='seal' else 'Decrypt and verify'
+    action='Sign' if op=='sign-browser' else ('Sign and encrypt' if op=='seal' else 'Decrypt and verify')
     return action+' '+service+(' email' if service=='Gmail' else ' bundle')
 
 class ChatBridge:
@@ -139,10 +140,68 @@ class ChatBridge:
                 return {'raw':packet['data'],'signature':packet['signature'],'encrypted':True}
             return result
         finally:pin[:]=b'\0'*len(pin)
+    def prepare_browser_signature(self,request,contact,peer,mime,service,space='Gmail'):
+        """Keep routing and review metadata on disk while WASM encrypts.
+
+        The signed body and attachments travel in bounded pipes, never a staged
+        plaintext file. The pending ticket includes the subject for send review. The random ticket binds completion to the native-selected contact
+        and service and expires after ten minutes. It does not authorize send.
+        """
+        signed=self.crypto('sign-browser',peer,mime,service=service)
+        rid=secrets.token_hex(24)
+        metadata={'service':service,'space':space,'contact':contact['id'],
+                  'recipient':contact['email'],'fingerprint':contact['fingerprint'],
+                  'subject':request['subject'],'created':time.time()}
+        self.chat.write_new(self.data/('encryption-'+rid+'.json'),json.dumps(metadata).encode())
+        return {'review':rid,'signed':base64.b64encode(signed).decode(),
+                'senderCertificate':base64.b64encode(Path(self.cfg['cert']).read_bytes()).decode(),
+                'recipientCertificate':base64.b64encode(peer.read_bytes()).decode(),
+                'recipientFingerprint':contact['fingerprint'],'recipientEmail':contact['email']}
+    def complete_browser_encryption(self,request):
+        """Stage bounded WASM ciphertext, preserving one-use native send review.
+
+        Browser encryption is part of the trusted application. The native host
+        cannot prove ciphertext plaintext equality without the recipient secret;
+        it binds routing to the ticket and rechecks current contact trust instead.
+        No extra signing operation or native encryption fallback is performed.
+        """
+        rid=request['review']
+        if not re.fullmatch('[a-f0-9]{48}',rid):raise ValueError('Invalid encryption ticket')
+        ticket=self.data/('encryption-'+rid+'.json')
+        meta=json.loads(ticket.read_text())
+        if time.time()-meta['created']>600:raise ValueError('Encryption ticket expired')
+        contact,peer=self.peer(meta['contact'])
+        if contact['email']!=meta['recipient'] or contact['fingerprint']!=meta['fingerprint']:raise ValueError('Contact changed')
+        cipher=base64.b64decode(request['cipher'],validate=True)
+        if not 1<=len(cipher)<=LIMIT:raise ValueError('Ciphertext limit')
+        # Inspect only public packet metadata; no PIN or private key is used.
+        check={'op':'check-ciphertext','peer':base64.b64encode(peer.read_bytes()).decode(),'payload':request['cipher']}
+        checked=subprocess.run([str(self.root/'runtime/sequoia-iwa-crypto')],input=json.dumps(check).encode(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
+        if checked.returncode or json.loads(checked.stdout).get('valid') is not True:raise ValueError('Invalid encrypted packet structure or recipient')
+        # Consume the ticket before staging: an uncertain completion cannot be
+        # retried into a second independently sendable draft.
+        ticket.unlink()
+        mail=meta['service']=='Gmail'
+        out=self.chat.private_dir(self.data/(('mail-draft-' if mail else 'draft-')+rid))
+        if mail:
+            from gmail_bridge import module
+            m=module(self)
+            encoded=base64.b64encode(cipher).decode()
+            armor=('-----BEGIN PGP MESSAGE-----\r\n\r\n'+'\r\n'.join(encoded[i:i+64] for i in range(0,len(encoded),64))+'\r\n-----END PGP MESSAGE-----\r\n').encode()
+            self.chat.write_new(out/'message.eml',m.encrypted_envelope(self.cfg['chat_email'],contact['email'],armor))
+        else:
+            self.chat.write_new(out/'message.pgp',cipher)
+            self.chat.write_new(out/'pq-mail-sender-key.pgp',Path(self.cfg['cert']).read_bytes())
+            own=self.chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
+            manifest={'sender':self.cfg['chat_email'],'recipient':contact['email'],'sender_fingerprint':own['fingerprint'],'recipient_fingerprint':contact['fingerprint'],'ciphertext_sha256':hashlib.sha256(cipher).hexdigest()}
+            self.chat.write_new(out/'manifest.json',json.dumps(manifest).encode())
+        self.chat.write_new(out/'review.json',json.dumps({'space':meta['space'],'created':time.time()}).encode())
+        return {'review':rid,'space':meta['space'],'recipient':contact['email'],'fingerprint':contact['fingerprint'],'subject':meta['subject']}
     def action(self,request):
         op=validate(request);chat=self.chat
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if op=='chat-encryption-complete':return self.complete_browser_encryption(request)
             if op in CERT_FIELDS:
                 from cert_store import action
                 return action(self,request)
@@ -215,13 +274,7 @@ class ChatBridge:
                 space=chat.space_name(request['space']);contact,peer=self.peer(request['contact'])
                 own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
                 mime=browser_mime(request,self.cfg['chat_email'],contact['email'])
-                sealed=self.crypto('seal',peer,mime)
-                rid=secrets.token_hex(24);out=chat.private_dir(self.data/('draft-'+rid))
-                chat.write_new(out/'message.pgp',sealed);chat.write_new(out/'pq-mail-sender-key.pgp',Path(self.cfg['cert']).read_bytes())
-                manifest={'sender':self.cfg['chat_email'],'recipient':contact['email'],'sender_fingerprint':own['fingerprint'],'recipient_fingerprint':contact['fingerprint'],'ciphertext_sha256':hashlib.sha256(sealed).hexdigest()}
-                chat.write_new(out/'manifest.json',json.dumps(manifest).encode())
-                chat.write_new(out/'review.json',json.dumps({'space':space,'created':time.time()}).encode())
-                return {'review':rid,'space':space,'recipient':contact['email'],'fingerprint':contact['fingerprint'],'subject':request['subject']}
+                return self.prepare_browser_signature(request,contact,peer,mime,'Chat',space)
             if op=='chat-send':
                 if not re.fullmatch('[a-f0-9]{48}',request['review']):raise ValueError('Invalid review')
                 draft=self.data/('draft-'+request['review']);review=json.loads((draft/'review.json').read_text())

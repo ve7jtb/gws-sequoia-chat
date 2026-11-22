@@ -75,8 +75,10 @@ impl<D:Decryptor> DecryptionHelper for BrowserOpen<D> {
   self.inner.decrypt(pk,sk,hint,decrypt)
  }
 }
-fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,payload:&[u8])->Result<Vec<u8>> {
- let sign=selected(&own,true)?;let kem=selected(&peer,false)?;let p=StandardPolicy::new();
+// Return only a verified signed packet stream. Encryption is a public operation
+// performed by the IWA; no PIN or secret key is included in this result.
+fn signed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,payload:&[u8])->Result<Vec<u8>> {
+ let sign=selected(&own,true)?;let p=StandardPolicy::new();
   let mut signed=Zeroizing::new(Vec::new());{
    let s=Signer::new(Message::new(&mut *signed),signer)?.build()?;
    let mut literal=LiteralWriter::new(s).build()?;literal.write_all(payload)?;literal.finalize()?;
@@ -86,6 +88,11 @@ fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,p
   let mut reader=VerifierBuilder::from_bytes(&signed)?.with_policy(&p,None,helper)?;
   let mut recovered=Zeroizing::new(Vec::new());reader.by_ref().take((LIMIT+1)as u64).read_to_end(&mut recovered)?;
   ensure!(recovered.as_slice()==payload,"Signed content mismatch");
+ Ok(signed.to_vec())
+}
+fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,payload:&[u8])->Result<Vec<u8>> {
+ let signed=signed_payload(signer,own,payload)?;
+ let kem=selected(&peer,false)?;let p=StandardPolicy::new();
   let recipients=peer.keys().with_policy(&p,None).alive().revoked(false).for_transport_encryption().filter(|k|k.key().fingerprint()==kem.fingerprint());
   let mut out=Vec::new();{
    let e=Encryptor::for_recipients(Message::new(&mut out),recipients).build()?;
@@ -94,6 +101,21 @@ fn sealed_payload<S:pgp::crypto::Signer+Send+Sync>(signer:S,own:Cert,peer:Cert,p
    // those packets in another LiteralWriter when inserting compression.
    c.write_all(&signed)?;c.finalize()?;
   }Ok(out)
+}
+// Public packet inspection prevents accidentally staging plaintext or a bundle
+// addressed to a different key. It cannot prove encrypted plaintext equality.
+fn check_ciphertext(peer:&Cert,cipher:&[u8])->Result<()> {
+ ensure!(!cipher.is_empty() && cipher.len()<=LIMIT,"Ciphertext limit");
+ let kem=selected(peer,false)?;
+ let pile=pgp::PacketPile::from_bytes(cipher)?;
+ let packets:Vec<_>=pile.children().collect();
+ ensure!(packets.len()==2,"One recipient and one encrypted packet required");
+ match packets[0] {
+  pgp::Packet::PKESK(p)=>ensure!(p.version()==6 && p.recipient()==Some(KeyHandle::from(kem.fingerprint())),"Wrong encrypted recipient"),
+  _=>bail!("Missing recipient")
+ }
+ match packets[1] {pgp::Packet::SEIP(p)=>ensure!(p.version()==2,"AEAD required"),_=>bail!("Missing encrypted data")}
+ Ok(())
 }
 // Public verification is deliberately independent of token configuration and PINs.
 // Sequoia checks cryptographic validity, certificate bindings and policy; the
@@ -157,6 +179,10 @@ fn execute()->Result<()> {
   let result=verify_public(&v).unwrap_or_else(|_|serde_json::json!({"signatures":[{"status":"invalid"}]}));
   println!("{}",result);return Ok(());
  }
+ if field(&v,"op")?=="check-ciphertext" {
+  check_ciphertext(&public(field(&v,"peer")?)?,&B64.decode(field(&v,"payload")?)?)?;
+  println!("{}",serde_json::json!({"valid":true}));return Ok(());
+ }
  let pin=Zeroizing::new(v["pin"].take().as_str().context("PIN required")?.as_bytes().to_vec());
  let cfg=&v["config"];let path=|n|->Result<PathBuf>{Ok(PathBuf::from(field(cfg,n)?))};
  let config=Config{python:path("python")?,adapters:path("adapters")?,openssl:path("openssl")?,provider:path("provider")?,module:path("module")?,serial:field(cfg,"serial")?.into()};
@@ -174,6 +200,10 @@ fn execute()->Result<()> {
   println!("{}",serde_json::json!({"data":B64.encode(&*clear),"signature":B64.encode(helper.signatures)}));return Ok(());
  }
  let result=match field(&v,"op")?{
+ "sign-browser"=>{
+  let signer=Level3Signer::new(selected(&own,true)?,Pkcs11Operation::new(config,pin)?)?;
+  signed_payload(signer,own,&payload)?
+ },
  "seal"=>{
   let sign=selected(&own,true)?;
   let signer=Level3Signer::new(sign.clone(),Pkcs11Operation::new(config,pin)?)?;
@@ -245,6 +275,22 @@ mod tests {
    std::fs::write(std::path::Path::new(&folder).join("browser-open.json"),serde_json::to_vec(&serde_json::json!({"packet":{"raw":B64.encode(clear),"signature":B64.encode(signature),"encrypted":true,"expectedEmail":"alice@example.invalid","expectedFingerprint":public.fingerprint().to_hex(),"recipient":"bob@example.invalid"},"material":{"certificates":[B64.encode(public.to_vec().unwrap())],"bindings":[{"email":"alice@example.invalid","fingerprint":public.fingerprint().to_hex()}],"saved":[public.fingerprint().to_hex()]}})).unwrap()).unwrap();
   }
   let mut bad=cipher;let n=bad.len();bad[n-8]^=1;assert!(open(&bad).is_err());
+ }
+ #[test] fn browser_encryption_fixture_and_packet_guards() {
+  let alice=identity();let bob=identity();let mallory=identity();
+  let payload=b"From: test@example.invalid\r\nTo: test@example.invalid\r\nSubject: Browser encryption\r\n\r\nExact MIME bytes\0\xff";
+  let signed=signed_payload(key(&alice,true),alice.clone(),payload).unwrap();
+  let sealed=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
+  check_ciphertext(&bob,&sealed).unwrap();
+  assert!(check_ciphertext(&mallory,&sealed).is_err());
+  assert!(check_ciphertext(&bob,&signed).is_err());
+  if let Ok(folder)=std::env::var("IWA_ENCRYPTION_FIXTURE_DIR") {
+   let dir=std::path::Path::new(&folder);std::fs::create_dir_all(dir).unwrap();
+   std::fs::write(dir.join("request.json"),serde_json::to_vec(&serde_json::json!({"signed":B64.encode(signed),"payload":B64.encode(payload),"senderCertificate":B64.encode(alice.clone().strip_secret_key_material().to_vec().unwrap()),"recipientCertificate":B64.encode(bob.clone().strip_secret_key_material().to_vec().unwrap()),"recipientFingerprint":bob.fingerprint().to_hex(),"recipientEmail":"test@example.invalid"})).unwrap()).unwrap();
+   // Disposable software test keys only; the test runner owns a private temp dir.
+   std::fs::write(dir.join("recipient-secret.pgp"),bob.as_tsk().to_vec().unwrap()).unwrap();
+   std::fs::write(dir.join("sender-public.pgp"),alice.strip_secret_key_material().to_vec().unwrap()).unwrap();
+  }
  }
  #[test] fn signed_compressed_encrypted_roundtrip_and_rejections(){
   let alice=identity();let bob=identity();let mallory=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");

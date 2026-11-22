@@ -547,3 +547,48 @@ fixtures for the additional Proton test; private mail is never bundled. The
 three native crypto tests generate only temporary software keys/public fixtures.
 The Python suite currently passes 31 tests with two optional native pipeline
 tests skipped when their external fixtures/runtime are not configured.
+
+### Browser OpenPGP encryption (preview 0.7)
+
+The baseline Sequoia/RustCrypto WASM worker now encrypts outgoing Level 3 v6
+messages with ML-KEM-768 + X25519. Native YubiKey signing returns an independently
+verified signed packet stream; WASM verifies it again against the exact composed
+MIME, checks the selected recipient fingerprint and current mailbox binding,
+compresses the signed packets with ZLIB, and encrypts with fresh Web Crypto-backed
+randomness. No private key, PIN or Google credential enters the browser.
+
+The native helper retains YubiKey signing and authenticated decryption, Google
+transport, saved trust, and explicit one-use send reviews. It checks that returned
+ciphertext has one v6 recipient matching the selected hybrid key and one AEAD
+packet. A ten-minute ticket binds the browser encryption completion to the
+native-selected recipient, service and destination; trust is checked again before
+staging. During the signing/encryption handoff, the owner-only ticket stores
+routing and review metadata, including the subject, but no body or attachment
+plaintext. Successful completion deletes it; an interrupted operation can leave
+an expired ticket on disk. As with any client-side encryption, a compromised frontend could encrypt
+different content: public packet inspection cannot establish plaintext equality
+without the recipient's private key. The signed IWA and its worker are part of the
+trusted application. Failures never retry the YubiKey or fall back to native
+outgoing encryption.
+
+Offline validation includes baseline browser-target WASM encryption decrypted and
+signature-verified by native Sequoia, exact plaintext comparison, fresh ciphertext
+randomness, and rejection of wrong recipient fingerprints/mailboxes, altered signed
+content, malformed packets, secret certificates and oversized input. The native
+packet guard rejects plaintext and wrong-recipient ciphertext. Completion tests
+cover expired tickets, changed contacts, forbidden routing overrides and replay.
+On **2026-11-22**, preview **0.7.0** passed live IWA → Sequoia tests through both
+Gmail and Google Chat. Received ciphertext matched the sent copies exactly.
+Sequoia decrypted both messages and verified their ML-DSA-65 + Ed25519 signatures
+against the expected full sender fingerprint. Signed From/To and subjects,
+plain-text and HTML alternatives (including Unicode), attachment filenames and
+all **308 binary attachment bytes** matched the expected fixtures exactly.
+HTML was compared as source on the CLI peer, not rendered there. No keys or touch
+policies were changed. These tests used baseline WASM encryption; the earlier
+0.6.2 composer tests used native encryption.
+
+The complete offline run passed 36 Python tests (including both native pipeline
+fixtures), four native Rust tests, seven MIME worker tests and eight public
+verification cases, including original and tampered Proton messages. Two fresh
+WASM encryptions independently decrypted and verified with native Sequoia and
+passed the native recipient/AEAD packet guard.
