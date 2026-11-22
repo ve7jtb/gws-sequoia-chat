@@ -8,3 +8,7 @@ __pycache__/
 app/.well-known/manifest.webmanifest
 app/icon.svg
 crypto/target/
+
+app/wasm/
+app/wasm-fixtures.json
+app/wasm-wide/

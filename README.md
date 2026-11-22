@@ -558,3 +558,31 @@ The experiment requires local native dependencies, an unpacked extension and
 experimental Canary flags. It does not establish production macOS IWA support
 or native Web Smart Card support. Local credentials, device identifiers, browser
 profiles, development signing keys and hardware transcripts are excluded.
+
+### Experimental IWA WebAssembly verification
+
+Mac preview 0.5.2 includes a public-only Sequoia WASM verifier in a browser
+worker. Eight comparisons with the native OpenSSL verifier passed in the
+installed IWA: valid/altered/missing-certificate cases for v4 and Level 3 hybrid
+v6, plus valid original and invalid altered Proton messages. Saved certificates,
+trust and the original message stayed unchanged. Normal mail verification, MIME
+and encryption remain native; this is an explicit diagnostic, not a production
+backend switch. **Baseline WASM remains the default**; wide arithmetic runs only
+when its explicit benchmark button is selected.
+
+The wide-arithmetic build passed all eight cases in Canary 160 on Apple Silicon,
+using `--js-flags=--wasm-wide_arithmetic`. Median milliseconds per verification:
+
+| Case | Baseline | Wide arithmetic |
+|---|---:|---:|
+| v4 valid | 0.120 | 0.120 |
+| Level 3 hybrid v6 valid | 0.420 | 0.400 |
+| Proton original (valid) | 0.080 | 0.080 |
+| Proton altered body (invalid) | 0.120 | 0.120 |
+
+Each variant ran five warmups and 21 alternating rounds of five calls per case;
+every result matched the native expected result. The approximately 5% median
+improvement for valid hybrid v6 has overlapping timing ranges and does not
+establish a general speedup. The wide module is 24,359 bytes smaller. Original
+messages, saved certificates and trust were unchanged; no token operations ran.
+See [build instructions, complete results and limitations](experiments/mac-iwa/wasm/README.md).

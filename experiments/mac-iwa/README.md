@@ -462,3 +462,19 @@ To remove the experiment, close its Canary profile, unregister its dedicated
 NativeMessagingHosts manifest and remove the dedicated installed helper and
 profile only when you no longer need their local test records. No YubiKey reset
 is involved. Do not remove your usual Chrome profile or PQ Mail installation.
+
+## Verification-only WebAssembly prototype
+
+Preview 0.5.2 includes a separate browser-worker diagnostic for Sequoia detached
+signature verification using RustCrypto. Eight native-versus-WASM comparison
+cases passed under Node and visibly in the installed IWA, including v4, Level 3 hybrid v6 and the original/altered
+Proton message. MIME, encryption and normal mail verification remain native.
+See [build instructions, limits and test scope](wasm/README.md). Private Proton
+vectors are selected locally and are not bundled or published.
+
+The baseline verifier remains the default diagnostic. Wide arithmetic is an
+explicit comparison, never an automatic replacement or fallback. Both variants
+passed all eight v4/hybrid-v6/Proton tests in the installed IWA. Valid hybrid v6
+median time was 0.420 ms baseline versus 0.400 ms wide; v4 and Proton medians
+were unchanged. Short-call timer quantization and overlapping timing ranges
+limit the conclusion. See the [complete benchmark and reproduction notes](wasm/README.md).
