@@ -24,7 +24,7 @@ chrome.runtime.onConnectExternal.addListener(port => {
     if(['google-oauth-test','google-oauth-services'].includes(request?.op)){if(native||nativeOwner){port.postMessage({type:'error',message:'Another operation is in progress.'});return;}startGoogleOAuth(port,request.op==='google-oauth-services');return;}
     if(request?.op==='vault-prf'){if(nativeOwner||native)return;startPrf(port,request);return;}
     // Never proxy arbitrary methods, shell commands, paths, PINs or payloads.
-    if (nativeOwner || native || !request || JSON.stringify(request).length > 500000 || !['chat-vault-ecdh','chat-vault-material','chat-vault-decapsulate','status','test','chat-state','chat-verification-material','chat-decrypt','chat-cert-list','chat-cert-untrust','chat-cert-delete','chat-preview','chat-trust','chat-prepare','chat-sign-digest','chat-encryption-complete','chat-browser-prepare','chat-browser-export','chat-browser-cert-save','chat-browser-cert-trust'].includes(request.op)) {
+    if (nativeOwner || native || !request || JSON.stringify(request).length > 500000 || !['chat-vault-ecdh','chat-vault-material','chat-vault-decapsulate','status','test','chat-state','chat-certificate-migration','chat-signing-material','chat-sign-digest','chat-decap'].includes(request.op)) {
       port.postMessage({type:'error',message:'Busy or unsupported operation.'}); return;
     }
     try {

@@ -42,7 +42,7 @@ function setup() {
 
 test('late prepare-port cleanup cannot unlock a newer digest-signing connection', () => {
   const s = setup(), prepare = s.client();
-  prepare.onMessage.emit({op: 'chat-browser-prepare'});
+  prepare.onMessage.emit({op: 'chat-signing-material'});
   const first = s.connections[0];
   first.onMessage.emit({type: 'result', data: {review: 'public ticket'}});
   const signing = s.client();
@@ -124,4 +124,20 @@ test('origin boundary and existing PRF/OAuth delegation are preserved', () => {
   blocked.onMessage.emit({op: 'vault-prf'});
   blocked.onMessage.emit({op: 'google-oauth-test'});
   assert.equal(s.delegated.length, 2, 'Native owner keeps existing ceremony exclusion');
+});
+
+// The browser now owns public-certificate trust. Stale callers cannot use the
+// bridge to mutate legacy trust or stage/export a native send ticket.
+test('certificate mutation and draft routes never reach Native Messaging', () => {
+  const s = setup();
+  for (const op of ['chat-preview','chat-trust','chat-cert-list','chat-cert-untrust',
+    'chat-cert-delete','chat-verification-material','chat-decrypt',
+    'chat-browser-prepare','chat-browser-export','chat-browser-cert-save',
+    'chat-browser-cert-trust','chat-encryption-complete']) {
+    const client = s.client(); client.onMessage.emit({op});
+    assert.equal(client.messages.at(-1).type, 'error');
+  }
+  assert.equal(s.connections.length, 0);
+  const migration = s.client(); migration.onMessage.emit({op:'chat-certificate-migration'});
+  assert.equal(s.connections.length, 1);
 });

@@ -7,7 +7,24 @@ This is an experimental integration, not an official Google or Sequoia product. 
 The separate [signed Mac IWA experiment](experiments/mac-iwa/README.md) now also
 constructs Level 3 v6 OpenPGP signatures in a browser WASM worker. Its native
 PKCS#11 bridge receives only the signing digest and returns hybrid signature
-components. On **2026-11-23**, the installed **0.10.1** preview passed a physical
+components. Preview **0.11** moves public certificates and per-email/full-primary-
+fingerprint trust into the IWA's IndexedDB store. Existing native public records
+can be reviewed and copied once; subsequent deletion or trust removal is not
+undone by a restart or repeated migration. Saving a certificate and granting
+trust remain separate actions. Compose drafts, send reviews and PGP/MIME wrapping
+also stay in browser memory, while fixed-identity YubiKey signing and
+decapsulation remain native. Automated tests and the installed 0.11 migration/
+restart checks pass: two reviewed public certificates and their two existing
+email/fingerprint trust bindings persisted in a fresh app window. A subsequent
+**0.11.2 physical-YubiKey test** used those migrated certificates for offline
+Compose signing/encryption and local encrypted-message decryption/verification.
+Independent Sequoia verified the exported message; the IWA verified the incoming
+hybrid signature and its 308-byte attachment. All 24 slot records and PIN/touch
+policies were unchanged, with no email sent. Explicit encrypted `.eml` export
+and local encrypted-file opening are now available without Google sign-in. See
+the [new storage boundary and validation](experiments/mac-iwa/README.md#iwa-owned-certificates-and-trust-011-preview).
+
+In the earlier hardware run on **2026-11-23**, the installed **0.10.1** preview passed a physical
 YubiKey test through its actual **Compose interface**: native Sequoia `sq`
 independently decrypted the WASM-encrypted message and verified its hybrid
 signature, signed headers, plain text, formatted HTML and all 1,024 attachment

@@ -6,7 +6,8 @@ import gmail_bridge as g
 import cert_store
 def check_fixture(kind):
  fixture=json.loads(Path(os.environ['IWA_PUBLIC_TEST_FIXTURES']+'/'+kind+'.json').read_text())
- email='test@example.invalid' if kind=='v6' else 'sender@example.invalid'
+ # Both fixtures self-certify the same mailbox as their MIME From header.
+ email='sender@example.invalid'
  raw=b'From: sender@example.invalid\r\nSubject: Signed public fixture\r\nContent-Type: multipart/signed; boundary=outer; protocol="application/pgp-signature"\r\n\r\n--outer\r\n'+base64.b64decode(fixture['payload'])+b'\r\n--outer\r\nContent-Type: application/pgp-signature\r\nContent-Transfer-Encoding: base64\r\n\r\n'+fixture['signature'].encode()+b'\r\n--outer--\r\n'
  raw=raw.replace(b'From: sender@example.invalid',('From: '+email).encode())
  with tempfile.TemporaryDirectory() as d:

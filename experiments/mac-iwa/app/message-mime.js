@@ -79,7 +79,13 @@ export async function readMessage(packet,material,verify){
  const {signatures}=await verify({payload:b64(shape.payload),signature:b64(shape.signature),certificates});
  const fromHeaders=outer.headers.filter(h=>h.key.toLowerCase()==='from');
  const email=fromHeaders.length===1&&!/[;,]/.test(fromHeaders[0].value.replace(/"[^"]*"/g,''))?(outer.from?.address||'').toLowerCase():'';
- for(const sig of signatures){sig.trusted=!!sig.fingerprint&&material.bindings.some(b=>b.fingerprint.toUpperCase()===sig.fingerprint&&b.email.toLowerCase()===email);if(sig.status==='valid'&&sig.certificate)result.certificateActions.push({fingerprint:sig.fingerprint,email,canTrust:(sig.emails||[]).some(e=>e.toLowerCase()===email),saved:material.saved.includes(sig.fingerprint),trusted:sig.trusted,algorithm:sig.algorithm});delete sig.certificate;delete sig.emails;}
+ // A valid signature must carry the current self-certified sender mailbox on
+ // the certificate actually used. An older saved same-primary binding cannot
+ // bless an attached certificate whose mailbox was revoked or expired. Invalid
+ // candidates retain only the separate non-authenticating saved-trust indicator.
+ // Only a valid signature returns its canonical public certificate for an
+ // explicit save/trust action. Invalid-signature candidates never carry it.
+ for(const sig of signatures){sig.trusted=!!sig.fingerprint&&material.bindings.some(b=>b.fingerprint.toUpperCase()===sig.fingerprint&&b.email.toLowerCase()===email)&&(sig.status!=='valid'||(sig.emails||[]).some(e=>e.toLowerCase()===email));if(sig.status==='valid'&&sig.certificate)result.certificateActions.push({fingerprint:sig.fingerprint,email,canTrust:(sig.emails||[]).some(e=>e.toLowerCase()===email),saved:material.saved.includes(sig.fingerprint),trusted:sig.trusted,algorithm:sig.algorithm,certificate:sig.certificate});delete sig.certificate;delete sig.emails;}
  result.signatures=signatures;result.signatureStatus=signatures.every(s=>s.status==='valid')?'valid':signatures.some(s=>s.status==='invalid')?'invalid':'unknown-key';
  result.certificateTrust=signatures.every(s=>s.trusted)?'trusted':signatures.some(s=>!s.fingerprint)?'unknown':'untrusted';result.verified=result.signatureStatus==='valid';
  result.warning=result.signatureStatus==='invalid'?'WARNING: Invalid signature. This message may have been altered or forged. Saved certificate trust does not authenticate it.':'';

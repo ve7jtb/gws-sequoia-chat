@@ -1,6 +1,6 @@
 # Experimental Sequoia WASM verifier
 
-The baseline module implements public signature verification/encryption,
+The baseline module implements public-certificate inspection, signature verification/encryption,
 authenticated session-key decryption, vault wrapping and split-phase OpenPGP
 signing-packet construction. It never receives a PIN or long-term signing secret.
 A dedicated signing worker prepares the v6 digest, waits for the fixed native
@@ -15,6 +15,45 @@ by that backend. Long-term private-key signing operations remain native; this is
 not approval to add software signing secrets to that backend. Saved certificate
 trust remains a separate decision. Earlier preview sections below describe the
 successive verification/encryption/decryption milestones.
+
+## Public-certificate inspection and browser trust (0.11)
+
+`inspect_public` accepts one bounded public v4 or v6 certificate and returns its
+canonical public encoding, full primary fingerprint, packet version, algorithms,
+currently valid self-certified email addresses and Level 3 hybrid sending
+capability. It rejects secret/private-key packets, a second armored block,
+multiple binary certificates, unsupported versions and oversized input. An
+expired or revoked certificate can remain visible in inventory, but supplies no
+currently valid email binding or hybrid sending capability.
+
+Inspection runs in a dedicated same-origin worker and neither saves a certificate
+nor grants trust. The IWA's separate IndexedDB store owns those actions, with an
+explicit email/full-primary-fingerprint trust binding. Incoming v4 verification
+is supported; outgoing remains Level 3 hybrid v6. Native helpers retain only the
+fixed own identity and private signing/decapsulation responsibilities for this
+path, alongside their existing vault/authorization functions. They no longer
+supply the recipient trust store or receive certificate-save/trust requests.
+See the [IWA storage, migration and test scope](../README.md#iwa-owned-certificates-and-trust-011-preview).
+
+Four Rust inspection tests cover secret/multiple/oversized certificates, unsigned
+email claims, expiration/revocation and v4 verification-only capability.
+[Browser store tests](../tests/certificates-store.test.mjs) cover explicit
+one-time migration, atomic revisions, per-email trust and removed-trust
+preservation. [UI routing tests](../tests/browser-certificate-routing.test.mjs)
+exercise the real reader/save functions, including rejected candidate-only
+signatures and late results after lock or trust changes.
+
+The [actual worker interoperability test](../tests/signing-worker-interop.mjs)
+now wraps its signed/encrypted output using the browser's PGP/MIME constructor,
+extracts the exact ciphertext and independently decrypts/verifies it with native
+Sequoia `sq`. Unicode text, HTML and all 1,024 attachment bytes match. This is
+software-fixture validation. The separate installed 0.11 public-store migration
+and restart checks passed. A subsequent physical-YubiKey 0.11.2 run also passed
+Compose signing/encryption and local encrypted-email decryption/verification
+using the migrated trust, with independent Sequoia verification of the export.
+All 24 slot records and policies were unchanged. Compose ciphertext/reviews
+remain in browser memory; only explicit **Save encrypted email…** downloads
+ciphertext. The native helper does not stage the browser-generated message.
 
 ## Build and reproduce
 

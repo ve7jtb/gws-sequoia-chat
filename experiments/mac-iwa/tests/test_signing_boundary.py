@@ -1,5 +1,5 @@
-"""No-token regression tests for the narrowed native digest-signing authority."""
-import base64,hashlib,json,sys,tempfile,time,unittest
+"""No-token tests for the fixed signing authority after IWA trust migration."""
+import base64,json,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
@@ -11,75 +11,66 @@ class SigningBoundary(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
   self.b=ChatBridge.__new__(ChatBridge);self.b.root=self.b.data=Path(self.tmp.name)
-  self.own=self.b.data/'own';self.peer=self.b.data/'peer'
-  self.own.write_bytes(b'configured public sender');self.peer.write_bytes(b'trusted public recipient')
-  self.b.cfg={'cert':str(self.own),'chat_email':'sender@example.invalid'}
-  self.contact={'id':'contact','email':'recipient@example.invalid','fingerprint':'B'*64}
-  self.b.peer=Mock(return_value=(self.contact,self.peer));self.b.chat=Mock()
-  self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
+  self.own=self.b.data/'own';self.own.write_bytes(b'configured public sender')
+  self.b.cfg={'cert':str(self.own),'chat_email':'sender@example.invalid','serial':'123','app':'fixed-app'}
+  self.b.chat=Mock();self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
   self.b.crypto=Mock(return_value={'signature':'test response'})
- def prepare(self,service='Chat'):
+ def prepare(self):
   with patch('signing.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'signingFingerprint':'C'*64}).encode())):
-   return signing.prepare(self.b,{'subject':'Synthetic test'},self.contact,self.peer,service,'spaces/test')
- def request(self,prepared):
-  return {'op':'chat-sign-digest','review':prepared['review'],'requestId':'A'*64,'hashAlgorithm':10,'signingFingerprint':'C'*64,'digest':base64.b64encode(bytes(64)).decode()}
- def test_prepare_and_sign_accept_no_body_pin_slot_or_key_override(self):
-  for op in ('chat-prepare','chat-mail-prepare','chat-browser-prepare'):
-   request={'op':op,'contact':'id','subject':'Subject'}
-   if op=='chat-prepare':request['space']='spaces/test'
-   if op=='chat-browser-prepare':request.update(space='spaces/test',service='Chat')
-   self.assertEqual(validate(request),op)
-   with self.assertRaises(ValueError):validate({**request,'mime':'body'})
+   return signing.prepare(self.b)
+ def request(self,p):
+  return {'op':'chat-sign-digest','review':p['review'],'requestId':'A'*64,'hashAlgorithm':10,'signingFingerprint':'C'*64,'digest':base64.b64encode(bytes(64)).decode()}
+ def test_prepare_and_sign_have_no_recipient_pin_or_slot_authority(self):
+  self.assertEqual(validate({'op':'chat-signing-material'}),'chat-signing-material')
+  for name in ('mime','payload','pin','slot','serial','senderCertificate','recipient','contact','subject','service','config'):
+   with self.assertRaises(ValueError):validate({'op':'chat-signing-material',name:'substitute'})
   p=self.prepare();r=self.request(p);self.assertEqual(validate(r),'chat-sign-digest')
-  for name in ('mime','payload','pin','slot','serial','senderCertificate','config'):
+  for name in ('mime','payload','pin','slot','serial','senderCertificate','config','contact'):
    with self.assertRaises(ValueError):validate({**r,name:'substitute'})
   for alg in (True,9,'10'):
    with self.assertRaises(ValueError):validate({**r,'hashAlgorithm':alg})
-  self.assertNotIn('signed',p);self.assertEqual(p['senderEmail'],'sender@example.invalid')
-  self.assertEqual(p['subject'],'Synthetic test');self.b.crypto.assert_not_called()
- def test_success_calls_only_one_digest_and_uses_completion_only_ticket(self):
+  self.assertEqual(set(p),{'review','senderCertificate','senderEmail','signingFingerprint'})
+  self.b.crypto.assert_not_called()
+ def test_success_calls_one_digest_and_leaves_no_completion_ticket(self):
   p=self.prepare();r=self.request(p)
+  meta=json.loads((self.b.data/('signing-'+p['review']+'.json')).read_text())
+  self.assertEqual(set(meta),{'created','authorityHash','signingFingerprint'})
   self.assertEqual(signing.sign(self.b,r),{'signature':'test response'})
-  self.b.crypto.assert_called_once_with('sign-digest',self.peer,bytes(64),service='Chat',signing=r)
-  ticket=self.b.data/('encryption-'+p['review']+'.json')
-  meta=json.loads(ticket.read_text());self.assertEqual(meta['stage'],'signed')
-  self.assertNotIn('digest',meta);self.assertNotIn('requestId',meta)
-  with self.assertRaises(ValueError):signing.sign(self.b,r)
+  self.b.crypto.assert_called_once_with('sign-digest',self.own,bytes(64),service='Message',signing=r)
+  self.assertFalse(list(self.b.data.glob('signing-*.json')))
+  self.assertFalse(list(self.b.data.glob('encryption-*.json')))
+  with self.assertRaises(FileNotFoundError):signing.sign(self.b,r)
   self.assertEqual(self.b.crypto.call_count,1)
- def test_private_failure_cannot_be_retried_or_completed(self):
+ def test_private_failure_cannot_be_retried(self):
   p=self.prepare();r=self.request(p);self.b.crypto.side_effect=ValueError('Cancelled or failed')
   with self.assertRaises(ValueError):signing.sign(self.b,r)
   with self.assertRaises(FileNotFoundError):signing.sign(self.b,r)
-  with self.assertRaises(FileNotFoundError):signing.ticket(self.b,p['review'],'signed')
   self.assertEqual(self.b.crypto.call_count,1)
- def test_invalid_key_hash_and_digest_rejected_before_prompt(self):
+ def test_invalid_key_hash_digest_rejected_before_prompt(self):
   p=self.prepare();r=self.request(p)
   for key,value in [('digest','YQ=='),('signingFingerprint','D'*64),('requestId','a'*64),('hashAlgorithm',9)]:
    with self.assertRaises(ValueError):signing.sign(self.b,{**r,key:value})
   self.b.crypto.assert_not_called()
- def test_expiry_or_sender_recipient_change_prevents_signing(self):
-  p=self.prepare();r=self.request(p);path=self.b.data/('encryption-'+p['review']+'.json')
+ def test_expiry_and_native_identity_changes_prevent_signing(self):
+  p=self.prepare();r=self.request(p);path=self.b.data/('signing-'+p['review']+'.json')
   meta=json.loads(path.read_text());meta['created']=time.time()-601;path.write_text(json.dumps(meta))
   with self.assertRaises(ValueError):signing.sign(self.b,r)
-  for target in (self.own,self.peer):
-   p=self.prepare();r=self.request(p);original=target.read_bytes();target.write_bytes(b'new cert')
+  p=self.prepare();r=self.request(p);original=self.own.read_bytes();self.own.write_bytes(b'new cert')
+  with self.assertRaises(ValueError):signing.sign(self.b,r)
+  self.own.write_bytes(original)
+  for key in ('serial','app','chat_email'):
+   p=self.prepare();r=self.request(p);original=self.b.cfg[key];self.b.cfg[key]='changed'
    with self.assertRaises(ValueError):signing.sign(self.b,r)
-   target.write_bytes(original)
+   self.b.cfg[key]=original
   self.b.crypto.assert_not_called()
- def test_identity_change_during_pin_dialog_cannot_complete(self):
+ def test_identity_change_during_pin_cannot_return_signature(self):
   p=self.prepare();r=self.request(p)
   self.b.crypto.side_effect=lambda *a,**k:self.own.write_bytes(b'new cert')
   with self.assertRaises(ValueError):signing.sign(self.b,r)
-  with self.assertRaises(FileNotFoundError):signing.ticket(self.b,p['review'],'signed')
- def test_unsigned_ticket_cannot_stage_ciphertext(self):
-  p=self.prepare()
-  with self.assertRaises(ValueError):self.b.complete_browser_encryption({'review':p['review'],'cipher':'YQ=='})
- def test_offline_prepare_never_receives_mime_or_touches_network(self):
-  import direct_transport
-  self.b.chat.space_name.side_effect=lambda x:x
-  self.b.prepare_browser_signature=Mock(return_value={'review':'prepared'})
-  r={'op':'chat-browser-prepare','service':'Chat','space':'spaces/test','contact':'contact','subject':'Test'}
-  self.assertEqual(direct_transport.action(self.b,r),{'review':'prepared'})
-  self.b.prepare_browser_signature.assert_called_once_with(r,self.contact,self.peer,'Chat','spaces/test')
+  with self.assertRaises(FileNotFoundError):signing.ticket(self.b,p['review'])
+ def test_signing_label_names_algorithm_without_untrusted_recipient(self):
+  from chat_bridge import crypto_prompt
+  self.assertEqual(crypto_prompt('sign-digest','Message'),'Sign message — ML-DSA-65 + Ed25519')
+  with self.assertRaises(ValueError):crypto_prompt('open','Message')
 
 if __name__=='__main__':unittest.main()

@@ -49,3 +49,15 @@ test('Gmail exact rewritten encrypted envelope permits text/plain ciphertext onl
  const raw='Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\n-----BEGIN PGP MESSAGE-----\r\n\r\nYQ==\r\n-----END PGP MESSAGE-----\r\n--x\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--x--\r\n';
  assert.equal(envelope(Buffer.from(raw)).kind,'encrypted');assert.throws(()=>envelope(Buffer.from(raw.replace('Version: 1','Version: 2'))));
 });
+
+// A valid signature on a newer attached certificate must not inherit the older
+// saved certificate's email binding when that mailbox is no longer certified.
+test('valid signature without a current sender mailbox stays untrusted',async()=>{
+ const fp='A'.repeat(64),material={certificates:[],saved:[fp],bindings:[{email:'sender@example.invalid',fingerprint:fp}]};
+ const verify=async()=>({signatures:[{status:'valid',fingerprint:fp,algorithm:'test',certificate:'YQ==',emails:['other@example.invalid']}]});
+ const mime=b64(Buffer.from('From: sender@example.invalid\r\nContent-Type: multipart/signed; protocol="application/pgp-signature"; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nBody\r\n--x\r\nContent-Type: application/pgp-signature\r\n\r\na\r\n--x--\r\n'));
+ const signed=await readMessage({raw:mime},material,verify);
+ assert.equal(signed.signatureStatus,'valid');assert.equal(signed.certificateTrust,'untrusted');assert.equal(signed.certificateActions[0].canTrust,false);
+ const raw=b64(Buffer.from('From: sender@example.invalid\r\nTo: recipient@example.invalid\r\nContent-Type: text/plain\r\n\r\nBody'));
+ await assert.rejects(readMessage({raw,encrypted:true,signature:'YQ==',expectedFingerprint:fp,expectedEmail:'sender@example.invalid',recipient:'recipient@example.invalid'},material,verify),/trust checks/);
+});

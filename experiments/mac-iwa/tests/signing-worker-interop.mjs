@@ -6,7 +6,8 @@ import path from 'node:path';
 import {Worker} from 'node:worker_threads';
 import {spawnSync} from 'node:child_process';
 import {signAndEncrypt} from '../app/signing-session.js';
-import {readMessage} from '../app/message-mime.js';
+import {readMessage,envelope,bytes64} from '../app/message-mime.js';
+import {gmailEnvelope} from '../app/compose-review.js';
 
 const directory=process.argv[2],fixture=process.env.IWA_SIGNING_FIXTURE_BIN,sq=process.env.TEST_SQ;
 assert(directory&&fixture&&sq,'Disposable fixture directory, IWA_SIGNING_FIXTURE_BIN and TEST_SQ required');
@@ -44,7 +45,16 @@ const native=async request=>{
 const result=await signAndEncrypt(material,compose,native,options);
 assert.equal(nativeCalls,1);
 const cipher=path.join(directory,'worker-encrypted.pgp'),clear=path.join(directory,'worker-decrypted.mime');
-fs.writeFileSync(cipher,Buffer.from(result.cipher,'base64'),{mode:0o600});
+// Exercise the actual IWA-owned PGP/MIME transport wrapper before native sq.
+// The envelope exposes only generic headers and must not alter the exact WASM
+// ciphertext. No native draft/export route or account credential is involved.
+const outgoing=gmailEnvelope(compose.sender,compose.recipient,result.cipher);
+const transport=bytes64(outgoing),extracted=envelope(transport);
+assert.equal(extracted.kind,'encrypted');
+assert.deepEqual(Buffer.from(extracted.cipher),Buffer.from(result.cipher,'base64'));
+assert.ok(!new TextDecoder().decode(transport).includes(compose.subject));
+fs.writeFileSync(path.join(directory,'worker-encrypted.eml'),transport,{mode:0o600});
+fs.writeFileSync(cipher,extracted.cipher,{mode:0o600});
 const verified=spawnSync(sq,['--home=none','--cert-store=none','--key-store=none','--overwrite','decrypt',
  '--recipient-file',path.join(directory,'recipient-secret.pgp'),'--signer-file',path.join(directory,'sender-public.pgp'),
  '--output',clear,cipher],{encoding:'utf8'});
@@ -64,4 +74,4 @@ for(const change of [{sender:'wrong@example.invalid'},{recipient:'wrong@example.
 await assert.rejects(signAndEncrypt(material,compose,async request=>{
  const response=await native(request);response.mldsa65=Buffer.alloc(3309).toString('base64');return response;
 },options));
-console.log('PASS real signing worker: one digest-only callback; native sq decryption and hybrid verification; Unicode/plain/HTML/attachment recovery; pre-PIN metadata/size rejection; altered-component rejection.');
+console.log('PASS real signing worker: one digest-only callback; IWA PGP/MIME wrapper preserves exact ciphertext; native sq decryption and hybrid verification; Unicode/plain/HTML/attachment recovery; pre-PIN metadata/size rejection; altered-component rejection.');

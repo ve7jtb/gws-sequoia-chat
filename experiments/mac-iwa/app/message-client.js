@@ -6,14 +6,13 @@ function signingWorkerURL(){return signingWorkerPolicy?signingWorkerPolicy.creat
 // A fresh worker per message bounds lifetime and drops decrypted content on
 // completion. A timeout never retries hardware or falls back to native verify.
 const messageWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-message-worker',{createScriptURL:url=>{if(url!=='/message-worker.js')throw Error('Unexpected worker');return url;}});
-function processMessage(packet,material,compose,encrypt){return new Promise((resolve,reject)=>{
- if(busy){reject(Error('An operation is already running.'));return;}
- busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);$('transport').disabled=true;$('busy').hidden=false;
+// The unadorned worker RPC also serves certificate actions inside an already
+// locked UI operation. Re-verification uses the captured message bytes, never
+// a UI-supplied claim that a certificate signed the message.
+function runMessageWorker(packet,material,compose,encrypt){return new Promise((resolve,reject)=>{
  let worker,timer,finished=false;
  const finish=(error,result)=>{
-  if(finished)return;finished=true;clearTimeout(timer);worker?.terminate();busy=false;
-  document.querySelectorAll('button').forEach(b=>b.disabled=false);$('transport').disabled=false;$('busy').hidden=true;
-  $('newer').disabled=page===0;$('older').disabled=!next;error?reject(Error(error)):resolve(result);
+  if(finished)return;finished=true;clearTimeout(timer);worker?.terminate();error?reject(Error(error)):resolve(result);
  };
  try{
   worker=new Worker(messageWorkerPolicy?messageWorkerPolicy.createScriptURL('/message-worker.js'):'/message-worker.js',{type:'module'});
@@ -26,3 +25,9 @@ function processMessage(packet,material,compose,encrypt){return new Promise((res
   if(packet?.sessionKey)delete packet.sessionKey;
  }catch(_){finish('Browser verifier could not start; no fallback.');}
 });}
+async function processMessage(packet,material,compose,encrypt){
+ if(busy)throw Error('An operation is already running.');
+ operationBusy(true);
+ try{return await runMessageWorker(packet,material,compose,encrypt);}
+ finally{operationBusy(false);}
+}

@@ -1,8 +1,8 @@
-"""One-use native authorization for browser-constructed OpenPGP signatures.
+"""One-use authorization for browser-constructed signatures by the fixed token.
 
-Only public routing metadata and certificate hashes are staged. Message bytes,
-PINs and signature digests are never written here. The IWA is responsible for
-hashing the reviewed MIME; a native digest signer cannot inspect that plaintext.
+The IWA owns certificates, recipient trust, MIME and send confirmation. This
+module owns only a short-lived grant for the installed signing identity. Grants
+contain public identity hashes, never recipients, messages, PINs or digests.
 """
 import base64
 import hashlib
@@ -15,20 +15,29 @@ import time
 
 
 def certificate_hash(path):
-    """Bind the exact locally configured public certificate, not just its ID."""
+    """Bind the complete configured public certificate, including subkeys."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def prepare(bridge, request, contact, peer, service, space='Gmail'):
-    """Authorize no private operation yet; return material for the WASM worker."""
-    subject=request['subject']
-    if len(subject)>1000 or any(ord(c)<32 or ord(c)==127 for c in subject):
-        raise ValueError('Invalid subject')
+def authority_hash(bridge):
+    """Prevent swapping the configured key/backend between preparation and use.
+
+    Hardware configuration is supplied by the installed host, never by a browser
+    request. Include its public certificate, serial, adapter directory and sender
+    address so a new native process cannot reuse a grant under another identity.
+    """
+    cfg=bridge.cfg
+    authority={key:cfg.get(key) for key in ('cert','serial','app','chat_email')}
+    authority['certificateHash']=certificate_hash(cfg['cert'])
+    return hashlib.sha256(json.dumps(authority,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def prepare(bridge):
+    """Return the fixed public sender and one grant without touching hardware."""
     own=Path(bridge.cfg['cert']).read_bytes()
-    recipient=peer.read_bytes()
-    if len(own)>65536 or len(recipient)>65536:raise ValueError('Certificate limit')
-    # Current sender mailbox/key validity is checked without a PIN. The binary
-    # selects exactly one v6 ML-DSA-65 + Ed25519 signing subkey from local config.
+    if not 1<=len(own)<=65536:raise ValueError('Certificate limit')
+    # Validate the installed sender's current mailbox and select exactly one
+    # permitted hybrid subkey. No browser-supplied public key can select a slot.
     bridge.chat.check_cert(bridge.cfg['cert'],bridge.cfg['chat_email'])
     check={'op':'signing-material','own':base64.b64encode(own).decode()}
     result=subprocess.run([str(bridge.root/'runtime/sequoia-iwa-crypto')],
@@ -38,58 +47,43 @@ def prepare(bridge, request, contact, peer, service, space='Gmail'):
     key=json.loads(result.stdout).get('signingFingerprint','')
     if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid signing key')
     rid=secrets.token_hex(24)
-    metadata={'service':service,'space':space,'contact':contact['id'],
-              'recipient':contact['email'],'fingerprint':contact['fingerprint'],
-              'sender':bridge.cfg['chat_email'],'subject':subject,'created':time.time(),
-              'senderHash':hashlib.sha256(own).hexdigest(),
-              'recipientHash':hashlib.sha256(recipient).hexdigest(),
-              'signingFingerprint':key,'stage':'prepared'}
-    bridge.chat.write_new(bridge.data/('encryption-'+rid+'.json'),json.dumps(metadata).encode())
+    metadata={'created':time.time(),'authorityHash':authority_hash(bridge),
+              'signingFingerprint':key}
+    bridge.chat.write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
     return {'review':rid,'senderCertificate':base64.b64encode(own).decode(),
-            'recipientCertificate':base64.b64encode(recipient).decode(),
-            'senderEmail':metadata['sender'],'recipientEmail':metadata['recipient'],
-            'recipientFingerprint':metadata['fingerprint'],'signingFingerprint':key,
-            'subject':subject,'service':service}
+            'senderEmail':bridge.cfg['chat_email'],'signingFingerprint':key}
 
 
-def ticket(bridge,rid,stage):
-    """Recheck current local identity/contact before every authorized stage."""
+def ticket(bridge,rid):
+    """Revalidate the grant's age and fixed native authority before a PIN."""
     if not re.fullmatch('[a-f0-9]{48}',rid):raise ValueError('Invalid signing ticket')
-    path=bridge.data/('encryption-'+rid+'.json')
+    path=bridge.data/('signing-'+rid+'.json')
+    if path.is_symlink() or path.stat().st_size>2048:raise ValueError('Invalid signing ticket')
     meta=json.loads(path.read_text())
     age=time.time()-meta['created']
-    if not 0<=age<=600 or meta.get('stage')!=stage:raise ValueError('Expired or consumed signing ticket')
-    contact,peer=bridge.peer(meta['contact'])
-    if (contact['email']!=meta['recipient'] or contact['fingerprint']!=meta['fingerprint'] or
-        bridge.cfg['chat_email']!=meta['sender'] or
-        certificate_hash(bridge.cfg['cert'])!=meta['senderHash'] or
-        certificate_hash(peer)!=meta['recipientHash']):
-        raise ValueError('Signing identity or contact changed')
-    return path,meta,contact,peer
+    if not 0<=age<=600:raise ValueError('Expired signing ticket')
+    if authority_hash(bridge)!=meta['authorityHash']:raise ValueError('Signing identity changed')
+    return path,meta
 
 
 def sign(bridge,request):
-    """Consume the grant before PIN prompting, including cancellation/failure.
+    """Consume before the PIN, including cancellation and ambiguous failures.
 
-    The application must prepare a new operation after a failure. Neither a
-    replayed request nor an ambiguous native timeout silently signs again.
+    Success does not recreate a completion/send ticket. Encryption, current
+    recipient trust and single-use send review are now entirely IWA-owned.
     """
-    path,meta,_,peer=ticket(bridge,request['review'],'prepared')
+    path,meta=ticket(bridge,request['review'])
     if (not re.fullmatch('[A-F0-9]{64}',request['requestId']) or
         request['signingFingerprint']!=meta['signingFingerprint'] or
         type(request['hashAlgorithm']) is not int or request['hashAlgorithm']!=10):
         raise ValueError('Invalid signing binding')
     digest=base64.b64decode(request['digest'],validate=True)
     if len(digest)!=64:raise ValueError('Exactly one SHA-512 digest required')
-    # Unlink before any private operation. The host's operation lock serializes
-    # this transition; successful signing creates a completion-only ticket.
+    # The native operation lock serializes this unlink and the private call.
+    # No peer certificate is needed for a signature over a prepared digest.
     path.unlink()
-    result=bridge.crypto('sign-digest',peer,digest,service=meta['service'],signing=request)
-    # Rechecking the public configuration prevents an identity/contact swap
-    # during the native PIN dialog from producing a sendable stale draft.
-    if (certificate_hash(bridge.cfg['cert'])!=meta['senderHash'] or
-        certificate_hash(peer)!=meta['recipientHash']):
+    result=bridge.crypto('sign-digest',Path(bridge.cfg['cert']),digest,
+                         service='Message',signing=request)
+    if authority_hash(bridge)!=meta['authorityHash']:
         raise ValueError('Identity changed during signing')
-    meta['stage']='signed'
-    bridge.chat.write_new(path,json.dumps(meta).encode())
     return result

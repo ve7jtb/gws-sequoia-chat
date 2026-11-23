@@ -1,7 +1,7 @@
 import {createSession} from './google-session.js';
-import {b64,bytes64,entity,envelope,LIMIT} from './message-mime.js';
+import {b64,bytes64,envelope,LIMIT} from './message-mime.js';
 const GMAIL='https://gmail.googleapis.com',CHAT='https://chat.googleapis.com';
-const routes=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-cert-save','chat-mail-cert-trust','chat-mail-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
+const routes=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
 const query=o=>new URLSearchParams(Object.entries(o).filter(([,v])=>v!=='')).toString();
 function resource(value,kind){const re=kind==='space'?/^spaces\/[A-Za-z0-9_-]+$/:/^spaces\/[A-Za-z0-9_-]+\/messages\/[A-Za-z0-9_.~-]+$/;if(typeof value!=='string'||!re.test(value))throw Error('Invalid Chat resource');return value;}
 function mailId(value){if(typeof value!=='string'||! /^[a-fA-F0-9]{1,64}$/.test(value))throw Error('Invalid Gmail message');return value;}
@@ -19,8 +19,21 @@ export function createTransport(session){
   return {attachmentDataRef:Object.fromEntries(['attachmentUploadToken','resourceName'].filter(k=>typeof ref[k]==='string').map(k=>[k,ref[k]]))};
  }
  async function perform(op,d,native,context){
-  // Every operation checks the actual account before reading or releasing a
-  // native send ticket. No token ever crosses the native messaging boundary.
+  // Preparation is entirely local: the fixed native identity binds the sender,
+  // IWA trust binds the recipient, and the vault gates the private operation.
+  // Requiring OAuth here would prevent explicit offline encrypted-file export.
+  if(op==='chat-mail-prepare'||op==='chat-prepare'){
+   const service=op==='chat-mail-prepare'?'Gmail':'Chat';
+   const space=service==='Gmail'?'Gmail':resource(d.space,'space');
+   // Trust is resolved from current IWA storage, never from a UI label or a
+   // legacy native contact. The native helper selects only its configured key.
+   const contact=await context.certificateStore.trustedContact(d.contact);
+   const own=await native('chat-signing-material',{});
+   return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space});
+  }
+  // Every network operation still checks the authenticated Google account
+  // before reading data or consuming a send review. Offline preparation does
+  // not authorize an upload, restore a token, or bypass this send-time check.
   await session.profile(context.account);
   if(op==='chat-mail-connect')return {account:context.account};
   if(op==='chat-mail-list'){
@@ -40,11 +53,6 @@ export function createTransport(session){
    }return {messages,next:r.nextPageToken||''};
   }
   if(op==='chat-mail-read'||op==='chat-mail-open')return raw(d.message);
-  if(op==='chat-mail-cert-save'||op==='chat-mail-cert-trust'){
-   const {raw:content}=await raw(d.message),{message,...fields}=d;
-   return native(op==='chat-mail-cert-save'?'chat-browser-cert-save':'chat-browser-cert-trust',{...fields,raw:content});
-  }
-  if(op==='chat-mail-prepare'||op==='chat-prepare')return native('chat-browser-prepare',{...d,service:op==='chat-mail-prepare'?'Gmail':'Chat',space:op==='chat-mail-prepare'?'Gmail':resource(d.space,'space')});
   if(op==='chat-spaces'){const r=await session.request(CHAT,'/v1/spaces?'+query({pageSize:50,pageToken:d.page}));return {spaces:(r.spaces||[]).map(s=>({name:resource(s.name,'space'),title:s.displayName||s.name})),next:r.nextPageToken||''};}
   if(op==='chat-messages'){const r=await session.request(CHAT,'/v1/'+resource(d.space,'space')+'/messages?'+query({pageSize:20,pageToken:d.page,orderBy:'createTime desc'}));return {messages:(r.messages||[]).map(m=>({name:resource(m.name,'message'),text:(m.text||'').slice(0,2000),time:m.createTime||'',encrypted:(m.attachment||[]).some(a=>a.contentName==='message.pgp')})),next:r.nextPageToken||''};}
   if(op==='chat-open'){
@@ -54,13 +62,19 @@ export function createTransport(session){
     const linked=resource(links[0][1],'message');if(linked===name||linked.split('/messages/')[0]!==name.split('/messages/')[0])throw Error('Certificate link leaves conversation');
     certMessage=await session.request(CHAT,'/v1/'+linked);if(!m.sender?.name||certMessage.sender?.name!==m.sender.name)throw Error('Certificate message sender differs');
    }
-   const certificate=await download(certMessage,'pq-mail-sender-key.pgp'),info=await native('chat-preview',{certificate:b64(certificate)}),contact=context.contacts.find(c=>c.id===d.contact);
-   if(!contact||contact.fingerprint!==info.fingerprint)throw Error('Attached certificate does not match the trusted sender');
-   return {encrypted:true,cipher:b64(await download(m,'message.pgp'))};
+   // Attached certificates establish mathematical identity only. Match the
+   // full fingerprint against the selected, currently valid local trust entry.
+   const contact=await context.certificateStore.trustedContact(d.contact);
+   const certificate=await download(certMessage,'pq-mail-sender-key.pgp');
+   const info=await context.certificateStore.preview(b64(certificate));
+   if(contact.fingerprint!==info.fingerprint)throw Error('Attached certificate does not match the trusted sender');
+   const cipher=b64(await download(m,'message.pgp'));
+   await context.certificateStore.assertContact(contact);
+   return {encrypted:true,cipher};
   }
   if(op==='chat-mail-send'||op==='chat-send'){
    if(d.confirmed!==true)throw Error('Explicit send confirmation required');
-   const outgoing=await native('chat-browser-export',{...d,service:op==='chat-mail-send'?'Gmail':'Chat'});
+   const outgoing=await context.composeReviews.take(d.review,op==='chat-mail-send'?'Gmail':'Chat',d.confirmed,context.account);
    if(op==='chat-mail-send'){const r=await session.request(GMAIL,'/gmail/v1/users/me/messages/send',{method:'POST',body:JSON.stringify({raw:outgoing.raw.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')})});return {sent:r.id};}
    const space=resource(outgoing.space,'space');
    const bundle=await upload(space,'message.pgp',outgoing.cipher),certificate=await upload(space,'pq-mail-sender-key.pgp',outgoing.certificate);

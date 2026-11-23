@@ -11,6 +11,11 @@ class HostTests(unittest.TestCase):
    self.assertIn('No YubiKey operation was attempted',message)
   self.assertIn('Gmail operation stopped',host.operation_error('chat-mail-open'))
   self.assertIn('Chat operation stopped',host.operation_error('chat-open'))
+ def test_public_migration_errors_do_not_echo_details_or_request_pin(self):
+  for op in ('chat-certificate-migration','chat-signing-material'):
+   message=host.operation_error(op,ValueError('private low-level detail'))
+   self.assertIn('No YubiKey operation was attempted',message)
+   self.assertNotIn('private low-level detail',message)
  def test_valid_frame(self):
   raw=b'{"op":"status"}'
   self.assertEqual(host.frame_read(io.BytesIO(struct.pack('=I',len(raw))+raw)),{'op':'status'})

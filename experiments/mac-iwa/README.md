@@ -5,10 +5,148 @@ browser REST APIs for Gmail/Google Chat. A scoped extension connects it to nativ
 YubiKey operations and the Google/passkey authorization UI. The repository's
 main loopback Mail/Chat application remains separate. There is no listening HTTP
 server for the IWA. Earlier preview milestones below describe their historical
-native/gws transport; the current boundary is described here and under Direct
-Gmail and Chat transport.
+native/gws transport and certificate storage; the current boundary is described
+in the 0.11 section below. This change does not move the main loopback app's store.
+
+## IWA-owned certificates and trust (0.11 preview)
+
+Public OpenPGP certificates and trust now belong to this signed IWA's origin, in
+the `sequoia-iwa-certificates` IndexedDB database. **Contacts** shows certificate
+version, algorithms, full primary fingerprint and the separately trusted email
+addresses. The store contains public certificate bytes and trust decisions; it
+contains no YubiKey private keys, PINs or OAuth refresh tokens. Clearing this
+IWA's browser data removes the local store, including its migration marker.
+
+**Save certificate without trust** makes a public key available for mathematical
+signature verification. **Save and trust selected email** requires independent
+fingerprint verification and an explicit choice of email. Trust is the exact
+email/full-primary-fingerprint pair, not every address on the certificate or
+the sender name supplied by Google. Only currently valid, self-certified email
+bindings are offered. **Remove trust** keeps the public certificate;
+**Delete saved certificate** removes it and its local trust bindings. Neither
+action deletes device keys or changes hardware policies.
+
+An attached certificate can verify a message without being saved or trusted.
+The reader offers separate save and trust actions only after a valid signature;
+it re-verifies the captured message bytes before applying either action. Public
+v4 and v6 certificates can be saved for incoming verification. Outgoing encrypted
+messages currently require an explicitly trusted **Level 3 hybrid v6** contact
+with ML-DSA-65 + Ed25519 signing and ML-KEM-768 + X25519 encryption. There is no
+automatic classical or v4 outgoing fallback in this IWA preview.
+
+### Reviewed migration from the native public store
+
+In **Contacts**, choose **Review migration from native store…**, inspect every
+public certificate and existing email/fingerprint trust binding, then explicitly
+confirm **Copy reviewed certificates and trust**. The native helper returns a
+bounded, read-only public snapshot; WASM inspects the certificates before the
+IWA commits the snapshot and its migration marker atomically. No account secrets
+are copied, no device operation is required, and native files remain unchanged.
+
+Migration is not run automatically at startup. Repeating the same migration does
+not restore a certificate or trust binding subsequently removed in the IWA. A
+different native snapshot is rejected after migration; use individual public
+certificate imports for later changes. No native-store fallback silently
+recreates missing browser records. The retained native files are an explicit
+backup, not the active trust source. Clearing all browser data also clears the
+one-time marker, so another migration would require a new explicit review.
+
+The browser store rejects private-key material, multiple certificates in a
+single import, unsupported versions and oversized inputs. Changing the canonical
+bytes of a saved certificate with the same primary fingerprint requires explicit
+removal and review; it cannot silently inherit existing trust. Atomic revisions
+reject stale writes from another window. Trust changes, deletion, lock and view
+changes invalidate pending reader/save results instead of displaying stale trust
+or saving a late attached-certificate result.
+
+### Private operations and send review
+
+The native helper still owns the fixed local sending identity, serial/backend
+binding, native PIN dialog and YubiKey private signing/decapsulation operations.
+The browser cannot select an arbitrary module, slot or private key. Signing
+preparation obtains only that fixed own public certificate and a one-use native
+grant; recipient selection and trust checks happen in the IWA before any PIN
+request. Native digest signing and session-key decapsulation retain their
+existing private-operation boundaries. Removing certificate storage does not
+remove the extension or native helper.
+
+Compose metadata, ciphertext and send reviews are kept only in browser memory.
+WASM constructs and verifies the signature and encrypts the protected MIME. The
+browser wraps the exact ciphertext in standard PGP/MIME for Gmail, using a generic
+outer subject; Chat retains its encrypted attachment and separate public-sender-
+certificate attachment. The native helper no longer stages recipient-bound
+message drafts on disk or exports them for sending.
+
+Send reviews expire after ten minutes, are single-use and bind the Google
+account, service, destination and exact certificate/trust snapshot. Trust is
+checked again before consuming a review. A changed certificate, removed trust,
+account/service mismatch, expired review or replay stops the send without an
+automatic retry. Locking the vault or leaving the page clears pending reviews.
+No email or ciphertext is persisted by this browser draft store.
+
+The **0.11.2** preview adds explicit offline testing. In the Gmail Compose
+review, **Save encrypted email…** downloads only the encrypted PGP/MIME `.eml`
+and consumes the review; it does not send mail or create a native draft. **Open
+local email copy (no upload)** also accepts encrypted PGP/MIME: choose an
+existing trusted sender, unlock the vault, and authorize the native YubiKey
+decapsulation. WASM verifies the signed inner sender, recipient and message
+against the current IWA trust store before displaying plaintext. Google sign-in
+is not required. Escape, cancellation, message replacement, trust changes and
+vault lock discard the pending local envelope.
+
+### Validation and current limits
+
+Automated validation passes **92 Node tests, 61 Python tests, four Rust public-
+certificate inspection tests and eight native Rust tests**. The regressions cover
+one-time migration without trust resurrection, per-email trust, stale-window
+updates, attached-certificate save without automatic trust, late worker results,
+trust revocation before send, service/account binding, expiry and one-use reviews.
+Certificate routes are checked against the actual UI functions to ensure they do
+not reach the native certificate store.
+
+The actual signing worker's ciphertext also passes through the browser PGP/MIME
+wrapper and MIME extraction before independent native Sequoia `sq` decryption
+and signature verification. The exact ciphertext, Unicode text, HTML and all
+1,024 attachment bytes match. This uses disposable software fixtures and performs
+no account or hardware operation. Sources and regressions are in
+[the browser store](app/certificates/store.js), [store tests](tests/certificates-store.test.mjs),
+[UI routing tests](tests/browser-certificate-routing.test.mjs),
+[send-review tests](tests/compose-review.test.mjs) and
+[worker interoperability test](tests/signing-worker-interop.mjs).
+
+**Installed 0.11 UI migration and restart checks passed.** The update preserved
+the existing IWA origin and extension ID. The reviewed migration copied two
+existing public certificates and their two existing email/full-fingerprint trust
+bindings unchanged. Contacts displayed both trusted records, and Compose offered
+the existing v6 recipient. After closing the empty Compose window and reopening
+the IWA, a fresh window still displayed both certificates and trust bindings and
+recognized that migration had already completed.
+
+The migration check itself performed no private YubiKey operation, PIN prompt
+or message send. A subsequent **0.11.2 physical-key test on 2026-11-23** used the
+migrated v6 recipient and sender trust through the actual IWA interface:
+
+- Incoming synthetic Sequoia PGP/MIME decrypted through ML-KEM-768/X25519 in
+  slots 9d/85. WASM reported a valid hybrid signature and the expected trusted
+  primary fingerprint. Plain text and HTML displayed, and the downloaded
+  308-byte attachment matched its expected SHA-256.
+- Compose used ML-DSA-65/Ed25519 in slots 9c/84, then verified and encrypted in
+  WASM to the migrated recipient. Explicit export saved encrypted PGP/MIME
+  without Google sign-in or sending mail. Independent native Sequoia decrypted
+  the export and verified its hybrid signature, signed From/To/Subject, plain
+  text and formatted HTML against the existing software recipient identity.
+- All 24 public slot records, including 10 occupied slots, PIN/touch policies,
+  and PIN retry counts matched before and after. The eight installed PKCS#11
+  backend files were unchanged. Both migrated certificate/trust entries remained
+  in the IWA, and no keys, policies or trust were changed by the test.
+
+The 0.10.1 results below remain separate historical evidence for that build.
 
 ## Browser-owned signing (0.10.1 preview, 2026-11-23)
+
+This milestone describes 0.10.1. Its native contact/review storage was superseded
+by the browser-owned 0.11 store and send reviews above; its hardware test results
+still apply to the exact 0.10.1 build that was tested.
 
 The Level 3 v6 signing path now constructs its OpenPGP signature inside a fresh
 WASM worker. It preserves the exact composed MIME, v6 salt, creation time and
@@ -58,8 +196,9 @@ physical-key and real Compose checks are recorded below:
 This is **automated interoperability validation, not a new live YubiKey or mail
 send result**. No real private keys, card keys, certificates or touch policies
 were accessed or changed for these tests. Hardware component signing and
-OpenPGP session-key decapsulation remain native; certificate-store migration and
-removing the extension are separate work. Software `.p12` signing is not enabled
+OpenPGP session-key decapsulation remained native; certificate-store migration
+was subsequent work, implemented in 0.11 above. The extension is still required.
+Software `.p12` signing is not enabled
 by this change. See [WASM signing tests](wasm/README.md#split-phase-signing).
 
 ### Physical signing check (2026-11-23)
@@ -997,9 +1136,13 @@ API origins, reject redirects, bound response bytes and never automatically
 retry a send. A partial Chat send reports the certificate message reference
 so the conversation can be inspected before another attempt.
 
-The native helper retains YubiKey operations, public-certificate management,
-and single-use reviewed ciphertext export. Attached-key save/trust still
-re-verifies the browser-supplied raw message before changing local trust.
+At the 0.10 milestone, the native helper retained YubiKey operations,
+public-certificate management and single-use reviewed ciphertext export.
+Attached-key save/trust re-verified the browser-supplied raw message before
+changing local trust. **0.11 supersedes that public-store/export boundary**:
+the IWA now owns recipient certificates, trust, reader re-verification and
+memory-only send reviews as described above; private YubiKey operations remain
+native.
 Legacy native Google transport entry points are disabled; the IWA installer no
 longer requires or copies `gws`, its wrapper, or an OAuth client-secret file.
 Existing standalone gws sessions are left untouched. The standalone CLI remains
@@ -1009,8 +1152,9 @@ Validation: 14 JavaScript OAuth/direct-transport/PRF tests and three offline
 native export tests pass, including exact binary upload bytes, account mismatch,
 late response after lock, redirect/traversal rejection, single-use export and
 changed-trust rejection. These are automated fixtures, **not a live Google
-send/receive result**. The WASM-signing changes are integrated in the 0.10.1 build and its automated
-regressions pass; live verification of the combined preview is pending.
+send/receive result**. Live Google network send/receive remains untested for this
+transport revision. The subsequent offline IWA 0.11.2 signing, decryption and
+independent Sequoia verification results are documented above.
 
 API references: [Gmail send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send),
 [Chat media upload](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload),

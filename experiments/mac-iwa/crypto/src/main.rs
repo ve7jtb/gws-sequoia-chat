@@ -290,7 +290,10 @@ fn diagnostics_do_not_echo_error_data() {
 mod tests {
  use super::*;
  use pgp::cert::{CertBuilder,CipherSuite};
- fn identity()->Cert {CertBuilder::new().set_profile(pgp::Profile::RFC9580).unwrap().set_cipher_suite(CipherSuite::MLDSA65_Ed25519).add_userid("test@example.invalid").add_signing_subkey().add_transport_encryption_subkey().generate().unwrap().0}
+ // A mathematically valid signature does not bind an arbitrary MIME From.
+ // Fixtures used by the browser trust tests must self-certify that mailbox too.
+ fn identity_for(email:&str)->Cert {CertBuilder::new().set_profile(pgp::Profile::RFC9580).unwrap().set_cipher_suite(CipherSuite::MLDSA65_Ed25519).add_userid(email).add_signing_subkey().add_transport_encryption_subkey().generate().unwrap().0}
+ fn identity()->Cert {identity_for("test@example.invalid")}
  fn key(cert:&Cert,sign:bool)->pgp::crypto::KeyPair {let wanted=selected(cert,sign).unwrap().fingerprint();cert.keys().secret().find(|k|k.key().fingerprint()==wanted).unwrap().key().clone().role_into_unspecified().into_keypair().unwrap()}
  fn decrypt(own:&Cert,peer:&Cert,blob:&[u8])->Result<Vec<u8>> {
   let helper=Open{verify:Verify{cert:peer.clone(),expected:selected(peer,true)?.fingerprint(),encryption_required:true},own:own.clone(),key:key(own,false)};
@@ -299,7 +302,7 @@ mod tests {
  #[test] fn detached_public_verification_v4_v6_and_tampering(){
   use pgp::serialize::SerializeInto;
   for hybrid in [false,true] {
-   let cert=if hybrid {identity()} else {CertBuilder::new().add_userid("sender@example.invalid").add_signing_subkey().generate().unwrap().0};
+   let cert=if hybrid {identity_for("sender@example.invalid")} else {CertBuilder::new().add_userid("sender@example.invalid").add_signing_subkey().generate().unwrap().0};
    let p=StandardPolicy::new();let kp=cert.keys().secret().with_policy(&p,None).for_signing().next().unwrap().key().clone().into_keypair().unwrap();
    let public=cert.clone().strip_secret_key_material().to_vec().unwrap();
    let payload=format!("Content-Type: multipart/mixed; boundary=inside\r\n\r\n--inside\r\nContent-Type: text/plain\r\n\r\nSigned test body.\r\n--inside\r\nContent-Type: application/pgp-keys\r\nContent-Disposition: attachment; filename=public.pgp\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--inside--\r\n",B64.encode(&public)).into_bytes();
@@ -324,7 +327,7 @@ mod tests {
   }
  }
  #[test] fn browser_decryption_exports_exact_literal_and_signature() {
-  let alice=identity();let bob=identity();let payload=include_bytes!("../../tests/multipart-fixture.mime");
+  let alice=identity_for("alice@example.invalid");let bob=identity_for("bob@example.invalid");let payload=include_bytes!("../../tests/multipart-fixture.mime");
   let cipher=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
   let open=|bytes:&[u8]|->Result<(Vec<u8>,Vec<u8>)>{
    let inner=Open{verify:Verify{cert:alice.clone(),expected:selected(&alice,true)?.fingerprint(),encryption_required:true},own:bob.clone(),key:key(&bob,false)};
@@ -362,7 +365,7 @@ mod tests {
  }
  #[test] fn native_decapsulation_for_wasm_fixture() {
   use sha2::{Digest,Sha256};
-  let alice=identity();let bob=identity();let wrong=identity();
+  let alice=identity_for("alice@example.invalid");let bob=identity_for("bob@example.invalid");let wrong=identity();
   let payload=include_bytes!("../../tests/multipart-fixture.mime");
   let cipher=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
   let (algorithm,session)=decapsulate(&bob,&mut key(&bob,false),&cipher).unwrap();

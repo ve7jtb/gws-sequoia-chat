@@ -110,11 +110,10 @@ def main():
             if message.get('type')=='progress':print(message['message'],flush=True)
         bridge=ChatBridge(out,cfg,progress)
         peer=fixture/'recipient-public.pgp';peer_info=bridge.chat.check_cert(peer,'recipient@example.invalid')
-        fingerprint=peer_info['fingerprint'];contact={'id':'synthetic-hardware-recipient','email':'recipient@example.invalid','fingerprint':fingerprint}
-        bridge.chat.write_new(bridge.data/(fingerprint+'.pgp'),peer.read_bytes())
-        bridge.chat.write_new(bridge.data/'contact-synthetic.json',json.dumps(contact).encode())
-        material=bridge.action({'op':'chat-browser-prepare','contact':contact['id'],
-            'subject':'Physical YubiKey — WASM signing test','service':'Gmail','space':'Gmail'})
+        material=bridge.action({'op':'chat-signing-material'})
+        material.update(recipientCertificate=__import__('base64').b64encode(peer.read_bytes()).decode(),
+            recipientEmail='recipient@example.invalid',recipientFingerprint=peer_info['fingerprint'],
+            subject='Physical YubiKey — WASM signing test',service='Gmail')
         print('One native PIN dialog follows. Touch only if the existing key policy requires it. No email is sent.',flush=True)
         child=subprocess.Popen([str(a.node.resolve()),str(ROOT/'tests/signing-worker-hardware.mjs')],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
@@ -139,8 +138,8 @@ def main():
                 completed=True;result.update(message['result'])
             else:raise RuntimeError('WASM/physical signing test stopped; no retry')
         if child.wait(timeout=15) or not completed:raise RuntimeError('Worker did not complete verification')
-        # The successful sign ticket exists only in this isolated test directory.
-        # It is never submitted to encryption completion/export/send routes.
+        # The grant was consumed before PIN entry. Recipient trust and sends
+        # are not native routes; this isolated harness has no network transport.
         print('PASS: one hardware hybrid signature; independent sq decrypt/verify; text, HTML and attachment bytes.',flush=True)
     except Exception as error:
         result.update(passed=False,errorType=type(error).__name__,error=str(error))

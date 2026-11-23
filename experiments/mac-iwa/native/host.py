@@ -147,6 +147,12 @@ def operation_error(op, error=None):
     Connection failures happen before the hardware operation. Keep them separate
     from signing/decryption failures so users do not unnecessarily retry a PIN.
     """
+    if op=='chat-certificate-migration':
+        return 'Legacy public-certificate export stopped. Check the old store for conflicting, malformed or oversized records. No certificates or trust were changed. No YubiKey operation was attempted.'
+    if op=='chat-signing-material':
+        return 'The configured public signing identity could not be read. No YubiKey operation was attempted.'
+    if op in ('chat-sign-digest','chat-decap'):
+        return 'YubiKey operation stopped. Check the configured key and native PIN dialog. No automatic private-operation retry was performed.'
     if op in ('chat-mail-login','chat-mail-connect','chat-mail-list','chat-mail-read'):
         return 'Gmail connection failed. Complete Google sign-in with Gmail read and send permissions, then reconnect Gmail. No YubiKey operation was attempted.'
     if op in ('chat-login','chat-spaces','chat-messages'):

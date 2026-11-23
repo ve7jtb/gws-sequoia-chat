@@ -1,7 +1,7 @@
-"""Closed Google Chat API for the IWA. All CLI paths come from local config.
+"""Fixed YubiKey private operations and public migration metadata for the IWA.
 
-No arbitrary gws commands, URLs, executable paths, slots or PINs are accepted
-from the browser. Google credentials remain in this installation's gws profile.
+The browser owns contact certificates, email/fingerprint trust and Google
+transport. Paths, slots, PINs and private-key selection remain native-only.
 """
 from email.parser import BytesParser
 from email import policy
@@ -37,24 +37,18 @@ def crypto_status(stderr):
     return 'CRYPTO_FAILED'
 
 LIMIT=262144
-FIELDS={'chat-decrypt':{'contact','payload','service'},'chat-verification-material':set(),'chat-state':set(),'chat-login':set(),'chat-spaces':{'page'},'chat-messages':{'space','page'},
-        'chat-preview':{'certificate'},'chat-trust':{'certificate','email','fingerprint','confirmed'},
-        'chat-prepare':{'space','contact','subject'},'chat-send':{'review','confirmed'},
-        'chat-open':{'message','contact'}}
-
-FIELDS.update({'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()})
-
-from cert_store import FIELDS as CERT_FIELDS
-FIELDS.update(CERT_FIELDS)
-FIELDS['chat-browser-prepare']={'contact','subject','service','space'}
-FIELDS['chat-browser-export']={'review','service','confirmed'}
-FIELDS['chat-browser-cert-save']={'raw','fingerprint'}
-FIELDS['chat-browser-cert-trust']={'raw','fingerprint','email','confirmed'}
-FIELDS['chat-encryption-complete']={'review','cipher'}
-FIELDS['chat-sign-digest']={'review','requestId','signingFingerprint','digest','hashAlgorithm'}
-FIELDS['chat-vault-material']=set()
-FIELDS['chat-vault-decapsulate']={'payload','recipientKey'}
-FIELDS['chat-vault-ecdh']={'peer','fingerprint'}
+# The native host is not a contact/trust database or a mail transport. Reject
+# legacy APIs at the schema gate, before opening a file or prompting for a PIN.
+FIELDS={
+    'chat-state':set(),
+    'chat-certificate-migration':set(),
+    'chat-signing-material':set(),
+    'chat-sign-digest':{'review','requestId','signingFingerprint','digest','hashAlgorithm'},
+    'chat-decap':{'payload','service'},
+    'chat-vault-material':set(),
+    'chat-vault-decapsulate':{'payload','recipientKey'},
+    'chat-vault-ecdh':{'peer','fingerprint'},
+}
 
 def validate(request):
     op=request.get('op')
@@ -109,6 +103,7 @@ def browser_mime(request,sender,recipient):
 def crypto_prompt(op,service):
     """Fixed labels selected by the native route, never arbitrary browser text."""
     if service=='Vault' and op=='decapsulate-browser':return 'Unlock IWA credential vault — ML-KEM-768 + X25519'
+    if service=='Message' and op=='sign-digest':return 'Sign message — ML-DSA-65 + Ed25519'
     if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','sign-digest','decapsulate-browser','open'):
         raise ValueError('Unsupported cryptographic prompt')
     action='Unlock decryption key for' if op=='decapsulate-browser' else ('Sign' if op in ('sign-browser','sign-digest') else ('Sign and encrypt' if op=='seal' else 'Decrypt and verify'))
@@ -120,8 +115,6 @@ class ChatBridge:
         self.data=self.root/'private/chat-state';self.data.mkdir(exist_ok=True,mode=0o700)
         spec=importlib.util.spec_from_file_location('iwa_chat_transport',self.root/'runtime/chat/chat.py')
         self.chat=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.chat)
-        # Fixed installed Google profile. Never inherit a caller's account.
-        os.environ['GWS_CHAT_PROFILE']='default'
     # PIV_UNLOCK_DIAGNOSTICS: optional local history, not part of vault security.
     # To stop recording, remove this method, its two calls below, and the
     # `started` timer. Update the history test in tests/test_vault_bridge.py.
@@ -142,22 +135,6 @@ class ChatBridge:
                 json.dump(history[-20:],out,indent=2)
             os.replace(temporary,path)
         except (OSError,ValueError):pass # Logging must not trigger a crypto retry.
-    def contacts(self):
-        result=[]
-        for p in sorted(self.data.glob('contact-*.json')):
-            c=json.loads(p.read_text());self.chat.check_cert(self.data/(c['fingerprint']+'.pgp'),c['email'],c['fingerprint']);result.append(c)
-        return result
-    def peer(self,identifier):
-        for c in self.contacts():
-            if c['id']==identifier:return c,self.data/(c['fingerprint']+'.pgp')
-        raise ValueError('Unknown trusted contact')
-    def preview(self,encoded):
-        raw=base64.b64decode(encoded,validate=True)
-        if len(raw)>LIMIT:raise ValueError('Certificate too large')
-        with tempfile.TemporaryDirectory() as td:
-            p=Path(td)/'public.pgp';p.write_bytes(raw);info=self.chat.public_info(p);self.chat.sq('inspect',p,batch=True)
-        if not all(a in ('ML-DSA-65 + Ed25519','ML-KEM-768 + X25519') for a in info['algorithms']):raise ValueError('Level 3 hybrid v6 only')
-        return raw,info
     def crypto(self,op,peer,payload,service="Chat",signing=None):
         if len(payload)>LIMIT:raise ValueError('Message too large')
         serials=subprocess.check_output([self.cfg['ykman'],'list','--serials'],stderr=subprocess.DEVNULL,timeout=25).decode().split()
@@ -217,63 +194,35 @@ class ChatBridge:
                 return {'raw':packet['data'],'signature':packet['signature'],'encrypted':True}
             return result
         finally:pin[:]=b'\0'*len(pin)
-    def prepare_browser_signature(self,request,contact,peer,service,space='Gmail'):
-        # The IWA composes/hashes the message and constructs the signature; this
-        # native phase authorizes only routing and the configured public key.
-        from signing import prepare
-        return prepare(self,request,contact,peer,service,space)
-    def complete_browser_encryption(self,request):
-        """Stage bounded WASM ciphertext, preserving one-use native send review.
-
-        Browser encryption is part of the trusted application. The native host
-        cannot prove ciphertext plaintext equality without the recipient secret;
-        it binds routing to the ticket and rechecks current contact trust instead.
-        No extra signing operation or native encryption fallback is performed.
-        """
-        from signing import ticket as signing_ticket
-        rid=request['review']
-        ticket,meta,contact,peer=signing_ticket(self,rid,'signed')
-        cipher=base64.b64decode(request['cipher'],validate=True)
-        if not 1<=len(cipher)<=LIMIT:raise ValueError('Ciphertext limit')
-        # Inspect only public packet metadata; no PIN or private key is used.
-        check={'op':'check-ciphertext','peer':base64.b64encode(peer.read_bytes()).decode(),'payload':request['cipher']}
-        checked=subprocess.run([str(self.root/'runtime/sequoia-iwa-crypto')],input=json.dumps(check).encode(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
-        if checked.returncode or json.loads(checked.stdout).get('valid') is not True:raise ValueError('Invalid encrypted packet structure or recipient')
-        # Consume the ticket before staging: an uncertain completion cannot be
-        # retried into a second independently sendable draft.
-        ticket.unlink()
-        mail=meta['service']=='Gmail'
-        out=self.chat.private_dir(self.data/(('mail-draft-' if mail else 'draft-')+rid))
-        if mail:
-            from gmail_bridge import module
-            m=module(self)
-            encoded=base64.b64encode(cipher).decode()
-            armor=('-----BEGIN PGP MESSAGE-----\r\n\r\n'+'\r\n'.join(encoded[i:i+64] for i in range(0,len(encoded),64))+'\r\n-----END PGP MESSAGE-----\r\n').encode()
-            self.chat.write_new(out/'message.eml',m.encrypted_envelope(self.cfg['chat_email'],contact['email'],armor))
-        else:
-            self.chat.write_new(out/'message.pgp',cipher)
-            self.chat.write_new(out/'pq-mail-sender-key.pgp',Path(self.cfg['cert']).read_bytes())
-            own=self.chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
-            manifest={'sender':self.cfg['chat_email'],'recipient':contact['email'],'sender_fingerprint':own['fingerprint'],'recipient_fingerprint':contact['fingerprint'],'ciphertext_sha256':hashlib.sha256(cipher).hexdigest()}
-            self.chat.write_new(out/'manifest.json',json.dumps(manifest).encode())
-        self.chat.write_new(out/'review.json',json.dumps({'space':meta['space'],'created':time.time(),'contact':meta['contact'],'fingerprint':meta['fingerprint'],'recipient':meta['recipient']}).encode())
-        return {'review':rid,'space':meta['space'],'recipient':contact['email'],'fingerprint':contact['fingerprint'],'subject':meta['subject']}
     def action(self,request):
-        op=validate(request);chat=self.chat
-        # Legacy native Google entry points are intentionally disabled. This
-        # prevents stale UI or extension code from falling back to gws tokens.
-        if op in ('chat-login','chat-spaces','chat-messages','chat-send','chat-open') or op.startswith('chat-mail-'):
-            raise ValueError('Google transport moved to the IWA; update the browser preview')
+        # A stale browser/extension cannot revive native contact mutations or
+        # Google transport. Only fixed private operations and a public migration
+        # snapshot remain; every request is closed-schema validated first.
+        op=validate(request)
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            if op.startswith('chat-browser-'):
-                from direct_transport import action
-                return action(self,request)
+            if op=='chat-certificate-migration':
+                from certificate_migration import snapshot
+                return snapshot(self)
+            if op=='chat-signing-material':
+                from signing import prepare
+                return prepare(self)
+            if op=='chat-sign-digest':
+                from signing import sign
+                return sign(self,request)
+            if op=='chat-decap':
+                if request['service'] not in ('Gmail','Chat'):raise ValueError('Unknown service')
+                cipher=base64.b64decode(request['payload'],validate=True)
+                if not 1<=len(cipher)<=LIMIT:raise ValueError('Ciphertext limit')
+                # Recipient selection and hardware slots come only from local
+                # configuration. The browser verifies sender/trust after AEAD.
+                result=self.crypto('decapsulate-browser',Path(self.cfg['cert']),cipher,
+                                   service=request['service'])
+                return {**result,'cipher':request['payload']}
             if op=='chat-vault-ecdh':
                 from vault_piv import recover
                 return recover(self,request)
             if op=='chat-vault-material':
-                # Public metadata only; no token access or PIN during discovery.
                 raw=Path(self.cfg['cert']).read_bytes()
                 if len(raw)>65536:raise ValueError('Certificate limit')
                 from vault_piv import configured
@@ -285,94 +234,10 @@ class ChatBridge:
                 result=self.crypto('decapsulate-browser',Path(self.cfg['cert']),cipher,service='Vault')
                 if result['recipientKey']!=request['recipientKey']:raise ValueError('Wrong PIV key')
                 return result
-            if op=='chat-sign-digest':
-                from signing import sign
-                return sign(self,request)
-            if op=='chat-encryption-complete':return self.complete_browser_encryption(request)
-            if op in CERT_FIELDS:
-                from cert_store import action
-                return action(self,request)
-            if op.startswith('chat-mail-') and op!='chat-mail-login':
-                from gmail_bridge import action
-                return action(self,request)
-            if op=='chat-decrypt':
-                if request['service'] not in ('Gmail','Chat'):raise ValueError('Unknown service')
-                contact,peer=self.peer(request['contact'])
-                clear=self.crypto('decapsulate-browser',peer,base64.b64decode(request['payload'],validate=True),service=request['service'])
-                return {**clear,'cipher':request['payload'],'expectedEmail':contact['email'],'expectedFingerprint':contact['fingerprint'],'recipient':self.cfg['chat_email']}
-            if op=='chat-verification-material':
-                from browser_material import material
-                return material(self)
             if op=='chat-state':
-                own=chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
-                return {'account':self.cfg['chat_email'],'serial':self.cfg['serial'],'identity':own,'contacts':self.contacts()}
-            if op in ('chat-login','chat-mail-login'):
-                # gws uses a browser OAuth flow and its own callback listener,
-                # not an IWA loopback API. It handles Google account tokens.
-                pidfile=self.data/'login.json'
-                if pidfile.exists():
-                    old=json.loads(pidfile.read_text())
-                    if time.time()-old['time']<600:
-                        try:os.kill(old['pid'],0)
-                        except ProcessLookupError:pass
-                        else:raise ValueError('Sign-in already running')
-                env={k:v for k,v in os.environ.items() if k in ('HOME','PATH','TMPDIR','LANG')}
-                # Some gws builds print the URL without opening a browser. Capture
-                # only its authorization URL in an unlinked temporary stream;
-                # never return raw CLI output or OAuth callback/token data.
-                with tempfile.TemporaryFile() as output:
-                    scopes=chat.SCOPES
-                    if op=='chat-mail-login':
-                        from gmail_bridge import SCOPES
-                        scopes+=','+SCOPES
-                    child=subprocess.Popen([str(chat.ROOT/'gws-chat'),'auth','login','--scopes',scopes],env=env,stdin=subprocess.DEVNULL,stdout=output,stderr=output,start_new_session=True)
-                    pidfile.write_text(json.dumps({'pid':child.pid,'time':time.time()}))
-                    for _ in range(100):
-                        printed=os.pread(output.fileno(),32768,0).decode('utf-8',errors='replace')
-                        match=re.search(r'https://accounts\.google\.com/[^\s]+',printed)
-                        if match:
-                            url=match.group(0)
-                            if urlsplit(url).path not in ('/o/oauth2/auth','/o/oauth2/v2/auth'):
-                                raise ValueError('Unexpected authorization path')
-                            return {'started':True,'authorizationUrl':url}
-                        if child.poll() is not None:break
-                        time.sleep(.1)
-                raise ValueError('Google sign-in did not supply an authorization URL')
-            if op=='chat-spaces':
-                data=chat.gws('chat','spaces','list','--params',json.dumps({'pageSize':50,'pageToken':request['page']}))
-                return {'spaces':[{'name':s['name'],'title':s.get('displayName') or s['name']} for s in data.get('spaces',[])],'next':data.get('nextPageToken','')}
-            if op=='chat-messages':
-                data=chat.gws('chat','spaces','messages','list','--params',json.dumps({'parent':chat.space_name(request['space']),'pageSize':20,'pageToken':request['page'],'orderBy':'createTime desc'}))
-                return {'messages':[{'name':m['name'],'text':m.get('text','')[:2000],'time':m.get('createTime',''),'encrypted':any(a.get('contentName')=='message.pgp' for a in m.get('attachment',[]))} for m in data.get('messages',[])],'next':data.get('nextPageToken','')}
-            if op in ('chat-preview','chat-trust'):
-                raw,info=self.preview(request['certificate'])
-                if op=='chat-preview':return info
-                address=chat.canonical_email(request['email'])
-                if address not in info['emails'] or request['fingerprint']!=info['fingerprint']:raise ValueError('Identity mismatch')
-                public=self.data/(info['fingerprint']+'.pgp')
-                if public.exists() and public.read_bytes()!=raw:raise ValueError('Review certificate update separately')
-                if not public.exists():chat.write_new(public,raw)
-                cid=hashlib.sha256((address+info['fingerprint']).encode()).hexdigest()
-                record={'id':cid,'email':address,'fingerprint':info['fingerprint']}
-                p=self.data/('contact-'+cid+'.json')
-                if not p.exists():chat.write_new(p,json.dumps(record).encode())
-                return {'contacts':self.contacts()}
-            if op=='chat-prepare':
-                space=chat.space_name(request['space']);contact,peer=self.peer(request['contact'])
-                return self.prepare_browser_signature(request,contact,peer,'Chat',space)
-            if op=='chat-send':
-                if not re.fullmatch('[a-f0-9]{48}',request['review']):raise ValueError('Invalid review')
-                draft=self.data/('draft-'+request['review']);review=json.loads((draft/'review.json').read_text())
-                if time.time()-review['created']>600:raise ValueError('Review expired')
-                # Move BEFORE upload. An uncertain send can never be repeated
-                # with the same review token, even if the browser disconnects.
-                out=self.data/('sent-'+request['review']);draft.rename(out)
-                with contextlib.redirect_stdout(io.StringIO()):return chat.send(review['space'],out,confirm=True)
-            if op=='chat-open':
-                contact,peer=self.peer(request['contact'])
-                with tempfile.TemporaryDirectory() as td:
-                    out=Path(td)/'incoming';chat.receive(chat.message_name(request['message']),out)
-                    if chat.public_packets(out/'pq-mail-sender-key.pgp')!=chat.public_packets(peer):raise ValueError('Attached signer does not match trusted contact')
-                    cipher=chat.read(out/'message.pgp',LIMIT)
-                return {'encrypted':True,'cipher':base64.b64encode(cipher).decode()}
+                # The configured sender certificate is hardware-binding metadata,
+                # not a recipient trust decision. Never return native contacts.
+                own=self.chat.check_cert(self.cfg['cert'],self.cfg['chat_email'])
+                return {'account':self.cfg['chat_email'],'serial':self.cfg['serial'],
+                        'identity':own,'contacts':[]}
             raise ValueError('Unknown operation')
