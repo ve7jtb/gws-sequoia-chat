@@ -33,10 +33,23 @@ all 24 PIV slot records, PIN/touch policies and migrated trust entries remained
 unchanged. Gmail's unsigned outer MIME rewrite exposed an armor-only parser
 assumption. Both receiver implementations now accept the exact two-part
 binary/base64 rewrite without relaxing cryptographic or trust checks. **94 IWA
-JavaScript tests and 16 standalone mail tests pass.** The installed IWA used its
-existing armor support for the reply; its new binary-wrapper path is covered by
-source regressions. See the [live test scope](experiments/mac-iwa/README.md#live-gmail-exchange-using-migrated-certificates-2026-11-23)
-and [MIME rewriting investigation](docs/gmail-mime-rewriting.md).
+JavaScript tests and 16 standalone mail tests pass.** That 0.11.2 return used the
+existing armor support; the subsequent binary receive test below covers the
+installed fix. See the [two-way test scope](experiments/mac-iwa/README.md#live-gmail-exchange-using-migrated-certificates-2026-11-23).
+
+**Installed IWA 0.11.3 passed binary PGP/MIME reception through Gmail on
+2026-11-23.** One synthetic email reused the previously signed Sequoia ciphertext
+in a fresh binary/base64 envelope. Captured pre-upload and Gmail Sent copies used
+`multipart/encrypted`; the recipient copy used `multipart/mixed`. All **5,626
+ciphertext bytes** matched. The old parser rejects that actual delivery, while
+the updated IWA decrypted it with the existing YubiKey and displayed **Valid
+hybrid / Trusted**, the expected text/HTML and an exact 48-byte attachment.
+All 24 slot records, PIN/touch policies and retry counts were unchanged. The
+native PIN helper now presents and focuses its window after AppKit launches,
+with a temporary Dock entry and specific pre-submission timeout/cancel errors.
+**65 Python tests pass**, including four regressions ensuring those failures
+never start private cryptography. See the [0.11.3 test and PIN fix](experiments/mac-iwa/README.md#binary-gmail-reception-and-native-pin-dialog-0113)
+and [MIME investigation](docs/gmail-mime-rewriting.md#captured-binary-delivery-in-installed-iwa-0113).
 
 In the earlier hardware run on **2026-11-23**, the installed **0.10.1** preview passed a physical
 YubiKey test through its actual **Compose interface**: native Sequoia `sq`

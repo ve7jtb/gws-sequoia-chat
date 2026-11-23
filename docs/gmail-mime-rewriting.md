@@ -112,11 +112,56 @@ remained 0.11.2 for the return test and used its existing armor support. The
 private test reports retain the detailed evidence without publishing account
 addresses, fingerprints or message contents here.
 
-Further investigation should capture a future synthetic pre-upload message and
-compare its decoded ciphertext with the received copy; determine whether the
-rewrite occurs on submission, delivery or API presentation; and compare binary
-versus armored bodies and relevant Content-Disposition variants. These tests
-should preserve strict receiving checks and avoid sending unrelated user data.
+## Captured binary delivery in installed IWA 0.11.3
+
+A subsequent receive test on **2026-11-23** sent one synthetic email using the
+same previously signed/encrypted Sequoia reply payload, now wrapped as binary
+PGP/MIME by the real IWA `gmailEnvelope()` constructor. No new signature was
+created. Unlike the initial run, this test retained the exact pre-upload bytes,
+the sender's Gmail Sent raw and the recipient's Gmail raw.
+
+| Observation | Pre-upload | Gmail Sent raw | Recipient raw |
+| --- | --- | --- | --- |
+| Root media type | `multipart/encrypted` | `multipart/encrypted` | `multipart/mixed` |
+| Root protocol parameter | `application/pgp-encrypted` | Same | Absent |
+| Control transfer encoding | Unencoded ASCII | Same | `base64` |
+| Control disposition | Absent | Absent | `attachment` |
+| Ciphertext transfer encoding | `base64` | `base64` | `base64` |
+| Ciphertext disposition | `inline` | `inline` | `attachment` |
+| Decoded ciphertext | 5,626 bytes | Identical | Identical |
+| Message-ID | Sender supplied | Replaced by Gmail | Same as Gmail Sent |
+
+The exact Gmail send receipt pinned the Sent read; its observed Message-ID then
+selected the recipient read. Each capture also checked the sender/recipient and
+exact ciphertext. Gmail's replacement Message-ID is another **unsigned outer
+header** change; it does not modify the protected inner headers or signature.
+The MIME difference is present between the Sent and recipient API observations.
+This narrows the evidence but does not establish which internal Google delivery,
+storage or API-serialization stage produced it.
+
+The original 0.11.2 parser rejected the actual captured recipient bytes with
+`Ambiguous rewritten encryption`. The fixed parser recovered all 5,626 bytes
+unchanged, and its source matched the rebuilt preview. The installed **0.11.3**
+IWA then opened the delivered email from Gmail and completed native YubiKey
+ML-KEM-768/X25519 decryption and WASM hybrid signature verification. The reader
+showed **Encrypted (decrypted), Valid hybrid, Trusted**. Protected subject,
+plain text, HTML and the downloaded 48-byte attachment matched expectations.
+This establishes live coverage of the new binary mixed-wrapper path, not just
+a synthetic parser test or an armored-message fallback.
+
+The receive initially stopped after a missed PIN dialog. After the native
+window-presentation fix, an isolated Cancel check and the actual vault/message
+operations passed. Before/after snapshots matched all 24 slot records, ten
+occupied public keys, PIN/touch policies, PIN retry counts (3/3) and eight
+installed PKCS#11 backend files. The test changed no keys or policies. The
+[0.11.3 README](../experiments/mac-iwa/README.md#binary-gmail-reception-and-native-pin-dialog-0113)
+details the PIN fix and its failure-boundary regressions.
+
+Further investigation can compare controlled binary versus armored bodies and
+Content-Disposition variants to identify which changes influence Google's
+rewrite. Preserve strict receiving checks and synthetic content; these observed
+deliveries do not justify generalizing to every Gmail message or weakening
+cryptographic verification.
 
 Sources: [standalone receiver](../mail_transport.py),
 [IWA receiver](../experiments/mac-iwa/app/message-mime.js),

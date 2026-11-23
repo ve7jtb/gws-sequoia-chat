@@ -147,6 +147,13 @@ def operation_error(op, error=None):
     Connection failures happen before the hardware operation. Keep them separate
     from signing/decryption failures so users do not unnecessarily retry a PIN.
     """
+    if op and op.startswith('chat-'):
+        # Only fixed pre-crypto labels get this explanation. Never expose the
+        # exception text/output or turn a private-operation error into a retry.
+        if str(error)=='PIN dialog timed out before submission':
+            return 'The native PIN dialog timed out before submission. No PIN was sent to the YubiKey. Start the operation again and look for the YubiKey PIN dialog or pin-prompt in the Dock or Command-Tab.'
+        if str(error)=='PIN cancelled or invalid':
+            return 'PIN entry was cancelled or its format was rejected locally. No PIN was sent to the YubiKey. No automatic retry was performed.'
     if op=='chat-certificate-migration':
         return 'Legacy public-certificate export stopped. Check the old store for conflicting, malformed or oversized records. No certificates or trust were changed. No YubiKey operation was attempted.'
     if op=='chat-signing-material':

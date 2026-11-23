@@ -96,7 +96,7 @@ vault lock discard the pending local envelope.
 
 ### Validation and current limits
 
-Automated validation passes **94 Node tests, 61 Python tests, four Rust public-
+Automated validation passes **94 Node tests, 65 Python tests, four Rust public-
 certificate inspection tests and eight native Rust tests**. The regressions cover
 one-time migration without trust resurrection, per-email trust, stale-window
 updates, attached-certificate save without automatic trust, late worker results,
@@ -172,13 +172,69 @@ passes **94 JavaScript tests**; **16 standalone mail tests** include real Sequoi
 decryption/signature checks and ciphertext-tamper rejection.
 
 The return used ASCII armor and the installed IWA's existing reader. The IWA
-binary-wrapper source fix is regression-tested, but was not installed during
-this live run. The first pre-upload MIME was not captured; the armored reply's
+binary-wrapper fix was not installed during that 0.11.2 run; the subsequent
+0.11.3 binary receive test below validates the installed fix. The first pre-upload MIME was not captured; the armored reply's
 captured pre-upload and Gmail Sent copies retained the same MIME structure and
 identical decoded ciphertext. These observations do not establish where the
 first rewrite occurred. See the [investigation report](../../docs/gmail-mime-rewriting.md)
 for exact structures, scope and follow-up questions. Private raw messages, account
 identifiers and hardware results remain outside the public repository.
+
+### Binary Gmail reception and native PIN dialog (0.11.3)
+
+On **2026-11-23**, the signed **0.11.3** bundle was rebuilt, its signature checked
+and the installed bytes compared with the rebuild. The update preserved the
+IWA origin, extension ID, build keys and both saved certificate/trust entries.
+One additional synthetic email reused the earlier Sequoia reply's signed,
+encrypted payload in a new binary/base64 PGP/MIME envelope. This is a receive
+and transport regression, not a new signing test.
+
+- The captured pre-upload and Gmail Sent copies used `multipart/encrypted`.
+  The independently captured recipient raw used `multipart/mixed`, two base64
+  attachment leaves and no root protocol parameter. All **5,626 ciphertext
+  bytes** matched across the three copies. Gmail also replaced the unsigned
+  outer Message-ID; the exact Sent receipt and observed replacement ID bound
+  the captures to this single delivery.
+- The unmodified 0.11.2 parser rejects that actual recipient message with
+  `Ambiguous rewritten encryption`. The fixed parser accepts the exact same
+  ciphertext, proving that this delivery exercises the new binary mixed-wrapper
+  path rather than only the already-supported standard envelope or armor path.
+- Opening that message in the actual IWA Gmail inbox used native YubiKey
+  **ML-KEM-768 + X25519** decapsulation in slots 9d/85. WASM displayed
+  **Encrypted (decrypted), Valid hybrid, Trusted**. The protected subject,
+  plain text and formatted HTML matched, and the downloaded **48-byte**
+  attachment matched every byte and its expected hash.
+- All **24 public slot records**, including ten occupied slots, PIN/touch
+  policies and retry counts matched before and after; PIN retries remained
+  **3/3**. All eleven protected configuration/certificate/backend files,
+  including eight PKCS#11 backend files, were unchanged. No hardware writes
+  or trust changes were requested.
+
+The first receive attempt stopped after the native PIN dialog was not visible
+to the user. The old helper activated before its modal window was ordered;
+that lifecycle/focus weakness is a plausible explanation, not a conclusively
+observed cause. The helper now presents from `applicationDidFinishLaunching`,
+orders a floating window in the active Space, focuses the secure PIN field and
+has a temporary Dock/Cmd-Tab entry (`pin-prompt`). An isolated presentation check
+showed the focused field and was cancelled without any hardware operation.
+The installed helper then completed both the real vault unlock and Gmail
+message decryption.
+
+A PIN-dialog timeout or local cancellation/format rejection now has a specific
+message explaining that no PIN reached the YubiKey. Unknown cryptographic errors
+retain generic guidance and never claim this safe pre-submission state. The host
+does not retry automatically, expose captured subprocess output, or send PINs
+to Chrome. Four [PIN-boundary regressions](tests/test_pin_prompt_boundary.py)
+check timeout, cancellation, invalid local input and sanitized errors; the full
+suite passes **65 Python tests**, including both optional public-fixture
+integration tests when configured. The existing **94 JavaScript tests** pass.
+Swift compilation, bundle signature validation and the installed UI checks
+also passed.
+
+See the [expanded MIME investigation](../../docs/gmail-mime-rewriting.md#captured-binary-delivery-in-installed-iwa-0113)
+for the captured wrapper differences and limits on attributing Google's internal
+rewrite stage. Raw email, accounts, fingerprints, device identifiers, build
+keys and local hardware reports remain outside the public repository.
 
 The 0.10.1 results below remain separate historical evidence for that build.
 

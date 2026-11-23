@@ -143,7 +143,13 @@ class ChatBridge:
         self.emit({'type':'progress','message':prompt+' — use the native PIN dialog, then touch if requested.'})
         # The PIN never reaches Chrome. Supply only a bounded anonymous pipe to
         # the one-shot worker; both components share this operation's PIN.
-        ui=subprocess.run([str(self.root/'build/pin-prompt'),prompt,self.cfg['serial']],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=180)
+        try:
+            ui=subprocess.run([str(self.root/'build/pin-prompt'),prompt,self.cfg['serial']],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=180)
+        except subprocess.TimeoutExpired:
+            # subprocess.run has killed/reaped the dialog. No crypto worker
+            # has started, so this fixed label cannot mean a token PIN failure.
+            # Never reflect TimeoutExpired: it can contain captured PIN bytes.
+            raise ValueError('PIN dialog timed out before submission') from None
         pin=bytearray(ui.stdout)
         try:
             if ui.returncode or not 6<=len(pin)<=8 or any(c<32 or c>126 for c in pin):raise ValueError('PIN cancelled or invalid')
