@@ -110,11 +110,16 @@ def rewritten_payload(msg):
 
     Ciphertext authenticity is established later by Sequoia, not by this shape.
     Additional text, attachments, nested MIME, or multiple armor blocks fail.
+    Gmail also rewrites our binary/base64 variant without armoring it. Decode
+    that specific octet-stream leaf strictly and preserve every ciphertext byte.
     """
     chat.require(msg.get_content_type()=='multipart/mixed','Not a rewritten envelope')
+    for header in ('Content-Type','Content-Transfer-Encoding'):
+        chat.require(len(msg.get_all(header,[]))<=1,'Duplicate MIME structure header')
     parts=list(msg.iter_parts());chat.require(len(parts)==2,'Ambiguous rewritten envelope')
     control=cipher=None
     for part in parts:
+        chat.require(not part.is_multipart(),'Nested rewritten envelope part')
         for header in ('Content-Type','Content-Transfer-Encoding'):
             chat.require(len(part.get_all(header,[]))<=1,'Duplicate MIME structure header')
         if part.get_content_type()=='application/pgp-encrypted' and control is None:control=part
@@ -123,6 +128,24 @@ def rewritten_payload(msg):
     chat.require(control is not None and cipher is not None,'Missing rewritten envelope part')
     version=control.get_payload(decode=True) or b''
     chat.require(len(version)<=64 and version.strip()==b'Version: 1','Invalid rewritten PGP version')
+    if (cipher.get_content_type()=='application/octet-stream' and
+            str(cipher.get('Content-Transfer-Encoding','')).strip().lower()=='base64'):
+        # email.get_payload(decode=True) deliberately tolerates malformed base64.
+        # Do not use that repair behavior for this narrow compatibility path:
+        # accept only MIME linear whitespace plus canonical padded base64.
+        # In particular, stripping the decoded binary would corrupt valid packet
+        # bytes that happen to equal a space, tab or newline at either end.
+        encoded=cipher.get_payload()
+        chat.require(isinstance(encoded,str),'Invalid rewritten binary payload')
+        encoded=re.sub(r'[ \t\r\n]','',encoded)
+        chat.require(bool(re.fullmatch(r'(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?',encoded)),
+                     'Invalid rewritten ciphertext base64')
+        data=base64.b64decode(encoded,validate=True)
+        chat.require(0<len(data)<=chat.MAX_BYTES and base64.b64encode(data).decode('ascii')==encoded,
+                     'Invalid rewritten ciphertext base64')
+        # This recognizes an envelope, not a valid or trusted message. Sequoia
+        # still validates the packets, authenticated encryption and signature.
+        return data
     data=(cipher.get_payload(decode=True) or b'').strip()
     begin=b'-----BEGIN PGP MESSAGE-----';end=b'-----END PGP MESSAGE-----'
     chat.require(len(data)<=chat.MAX_BYTES and data.isascii() and

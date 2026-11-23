@@ -50,6 +50,34 @@ test('Gmail exact rewritten encrypted envelope permits text/plain ciphertext onl
  assert.equal(envelope(Buffer.from(raw)).kind,'encrypted');assert.throws(()=>envelope(Buffer.from(raw.replace('Version: 1','Version: 2'))));
 });
 
+// Synthetic provider-rewrite fixtures never contain a live message or key.
+// Only MIME framing is repaired here; the native/WASM path still authenticates
+// the decrypted ciphertext and verifies the selected sender and recipient.
+function rewrittenBinary(encoded,type='application/octet-stream',encoding='base64'){
+ return 'Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--x\r\nContent-Type: '+type+'\r\nContent-Transfer-Encoding: '+encoding+'\r\n\r\n'+encoded+'\r\n--x--\r\n';
+}
+test('Gmail rewritten base64 binary envelope preserves leading and trailing ciphertext bytes',()=>{
+ const cipher=Buffer.from([32,9,13,10,193,0,255,98,105,110,97,114,121,0,13,10,9,32]);
+ const encoded=cipher.toString('base64'),raw=rewrittenBinary(' \t'+encoded.slice(0,12)+'\r\n'+encoded.slice(12)+'\r\n');
+ const result=envelope(Buffer.from(raw));assert.equal(result.kind,'encrypted');assert.deepEqual(Buffer.from(result.cipher),cipher);
+ // The provider also converted the control leaf to base64; that affects no
+ // cryptographic bytes and must still decode to exactly the Version 1 record.
+ const encodedControl=raw.replace('Content-Type: application/pgp-encrypted\r\n\r\nVersion: 1',
+  'Content-Type: application/pgp-encrypted\r\nContent-Transfer-Encoding: base64\r\n\r\nVmVyc2lvbjogMQ0K');
+ assert.deepEqual(Buffer.from(envelope(Buffer.from(encodedControl)).cipher),cipher);
+});
+test('Gmail binary rewrite rejects noncanonical base64 and ambiguous MIME',()=>{
+ for(const encoded of ['', 'wQ', 'wQ===', 'wR==', 'wQ==!', 'wQ==\v', 'wQ==\u00a0'])assert.throws(()=>envelope(Buffer.from(rewrittenBinary(encoded))));
+ const raw=rewrittenBinary('wQ==');
+ for(const invalid of [rewrittenBinary('wQ==','text/plain'),rewrittenBinary('ciphertext','application/octet-stream','8bit'),
+  raw.replace('application/octet-stream','multipart/mixed; boundary=y'),
+  raw.replace('--x--','--x\r\nContent-Type: text/plain\r\n\r\nUntrusted extra\r\n--x--'),
+  raw.replace('Version: 1','Version: 2'),
+  raw.replace('Content-Transfer-Encoding: base64','Content-Transfer-Encoding: base64\r\nContent-Transfer-Encoding: 7bit'),
+  raw.replace('Content-Type: application/octet-stream','Content-Type: application/octet-stream\r\nContent-Type: text/plain'),
+  raw.replace('Content-Type: multipart/mixed; boundary=x','Content-Type: multipart/mixed; boundary=x\r\nContent-Type: text/plain')])assert.throws(()=>envelope(Buffer.from(invalid)));
+});
+
 // A valid signature on a newer attached certificate must not inherit the older
 // saved certificate's email binding when that mailbox is no longer certified.
 test('valid signature without a current sender mailbox stays untrusted',async()=>{

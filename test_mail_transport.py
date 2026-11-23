@@ -9,6 +9,51 @@ import chat
 import mail_transport as mail
 from test_webapp import Fixture,PASSWORD
 
+class RewrittenBinaryEnvelopeTests(unittest.TestCase):
+    """Synthetic MIME-only cases; no Google account, hardware or private key.
+
+    Gmail can retain a base64 binary ciphertext leaf while rewriting the root
+    from multipart/encrypted to multipart/mixed. These checks exercise that
+    narrow transport repair independently of the later OpenPGP verification.
+    """
+    @staticmethod
+    def envelope(encoded,leaf_type='application/octet-stream',encoding='base64'):
+        return ('Content-Type: multipart/mixed; boundary=x\r\n\r\n'
+                '--x\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n'
+                '--x\r\nContent-Type: '+leaf_type+'\r\nContent-Transfer-Encoding: '+encoding+
+                '\r\n\r\n'+encoded+'\r\n--x--\r\n').encode('utf-8')
+    def test_binary_rewrite_preserves_every_decoded_octet(self):
+        # Leading/trailing whitespace is part of ciphertext, not MIME padding.
+        # Never strip decoded binary bytes as the historical armor path does.
+        binary=b' \t\r\n\xc1\x00\xffbinary ciphertext\x00\r\n\t '
+        encoded=base64.b64encode(binary).decode()
+        wrapped=' \t'+encoded[:12]+'\r\n'+encoded[12:]+'\r\n'
+        raw=self.envelope(wrapped)
+        self.assertEqual(mail.pgp_payload(mail.parse_message(raw)),binary)
+        # The observed provider rewrite base64-encodes the control record too.
+        encoded_control=raw.replace(b'Content-Type: application/pgp-encrypted\r\n\r\nVersion: 1',
+            b'Content-Type: application/pgp-encrypted\r\nContent-Transfer-Encoding: base64\r\n\r\nVmVyc2lvbjogMQ0K')
+        self.assertEqual(mail.pgp_payload(mail.parse_message(encoded_control)),binary)
+    def test_binary_rewrite_rejects_noncanonical_base64(self):
+        # MIME whitespace may be removed before decoding; missing/excess padding,
+        # nonzero unused pad bits, junk and non-MIME whitespace may not be fixed.
+        for encoded in ('','wQ','wQ===','wR==','wQ==!','wQ==\v','wQ==\u00a0'):
+            with self.subTest(encoded=repr(encoded)),self.assertRaises(ValueError):
+                mail.pgp_payload(mail.parse_message(self.envelope(encoded)))
+    def test_binary_rewrite_rejects_plaintext_nested_extra_and_duplicate_parts(self):
+        raw=self.envelope('wQ==')
+        cases=[self.envelope('wQ==',leaf_type='text/plain'),
+               self.envelope('ciphertext',encoding='8bit'),
+               raw.replace(b'application/octet-stream',b'multipart/mixed; boundary=y'),
+               raw.replace(b'--x--',b'--x\r\nContent-Type: text/plain\r\n\r\nUntrusted extra\r\n--x--'),
+               raw.replace(b'Version: 1',b'Version: 2'),
+               raw.replace(b'Content-Transfer-Encoding: base64',b'Content-Transfer-Encoding: base64\r\nContent-Transfer-Encoding: 7bit'),
+               raw.replace(b'Content-Type: application/octet-stream',b'Content-Type: application/octet-stream\r\nContent-Type: text/plain'),
+               raw.replace(b'Content-Type: multipart/mixed; boundary=x',b'Content-Type: multipart/mixed; boundary=x\r\nContent-Type: text/plain')]
+        for raw in cases:
+            with self.subTest(raw=raw[:80]),self.assertRaises(ValueError):
+                mail.pgp_payload(mail.parse_message(raw))
+
 class MailTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.f=Fixture()
@@ -84,6 +129,33 @@ class MailTests(unittest.TestCase):
         payload.set_content(cipher.decode('ascii')+cipher.decode('ascii'));self.raw=rewritten.as_bytes()
         with self.assertRaises(ValueError):self.open()
         payload.set_content(cipher.decode('ascii'));extra=EmailMessage();extra.set_content('Unverified extra');rewritten.attach(extra);self.raw=rewritten.as_bytes()
+        with self.assertRaises(ValueError):self.open()
+
+    def test_gmail_rewritten_binary_ciphertext_passes_real_sequoia_and_rejects_tampering(self):
+        from email.message import EmailMessage
+        import email.policy
+        # Build an actual signed/encrypted software-fixture message, then change
+        # only its outer transport representation to the provider's mixed shape.
+        review=self.prepare();original=mail.parse_message(self.app.drafts[review['review']]['raw'])
+        with tempfile.TemporaryDirectory() as folder:
+            armored=Path(folder)/'message.asc';armored.write_bytes(mail.pgp_payload(original))
+            binary=chat.sq('packet','dearmor',armored,batch=True)
+        rewritten=EmailMessage(policy=email.policy.SMTP)
+        rewritten['From']='alice@example.test';rewritten['To']='bob@example.test';rewritten.set_type('multipart/mixed')
+        control=EmailMessage(policy=email.policy.SMTP)
+        control.set_content(b'Version: 1\r\n',maintype='application',subtype='pgp-encrypted',cte='base64')
+        payload=EmailMessage(policy=email.policy.SMTP)
+        payload.set_content(binary,maintype='application',subtype='octet-stream',cte='base64')
+        rewritten.attach(control);rewritten.attach(payload);self.raw=rewritten.as_bytes()
+        self.assertEqual(mail.pgp_payload(mail.parse_message(self.raw)),binary)
+        with patch.object(mail,'gws_memory',self.fake):
+            self.assertTrue(self.app.action('mail-read',{'message':'abc'})['encrypted'])
+        result=self.open();self.assertTrue(result['signatureValid']);self.assertIn('Protected mail body',result['text'])
+        # A valid wrapper cannot bless changed packets. Later crypto validation
+        # must reject corruption before returning any decrypted message content.
+        damaged=bytearray(binary);damaged[-16]^=1
+        payload.set_content(bytes(damaged),maintype='application',subtype='octet-stream',cte='base64')
+        self.raw=rewritten.as_bytes()
         with self.assertRaises(ValueError):self.open()
 
     def test_outer_headers_cannot_override_verified_identity(self):

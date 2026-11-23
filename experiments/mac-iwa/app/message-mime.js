@@ -48,6 +48,21 @@ export function envelope(bytes){
    if(e.type==='multipart/encrypted'){
     if(p[0]!==controls[0]||cipher.type!=='application/octet-stream'||e.param('protocol').toLowerCase()!=='application/pgp-encrypted')throw Error('Unsupported encrypted envelope');
    }else{
+    if(cipher.type==='application/octet-stream'&&(cipher.headers.get('content-transfer-encoding')||'').trim().toLowerCase()==='base64'){
+     // Gmail also rewrites the root of binary/base64 PGP/MIME to mixed. Only
+     // this exact two-leaf octet-stream shape admits binary content: never
+     // reinterpret arbitrary text/plain, nested MIME or extra attachments.
+     // Remove MIME whitespace from the encoded representation, require normal
+     // padding and zero unused pad bits, then preserve every decoded octet.
+     // Trimming binary ciphertext would corrupt a trailing space/tab/newline.
+     const encoded=cipher.body.replace(/[ \t\r\n]/g,'');
+     if(!encoded||! /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))throw Error('Invalid rewritten ciphertext base64');
+     const data=bytes64(encoded);
+     if(!data.length||data.length>LIMIT||b64(data)!==encoded)throw Error('Invalid rewritten ciphertext base64');
+     // MIME shape never establishes authenticity. The existing native/WASM
+     // path must still validate packets, AEAD, recipient, signature and trust.
+     return {kind:'encrypted',cipher:data};
+    }
     // Gmail may rewrite the root to mixed and the armored leaf to text/plain.
     // Accept only that exact two-leaf shape, never surrounding ordinary content.
     const armor=binary(decoded(cipher)).trim();

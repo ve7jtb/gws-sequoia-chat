@@ -24,6 +24,20 @@ policies were unchanged, with no email sent. Explicit encrypted `.eml` export
 and local encrypted-file opening are now available without Google sign-in. See
 the [new storage boundary and validation](experiments/mac-iwa/README.md#iwa-owned-certificates-and-trust-011-preview).
 
+**Live Gmail tests passed in both directions on 2026-11-23**, using the actual
+IWA 0.11.2 interface, migrated certificates and a physical YubiKey. Sequoia
+decrypted and verified the IWA's hybrid-signed message; the IWA decrypted the
+reply and displayed **Valid hybrid / Trusted**. Protected headers, text and HTML
+matched, as did all 48 reply-attachment bytes. The run sent two synthetic emails;
+all 24 PIV slot records, PIN/touch policies and migrated trust entries remained
+unchanged. Gmail's unsigned outer MIME rewrite exposed an armor-only parser
+assumption. Both receiver implementations now accept the exact two-part
+binary/base64 rewrite without relaxing cryptographic or trust checks. **94 IWA
+JavaScript tests and 16 standalone mail tests pass.** The installed IWA used its
+existing armor support for the reply; its new binary-wrapper path is covered by
+source regressions. See the [live test scope](experiments/mac-iwa/README.md#live-gmail-exchange-using-migrated-certificates-2026-11-23)
+and [MIME rewriting investigation](docs/gmail-mime-rewriting.md).
+
 In the earlier hardware run on **2026-11-23**, the installed **0.10.1** preview passed a physical
 YubiKey test through its actual **Compose interface**: native Sequoia `sq`
 independently decrypted the WASM-encrypted message and verified its hybrid

@@ -96,7 +96,7 @@ vault lock discard the pending local envelope.
 
 ### Validation and current limits
 
-Automated validation passes **92 Node tests, 61 Python tests, four Rust public-
+Automated validation passes **94 Node tests, 61 Python tests, four Rust public-
 certificate inspection tests and eight native Rust tests**. The regressions cover
 one-time migration without trust resurrection, per-email trust, stale-window
 updates, attached-certificate save without automatic trust, late worker results,
@@ -139,6 +139,46 @@ migrated v6 recipient and sender trust through the actual IWA interface:
   and PIN retry counts matched before and after. The eight installed PKCS#11
   backend files were unchanged. Both migrated certificate/trust entries remained
   in the IWA, and no keys, policies or trust were changed by the test.
+
+### Live Gmail exchange using migrated certificates (2026-11-23)
+
+The installed **0.11.2** IWA passed an actual signed-and-encrypted Gmail exchange
+with the standalone gws/Sequoia app, using the previously migrated certificates
+and trust bindings. This sent **two synthetic emails**, separately from the
+offline tests above.
+
+- **IWA to Sequoia:** Compose signed through the existing YubiKey
+  ML-DSA-65/Ed25519 keys, with signature construction, verification and encryption
+  in WASM. The IWA sent through Gmail's REST API. Independent Sequoia decrypted
+  the delivered message and verified its hybrid signature, pinned sender and
+  recipient, protected From/To/Subject, exact text and HTML.
+- **Sequoia to IWA:** the existing software identity signed and encrypted a fresh
+  reply. The IWA opened it from its Gmail inbox and used native YubiKey
+  ML-KEM-768/X25519 decapsulation. WASM displayed **Valid hybrid** and **Trusted**
+  for the migrated sender. The protected subject, plain text and HTML matched;
+  the downloaded 48-byte attachment matched every prepared byte and its SHA-256.
+- All 24 public PIV slot records, including ten occupied slots, PIN/touch policies
+  and PIN retry counts were unchanged. The eight installed PKCS#11 backend files
+  and both migrated trust entries were unchanged. No provisioning or trust
+  changes were requested.
+
+The first delivery exposed Gmail rewriting the unsigned outer `multipart/encrypted`
+wrapper to `multipart/mixed`, with a base64 binary ciphertext attachment. The
+standalone reader's narrow binary-wrapper fix was installed before successful
+verification. Both the standalone and IWA parsers now preserve all decoded
+ciphertext bytes while rejecting malformed base64, duplicate structure headers,
+nested or extra parts and arbitrary plaintext substitutes. The full IWA suite
+passes **94 JavaScript tests**; **16 standalone mail tests** include real Sequoia
+decryption/signature checks and ciphertext-tamper rejection.
+
+The return used ASCII armor and the installed IWA's existing reader. The IWA
+binary-wrapper source fix is regression-tested, but was not installed during
+this live run. The first pre-upload MIME was not captured; the armored reply's
+captured pre-upload and Gmail Sent copies retained the same MIME structure and
+identical decoded ciphertext. These observations do not establish where the
+first rewrite occurred. See the [investigation report](../../docs/gmail-mime-rewriting.md)
+for exact structures, scope and follow-up questions. Private raw messages, account
+identifiers and hardware results remain outside the public repository.
 
 The 0.10.1 results below remain separate historical evidence for that build.
 
@@ -1152,9 +1192,10 @@ Validation: 14 JavaScript OAuth/direct-transport/PRF tests and three offline
 native export tests pass, including exact binary upload bytes, account mismatch,
 late response after lock, redirect/traversal rejection, single-use export and
 changed-trust rejection. These are automated fixtures, **not a live Google
-send/receive result**. Live Google network send/receive remains untested for this
-transport revision. The subsequent offline IWA 0.11.2 signing, decryption and
-independent Sequoia verification results are documented above.
+send/receive result** for that historical revision. Subsequent offline and live
+two-way Gmail tests passed in IWA 0.11.2, as documented above. Those Gmail results
+do not establish a live Google Chat send/receive result for the current browser
+transport.
 
 API references: [Gmail send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send),
 [Chat media upload](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload),
