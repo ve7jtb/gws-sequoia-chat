@@ -32,6 +32,7 @@ function setup() {
     }}};
   const context = vm.createContext({chrome, IWA_ORIGIN: origin, importScripts() {},
     startPrf: (client, request) => delegated.push({kind: 'prf', client, request}),
+    startChatMedia: (client, request) => delegated.push({kind: 'media', client, request}),
     startGoogleOAuth: (client, full) => delegated.push({kind: 'google', client, full})});
   vm.runInContext(source, context);
   function client(sender = {origin, url: origin + '/', frameId: 0}) {
@@ -140,4 +141,24 @@ test('certificate mutation and draft routes never reach Native Messaging', () =>
   assert.equal(s.connections.length, 0);
   const migration = s.client(); migration.onMessage.emit({op:'chat-certificate-migration'});
   assert.equal(s.connections.length, 1);
+});
+
+test('only exact IWA top-level ports can delegate Chat attachments, never to native', () => {
+  const s = setup();
+  // Host permission alone must not create a public HTTP proxy: external sender
+  // validation runs before the attachment broker sees any token or payload.
+  for (const sender of [null, {origin:'https://wrong.invalid',url:origin+'/',frameId:0},
+    {origin,url:origin+'/other',frameId:0}, {origin,url:origin+'/',frameId:1}]) {
+    const client=s.client(sender);client.onMessage.emit({op:'google-chat-upload'});
+  }
+  assert.equal(s.delegated.length,0);
+  const client=s.client();
+  client.onMessage.emit({op:'google-chat-upload'});
+  client.onMessage.emit({op:'google-chat-download'});
+  assert.deepEqual(s.delegated.map(r=>r.kind),['media','media']);
+  assert.equal(s.connections.length,0);
+  client.onMessage.emit({op:'chat-sign-digest'});
+  const busy=s.client();busy.onMessage.emit({op:'google-chat-upload'});
+  assert.equal(s.delegated.length,2);
+  assert.equal(busy.messages.at(-1).type,'error');
 });

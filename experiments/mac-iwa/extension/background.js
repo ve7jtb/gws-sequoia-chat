@@ -1,5 +1,5 @@
 // The generated config binds this extension to one signed IWA origin.
-importScripts('config.js','prf-broker.js','google-oauth.js');
+importScripts('config.js','prf-broker.js','google-oauth.js','chat-media.js');
 // The lock belongs to a particular Native Messaging connection, not merely to
 // the most recently disconnected IWA port. Split signing uses consecutive ports
 // for preparation, signing and completion; delayed cleanup from the first port
@@ -22,6 +22,16 @@ chrome.runtime.onConnectExternal.addListener(port => {
   port.onMessage.addListener(request => {
     if (closed) return;
     if(['google-oauth-test','google-oauth-services'].includes(request?.op)){if(native||nativeOwner){port.postMessage({type:'error',message:'Another operation is in progress.'});return;}startGoogleOAuth(port,request.op==='google-oauth-services');return;}
+    // Google Chat's upload response is not readable by this IWA origin under
+    // CORS. Only the two bounded attachment operations use extension HTTPS;
+    // ordinary Chat/Gmail REST calls and all message cryptography stay in the
+    // IWA. The broker constructs its own fixed Google URLs, rejects arbitrary
+    // fields, keeps the supplied access token in memory for this request only,
+    // and aborts on port disconnect. It never reaches the native helper.
+    if(['google-chat-upload','google-chat-download'].includes(request?.op)){
+      if(native||nativeOwner){port.postMessage({type:'error',message:'Another operation is in progress.'});return;}
+      startChatMedia(port,request);return;
+    }
     if(request?.op==='vault-prf'){if(nativeOwner||native)return;startPrf(port,request);return;}
     // Never proxy arbitrary methods, shell commands, paths, PINs or payloads.
     if (nativeOwner || native || !request || JSON.stringify(request).length > 500000 || !['chat-vault-ecdh','chat-vault-material','chat-vault-decapsulate','status','test','chat-state','chat-certificate-migration','chat-signing-material','chat-sign-digest','chat-decap'].includes(request.op)) {

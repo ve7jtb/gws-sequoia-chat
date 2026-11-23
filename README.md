@@ -51,6 +51,17 @@ with a temporary Dock entry and specific pre-submission timeout/cancel errors.
 never start private cryptography. See the [0.11.3 test and PIN fix](experiments/mac-iwa/README.md#binary-gmail-reception-and-native-pin-dialog-0113)
 and [MIME investigation](docs/gmail-mime-rewriting.md#captured-binary-delivery-in-installed-iwa-0113).
 
+**Installed IWA 0.11.4 passed signed-and-encrypted Google Chat in both directions
+on 2026-11-23.** Sequoia decrypted and verified the IWA's delivered hybrid message;
+the IWA decrypted the fresh reply and displayed **Valid hybrid / Trusted**. Signed
+headers, text and HTML matched, and the downloaded 50-byte attachment matched
+exactly. All public PIV key/slot records and touch policies were unchanged; the
+final PIN retry count was 3/3. The test sent two encrypted bundles and their two
+linked public certificates. It exposed an upload CORS restriction, corrected by
+an approved, bounded extension broker for Chat attachments. Certificates, trust
+and message cryptography stay in the IWA. **123 JavaScript tests plus the
+formatting test pass.** See the [transport correction and live test](experiments/mac-iwa/README.md#chat-attachment-transport-correction-0114-preview).
+
 In the earlier hardware run on **2026-11-23**, the installed **0.10.1** preview passed a physical
 YubiKey test through its actual **Compose interface**: native Sequoia `sq`
 independently decrypted the WASM-encrypted message and verified its hybrid

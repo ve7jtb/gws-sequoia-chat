@@ -6,16 +6,35 @@ const query=o=>new URLSearchParams(Object.entries(o).filter(([,v])=>v!=='')).toS
 function resource(value,kind){const re=kind==='space'?/^spaces\/[A-Za-z0-9_-]+$/:/^spaces\/[A-Za-z0-9_-]+\/messages\/[A-Za-z0-9_.~-]+$/;if(typeof value!=='string'||!re.test(value))throw Error('Invalid Chat resource');return value;}
 function mailId(value){if(typeof value!=='string'||! /^[a-fA-F0-9]{1,64}$/.test(value))throw Error('Invalid Gmail message');return value;}
 export function mediaPath(value){if(typeof value!=='string'||value.length>4096||! /^[A-Za-z0-9_./=-]+$/.test(value)||value.split('/').some(s=>s==='.'||s==='..'))throw Error('Unsafe Chat media reference');return '/v1/media/'+value.split('/').map(encodeURIComponent).join('/')+'?alt=media';}
+function chatFailureDetail(error){
+ // Fetch intentionally hides the HTTP status when CORS blocks a response.
+ // Name that uncertainty without claiming the POST failed at Google's server.
+ // Do not include arbitrary response bodies, URLs, headers, or bearer tokens
+ // in an error shown in the UI; retain only our fixed HTTP status diagnostic.
+ const status=typeof error?.message==='string'&&error.message.match(/^Google API HTTP ([0-9]{3})\./);
+ if(status)return 'Google API HTTP '+status[1]+'.';
+ if(error?.name==='TypeError')return 'The browser could not read the response (network failure or browser policy, including CORS).';
+ if(error?.name==='AbortError')return 'The request was cancelled or timed out.';
+ return 'The request or response validation did not complete.';
+}
+async function chatSendStage(label,outcome,operation){
+ // Wrapping each awaited stage, including response validation, distinguishes
+ // an attachment upload from a visible message creation. This is diagnostic
+ // only: no retry, transport fallback, or fresh review is created on failure.
+ try{return await operation();}
+ catch(error){throw Error('Chat '+label+' failed. '+outcome+' No automatic retry. '+chatFailureDetail(error));}
+}
 export function createTransport(session){
  let running=false;
  async function raw(message){const r=await session.request(GMAIL,'/gmail/v1/users/me/messages/'+mailId(message)+'?format=raw');if(typeof r.raw!=='string'||r.raw.length>400000)throw Error('Message exceeds preview limit');const bytes=bytes64(r.raw.replace(/-/g,'+').replace(/_/g,'/'));if(bytes.length>LIMIT)throw Error('Message exceeds preview limit');return {raw:b64(bytes)};}
- async function download(message,wanted){const matches=(message.attachment||[]).filter(a=>a.contentName===wanted);if(matches.length!==1)throw Error('Expected one '+wanted);return session.request(CHAT,mediaPath(matches[0].attachmentDataRef?.resourceName),{binary:true,limit:LIMIT});}
+ async function download(message,wanted){const matches=(message.attachment||[]).filter(a=>a.contentName===wanted);if(matches.length!==1)throw Error('Expected one '+wanted);const ref=matches[0].attachmentDataRef?.resourceName;mediaPath(ref);return session.media({op:'google-chat-download',resource:ref});}
  async function upload(space,filename,data){
   const bytes=bytes64(data);if(!bytes.length||bytes.length>LIMIT)throw Error('Attachment limit');
-  const boundary='sequoia-'+crypto.randomUUID();
-  const body=new Blob(['--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify({filename})+'\r\n--'+boundary+'\r\nContent-Type: application/octet-stream\r\n\r\n',bytes,'\r\n--'+boundary+'--\r\n']);
-  const result=await session.request(CHAT,'/upload/v1/'+resource(space,'space')+'/attachments:upload?uploadType=multipart',{method:'POST',body,contentType:'multipart/related; boundary='+boundary});
-  const ref=result.attachmentDataRef;if(!ref||!['attachmentUploadToken','resourceName'].some(k=>typeof ref[k]==='string'&&ref[k].length>0&&ref[k].length<=65536))throw Error('Missing uploaded attachment reference');
+  // Upload/download use only the typed extension media broker because Google's
+  // attachment response is not readable through direct IWA CORS. Do not retry
+  // with a different transport: a failed upload may already exist at Google.
+  const result=await session.media({op:'google-chat-upload',space:resource(space,'space'),filename,data});
+  const ref=result?.attachmentDataRef;if(!ref||!['attachmentUploadToken','resourceName'].some(k=>typeof ref[k]==='string'&&ref[k].length>0&&ref[k].length<=65536))throw Error('Missing uploaded attachment reference');
   return {attachmentDataRef:Object.fromEntries(['attachmentUploadToken','resourceName'].filter(k=>typeof ref[k]==='string').map(k=>[k,ref[k]]))};
  }
  async function perform(op,d,native,context){
@@ -77,12 +96,25 @@ export function createTransport(session){
    const outgoing=await context.composeReviews.take(d.review,op==='chat-mail-send'?'Gmail':'Chat',d.confirmed,context.account);
    if(op==='chat-mail-send'){const r=await session.request(GMAIL,'/gmail/v1/users/me/messages/send',{method:'POST',body:JSON.stringify({raw:outgoing.raw.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')})});return {sent:r.id};}
    const space=resource(outgoing.space,'space');
-   const bundle=await upload(space,'message.pgp',outgoing.cipher),certificate=await upload(space,'pq-mail-sender-key.pgp',outgoing.certificate);
+   // The consumed review remains consumed even if the browser cannot read an
+   // upload response. Google may already have stored that attachment; a failed
+   // fetch is not evidence that the server rejected or never received a POST.
+   const uploadOutcome='The upload may have reached Google; no Chat message creation was attempted.';
+   const bundle=await chatSendStage('encrypted-bundle upload',uploadOutcome,()=>upload(space,'message.pgp',outgoing.cipher));
+   const certificate=await chatSendStage('public-certificate upload',uploadOutcome,()=>upload(space,'pq-mail-sender-key.pgp',outgoing.certificate));
    const send=body=>session.request(CHAT,'/v1/'+space+'/messages?requestId='+crypto.randomUUID(),{method:'POST',body:JSON.stringify(body)});
-   const first=await send({text:'PQ Mail public OpenPGP certificate. Verify its fingerprint independently.',attachment:[certificate]});
-   const certName=resource(first.name,'message');if(!certName.startsWith(space+'/messages/'))throw Error('Unexpected certificate destination');
-   try{const r=await send({text:'PQ Mail signed OpenPGP bundle.\nCertificate message: '+certName,attachment:[bundle]});return {sent:r.name};}
-   catch(e){throw Error('Certificate message was sent ('+certName+'); encrypted bundle delivery is uncertain. Inspect the conversation before another send. '+e.message);}
+   const certName=await chatSendStage('public-certificate message creation',
+    'Certificate delivery is uncertain; encrypted-bundle message creation was not attempted. Inspect the conversation before another send.',async()=>{
+     const first=await send({text:'PQ Mail public OpenPGP certificate. Verify its fingerprint independently.',attachment:[certificate]});
+     const name=resource(first?.name,'message');if(!name.startsWith(space+'/messages/'))throw Error('Unexpected certificate destination');return name;
+    });
+   return chatSendStage('encrypted-bundle message creation',
+    'Certificate message was sent ('+certName+'); encrypted-bundle delivery is uncertain. Inspect the conversation before another send.',async()=>{
+     const result=await send({text:'PQ Mail signed OpenPGP bundle.\nCertificate message: '+certName,attachment:[bundle]});
+     // An unexpected/malformed successful response is still an uncertain send,
+     // never permission to retry or a reason to show a false success resource.
+     const name=resource(result?.name,'message');if(!name.startsWith(space+'/messages/'))throw Error('Unexpected encrypted-bundle destination');return {sent:name};
+    });
   }
   throw Error('Unsupported browser transport operation');
  }

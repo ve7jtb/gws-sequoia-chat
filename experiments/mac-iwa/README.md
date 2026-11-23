@@ -1,12 +1,68 @@
 # Sequoia Chat Lab — experimental Mac IWA
 
 A signed Isolated Web App uses Sequoia WebAssembly for message cryptography and
-browser REST APIs for Gmail/Google Chat. A scoped extension connects it to native
+browser REST APIs for Gmail/Google Chat. Chat attachments use a bounded extension
+HTTPS broker. A scoped extension also connects it to native
 YubiKey operations and the Google/passkey authorization UI. The repository's
 main loopback Mail/Chat application remains separate. There is no listening HTTP
 server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
 in the 0.11 section below. This change does not move the main loopback app's store.
+
+## Chat attachment transport correction (0.11.4 preview)
+
+A live 0.11.3 Compose test constructed and verified the hybrid signature in
+WASM, but the browser could not read Google's attachment-upload response because
+it lacked an `Access-Control-Allow-Origin` header for the IWA. The test stopped
+before posting a certificate or encrypted message. That initial attempt did not
+complete an end-to-end Chat test; the successful 0.11.4 exchange is recorded below.
+
+The 0.11.4 correction uses extension HTTPS **only for Chat attachment upload and
+download**, with the `https://chat.googleapis.com/*` host permission. Installation
+requires approving that expanded extension permission. No new OAuth scopes,
+refresh-token storage, native Google transport, or browser security switches are
+introduced. Ordinary Gmail and Chat message REST calls remain in the IWA.
+
+The broker accepts only the configured IWA's top-level origin. It constructs fixed
+Chat API URLs, permits the two named bundle/certificate upload filenames, caps
+input and streamed response sizes, rejects redirects, and never retries. The
+OAuth access token is supplied for one request in memory, is not logged or saved,
+and never reaches the native helper. Vault lock, navigation, timeout or port
+closure aborts the request and discards late replies. Certificates, trust, message
+construction, encryption and verification remain in the IWA; hardware private
+operations remain in the native helper.
+
+Send errors identify the failed stage and preserve uncertain-delivery semantics.
+An upload can reach Google even if the browser cannot read its response; this
+alone does not create a Chat message. A failed message-creation response must be
+investigated before resending.
+
+**Installed 0.11.4 live testing passed in both directions on 2026-11-23.** After
+approval of the scoped Chat permission, the installed signed bundle matched the
+reviewed build and preserved the IWA origin, extension ID and both existing
+certificate/trust records. The exchange sent two synthetic encrypted bundles and
+their two linked public-certificate messages in the existing test conversation:
+
+- **IWA to Sequoia:** native YubiKey ML-DSA-65/Ed25519 signing, WASM signature
+  construction/verification and encryption, then the corrected Chat upload path.
+  Independent Sequoia decrypted the delivered 5,516-byte ciphertext and verified
+  the hybrid signature, full signer fingerprint, signed From/To/Subject, exact
+  plain text and HTML alternative.
+- **Sequoia to IWA:** the existing encrypted software identity produced a fresh
+  5,632-byte reply. The IWA downloaded it through the scoped broker, used YubiKey
+  ML-KEM-768/X25519 decapsulation, and displayed **Encrypted (decrypted)**,
+  **Valid hybrid** and **Trusted** for the selected contact. The protected subject,
+  text and HTML matched; all 50 downloaded attachment bytes and SHA-256 matched.
+- All 24 public PIV slot records, including ten occupied slots, PIN/touch policies
+  and the eleven protected identity/backend files matched the original snapshot.
+  An earlier rejected PIN reduced retries to two; the successful resumed unlock
+  restored the normal **3/3** count, which remained at completion. No keys,
+  certificates, policies or trust bindings were changed.
+
+The software suite passes **123 JavaScript tests plus the formatting test**,
+including attachment bounds, fixed endpoints, origin restrictions, cancellation,
+late-response rejection and stage-specific failure handling. These checks and the
+live exchange are distinct evidence; browser CORS was discovered only live.
 
 ## IWA-owned certificates and trust (0.11 preview)
 
