@@ -567,8 +567,9 @@ installed IWA: valid/altered/missing-certificate cases for v4 and Level 3 hybrid
 v6, plus valid original and invalid altered Proton messages. Saved certificates,
 trust and the original message stayed unchanged. Preview 0.6 subsequently moves
 MIME composition/reading and ordinary/decrypted-message verification into an IWA
-worker. YubiKey signing/decryption, AEAD integrity checks, OAuth, transport and
-trust persistence remain native. See the [browser/native boundary and tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06). **Baseline WASM remains the default**; wide arithmetic runs only
+worker. In that preview, YubiKey signing/decryption and AEAD integrity checks
+remained native. Preview 0.8 moves authenticated message decryption into WASM;
+YubiKey decapsulation/signing, OAuth, transport and trust persistence remain native. See the [browser/native boundary and tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06). **Baseline WASM remains the default**; wide arithmetic runs only
 when its explicit benchmark button is selected.
 
 The wide-arithmetic build passed all eight cases in Canary 160 on Apple Silicon,
@@ -607,7 +608,7 @@ Original-message and saved-certificate/trust hashes remained unchanged. The
 308-byte result is the displayed attachment size; exact downloaded bytes were
 verified in the earlier interoperability tests, not repeated in this run.
 
-MIME composition/reading and message verification now run in the IWA worker.
+In preview 0.6.2, MIME composition/reading and message verification run in the IWA worker.
 YubiKey operations, PIN handling, authenticated decryption, OAuth credentials
 and trust persistence stay native. Baseline WASM is the default; wide arithmetic
 remains an opt-in benchmark. See the [implementation boundaries and regression tests](experiments/mac-iwa/README.md#browser-mime-and-baseline-wasm-verification-preview-06).
@@ -669,3 +670,42 @@ Sequoia round trips of WASM-encrypted data. Tests cover fresh randomness,
 recipient/mailbox mismatch, altered content, secret-key rejection, public packet
 validation and one-use completion tickets. Baseline remains the default, with no
 native encryption fallback. See the [encryption boundary](experiments/mac-iwa/README.md#browser-openpgp-encryption-preview-07).
+
+
+### Live Sequoia → baseline WASM decryption tests
+
+Mac IWA preview **0.8.0** passed incoming **Gmail and Google Chat** tests on
+**2026-11-22**, reopening existing synthetic messages from the standalone Sequoia
+peer. The native helper used the existing Level 3 YubiKey to decapsulate
+**ML-KEM-768 + X25519** and unwrap the per-message session key. The baseline WASM
+worker performed authenticated OpenPGP message decryption, MIME processing and
+**ML-DSA-65 + Ed25519** signature verification.
+
+| Installed IWA check | Gmail | Google Chat |
+|---|---|---|
+| Native YubiKey decapsulation + baseline WASM AEAD decryption | Passed | Passed |
+| Hybrid signature / saved certificate trust | Valid / Trusted | Valid / Trusted |
+| HTML heading, bold/italic text and lists displayed | Passed | Passed |
+| Downloaded attachment compared with original, all **308 bytes** | Exact match | Exact match |
+
+Both downloaded attachments had SHA-256
+`dcfa99c88a6aab863d39ffe61851ec8a93c10e81634306740c662fac87c74030`.
+These checks include actual HTML display and byte-for-byte comparison of the
+IWA downloads, not only the displayed attachment size. An initial Gmail attempt
+stopped without a result; a fresh user-authorized attempt passed. No automatic
+private-key retry occurred. No messages were sent and no keys or touch policies
+were changed.
+
+Only the per-message session key crosses into browser memory; long-term private
+keys and PINs remain outside the browser. The worker authenticates the complete
+AEAD message and verifies its signature before releasing a message result.
+Session keys are not persisted or logged; worker termination and reference
+removal do not guarantee erasure of JavaScript/IPC/OS memory copies. There is no
+native decryption fallback. Baseline WASM remains the default.
+
+Offline checks passed: five native Rust tests, 37 Python tests, seven MIME tests,
+eight v4/v6/Proton verification cases, and native-decapsulation/WASM-decryption
+interoperability with exact MIME recovery. Negative tests reject wrong session
+keys, key lengths, algorithms and recipients, ciphertext substitution, corrupted
+final AEAD tags, truncation and plaintext input. See the
+[decryption boundary](experiments/mac-iwa/README.md#browser-decryption-with-native-decapsulation-preview-08).

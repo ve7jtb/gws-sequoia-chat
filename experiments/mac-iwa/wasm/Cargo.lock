@@ -1642,6 +1642,7 @@ dependencies = [
  "getrandom 0.4.3",
  "sequoia-openpgp",
  "serde_json",
+ "sha2",
  "wasm-bindgen",
 ]
 

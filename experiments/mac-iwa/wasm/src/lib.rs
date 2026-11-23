@@ -1,5 +1,6 @@
-//! Public verification and encryption. No MIME parser, network, token, PIN,
-//! private-key operation, filesystem or trust-store mutation is exposed.
+//! Verification, public-key encryption and session-key message decryption.
+//! No MIME parser, network, token, PIN, long-term private-key operation,
+//! filesystem or trust-store mutation is exposed.
 use anyhow::{ensure,Context,Result};
 use base64::{Engine,engine::general_purpose::STANDARD as B64};
 use sequoia_openpgp as pgp;
@@ -115,4 +116,63 @@ pub fn encrypt_signed(input:&str)->Result<String,JsValue>{
   Ok(serde_json::to_string(&encrypt_public(&request)?)?)
  };
  run().map_err(|_|JsValue::from_str("Encryption request rejected"))
+}
+
+// The session key is released by native PIV decapsulation for one ciphertext.
+// This helper never requests hardware operations and does not retry a bad key.
+struct SessionOpen {
+ key:pgp::crypto::SessionKey, algorithm:pgp::types::SymmetricAlgorithm,
+ recipient:pgp::Fingerprint, signatures:Vec<u8>,
+}
+impl VerificationHelper for SessionOpen {
+ fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>> {Ok(Vec::new())}
+ fn check(&mut self,structure:MessageStructure)->Result<()> {
+  let mut encrypted=false;let mut count=0;
+  for layer in structure.iter(){match layer {
+   MessageLayer::Encryption{aead_algo,..}=>{ensure!(aead_algo.is_some(),"AEAD required");encrypted=true;},
+   MessageLayer::Compression{..}=>{},
+   MessageLayer::SignatureGroup{results}=>for result in results {
+    let sig=match result {Err(pgp::parse::stream::VerificationError::MissingKey{sig})=>sig,_=>anyhow::bail!("Unsupported signature structure")};
+    self.signatures.extend(pgp::Packet::Signature((*sig).clone()).to_vec()?);count+=1;
+   }
+  }}
+  ensure!(encrypted && count==1 && self.signatures.len()<=65536,"One signature and authenticated encryption required");Ok(())
+ }
+}
+impl pgp::parse::stream::DecryptionHelper for SessionOpen {
+ fn decrypt(&mut self,pk:&[pgp::packet::PKESK],sk:&[pgp::packet::SKESK],hint:Option<pgp::types::SymmetricAlgorithm>,decrypt:&mut dyn FnMut(Option<pgp::types::SymmetricAlgorithm>,&pgp::crypto::SessionKey)->bool)->Result<Option<Cert>> {
+  ensure!(pk.len()==1 && sk.is_empty() && pk[0].version()==6 && pk[0].recipient()==Some(self.recipient.clone().into()),"Recipient mismatch");
+  ensure!(hint==Some(self.algorithm) && decrypt(Some(self.algorithm),&self.key),"Authentication failed");Ok(None)
+ }
+}
+fn decrypt_session(v:&serde_json::Value)->Result<serde_json::Value> {
+ use std::io::Read;
+ use sha2::{Digest,Sha256};
+ use pgp::types::SymmetricAlgorithm as S;
+ let cipher=B64.decode(field(v,"cipher")?)?;
+ ensure!(!cipher.is_empty() && cipher.len()<=LIMIT,"Ciphertext limit");
+ ensure!(format!("{:x}",Sha256::digest(&cipher))==field(v,"cipherHash")?,"Ciphertext binding mismatch");
+ let code=v["algorithm"].as_u64().context("Algorithm required")?;ensure!(code<=255,"Invalid algorithm");
+ let algorithm=S::from(code as u8);ensure!(matches!(algorithm,S::AES128|S::AES192|S::AES256),"AES required");
+ let key:pgp::crypto::SessionKey=B64.decode(field(v,"sessionKey")?)?.into();
+ ensure!(key.len()==algorithm.key_size()?,"Session key length mismatch");
+ let recipient:pgp::Fingerprint=field(v,"recipientKey")?.parse()?;
+ let helper=SessionOpen{key,algorithm,recipient,signatures:Vec::new()};
+ let p=StandardPolicy::new();
+ let mut reader=pgp::parse::stream::DecryptorBuilder::from_bytes(&cipher)?.with_policy(&p,None,helper)?;
+ let mut clear=Vec::new();reader.by_ref().take((LIMIT+1) as u64).read_to_end(&mut clear)?;
+ ensure!(clear.len()<=LIMIT,"Plaintext limit");
+ // read_to_end must authenticate the final AEAD tag before any plaintext result
+ // is returned. The worker then verifies the signature and trusted addresses.
+ let helper=reader.into_helper();
+ Ok(serde_json::json!({"raw":B64.encode(clear),"signature":B64.encode(helper.signatures),"encrypted":true}))
+}
+#[wasm_bindgen]
+pub fn decrypt_with_session_key(input:&str)->Result<String,JsValue>{
+ let run=||->Result<String>{
+  ensure!(input.len()<=400000,"Request too large");
+  let request:serde_json::Value=serde_json::from_str(input)?;
+  Ok(serde_json::to_string(&decrypt_session(&request)?)?)
+ };
+ run().map_err(|_|JsValue::from_str("Decryption request rejected"))
 }

@@ -16,5 +16,8 @@ function processMessage(packet,material,compose,encrypt){return new Promise((res
   worker.onerror=()=>finish('Browser verifier failed; no fallback.');
   worker.onmessage=({data})=>finish(data.ok?null:data.error,data.result);
   worker.postMessage({packet,material,compose,encrypt});
+  // Structured cloning has transferred the operation to the disposable worker.
+  // Drop the main-page reference; JS strings cannot promise secure zeroization.
+  if(packet?.sessionKey)delete packet.sessionKey;
  }catch(_){finish('Browser verifier could not start; no fallback.');}
 });}

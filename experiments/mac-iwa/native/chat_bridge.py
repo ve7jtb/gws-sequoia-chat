@@ -83,9 +83,9 @@ def browser_mime(request,sender,recipient):
 
 def crypto_prompt(op,service):
     """Fixed labels selected by the native route, never arbitrary browser text."""
-    if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','open'):
+    if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','decapsulate-browser','open'):
         raise ValueError('Unsupported cryptographic prompt')
-    action='Sign' if op=='sign-browser' else ('Sign and encrypt' if op=='seal' else 'Decrypt and verify')
+    action='Unlock decryption key for' if op=='decapsulate-browser' else ('Sign' if op=='sign-browser' else ('Sign and encrypt' if op=='seal' else 'Decrypt and verify'))
     return action+' '+service+(' email' if service=='Gmail' else ' bundle')
 
 class ChatBridge:
@@ -134,6 +134,12 @@ class ChatBridge:
             packet=json.loads(p.stdout)
             result=base64.b64decode(packet['data'],validate=True)
             if len(result)>LIMIT:raise ValueError('Oversize cryptographic result')
+            if op=='decapsulate-browser':
+                # Per-message secret: relay only in memory, never persist/log.
+                if len(result) not in (16,24,32) or packet.get('algorithm') not in (7,8,9):raise ValueError('Invalid session key')
+                if packet.get('cipherHash')!=hashlib.sha256(payload).hexdigest():raise ValueError('Ciphertext mismatch')
+                if not re.fullmatch('[A-F0-9]{64}',packet.get('recipientKey','')):raise ValueError('Invalid recipient key')
+                return {'sessionKey':packet['data'],'algorithm':packet['algorithm'],'cipherHash':packet['cipherHash'],'recipientKey':packet['recipientKey']}
             if op=='open-browser':
                 signature=base64.b64decode(packet['signature'],validate=True)
                 if not 1<=len(signature)<=65536:raise ValueError('Invalid signature packet size')
@@ -211,8 +217,8 @@ class ChatBridge:
             if op=='chat-decrypt':
                 if request['service'] not in ('Gmail','Chat'):raise ValueError('Unknown service')
                 contact,peer=self.peer(request['contact'])
-                clear=self.crypto('open-browser',peer,base64.b64decode(request['payload'],validate=True),service=request['service'])
-                return {**clear,'expectedEmail':contact['email'],'expectedFingerprint':contact['fingerprint'],'recipient':self.cfg['chat_email']}
+                clear=self.crypto('decapsulate-browser',peer,base64.b64decode(request['payload'],validate=True),service=request['service'])
+                return {**clear,'cipher':request['payload'],'expectedEmail':contact['email'],'expectedFingerprint':contact['fingerprint'],'recipient':self.cfg['chat_email']}
             if op=='chat-verification-material':
                 from browser_material import material
                 return material(self)

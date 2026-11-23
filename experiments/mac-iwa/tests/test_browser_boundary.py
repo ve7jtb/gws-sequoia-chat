@@ -68,3 +68,17 @@ class EncryptionBoundary(unittest.TestCase):
     self.assertEqual(result['space'],'spaces/TEST')
     self.assertFalse(ticket.exists())
     with self.assertRaises(FileNotFoundError):b.complete_browser_encryption(request)
+
+
+class DecapsulationBoundary(unittest.TestCase):
+ def test_live_route_uses_decapsulation_only(self):
+  from chat_bridge import ChatBridge
+  from unittest.mock import Mock
+  with tempfile.TemporaryDirectory() as tmp:
+   b=ChatBridge.__new__(ChatBridge);b.data=Path(tmp);b.cfg={'chat_email':'me@example.invalid'};b.chat=Mock()
+   b.peer=Mock(return_value=({'email':'sender@example.invalid','fingerprint':'F'*64},Path(tmp)/'public'))
+   b.crypto=Mock(return_value={'sessionKey':'test-only','algorithm':9,'cipherHash':'0'*64,'recipientKey':'A'*64})
+   result=b.action({'op':'chat-decrypt','contact':'saved','payload':'YQ==','service':'Gmail'})
+   self.assertEqual(b.crypto.call_args.args[0],'decapsulate-browser')
+   self.assertEqual(result['cipher'],'YQ==');self.assertEqual(result['recipient'],'me@example.invalid')
+   self.assertNotIn('raw',result);self.assertNotIn('signature',result)

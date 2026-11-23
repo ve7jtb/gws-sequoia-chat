@@ -592,3 +592,39 @@ fixtures), four native Rust tests, seven MIME worker tests and eight public
 verification cases, including original and tampered Proton messages. Two fresh
 WASM encryptions independently decrypted and verified with native Sequoia and
 passed the native recipient/AEAD packet guard.
+
+### Browser decryption with native decapsulation (preview 0.8)
+
+The live Gmail/Chat reader now asks the native helper only to decapsulate and
+unwrap the per-message OpenPGP session key. ML-KEM and X25519 private operations
+remain on the configured YubiKey through PKCS#11; signing and PIN entry also
+remain native. The helper checks the selected v6 recipient and AEAD packet shape
+before decapsulation. It returns a bounded session-key response bound to the exact
+ciphertext SHA-256, recipient-key fingerprint and symmetric algorithm.
+
+The disposable baseline WASM worker decrypts, authenticates the complete AEAD
+message (including its final tag), decompresses and extracts its signed MIME,
+then verifies the signature and existing sender/recipient/trust checks before
+showing content. Failures release no message result and trigger no native fallback
+or automatic hardware retry. The per-message session key necessarily crosses the
+extension bridge into browser memory; it is never persisted or logged. Main-page
+references are removed after posting to the worker and the worker is terminated
+on completion/error/timeout. JavaScript strings, IPC copies and OS memory cannot
+promise secure erasure. Long-term private keys and PINs never enter the browser.
+
+Offline tests cover native Sequoia decapsulation followed by baseline WASM
+decryption and hybrid verification with exact MIME recovery, wrong keys and key
+lengths, invalid algorithms/recipients, ciphertext substitution, corrupted final
+AEAD tags, truncated ciphertext and plaintext input.
+
+Live preview **0.8.0** tests on **2026-11-22** passed for both Gmail and Chat:
+native Level 3 YubiKey decapsulation, baseline WASM authenticated decryption,
+valid ML-DSA-65 + Ed25519 signatures and trusted sender certificates. The IWA
+visibly rendered HTML headings, bold/italic text and lists. Each downloaded
+binary attachment matched the original **308 bytes** exactly, with SHA-256
+`dcfa99c88a6aab863d39ffe61851ec8a93c10e81634306740c662fac87c74030`.
+These were existing Sequoia peer messages, with no new sends or key/policy
+changes. Gmail's first attempt stopped without a result; a fresh user-authorized
+attempt passed, without an automatic private-key retry. Local test reports and
+message content are excluded from Git. These results specifically exercise the
+new WASM decryption boundary, unlike the earlier native-decryption tests.

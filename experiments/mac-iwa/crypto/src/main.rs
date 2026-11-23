@@ -117,6 +117,19 @@ fn check_ciphertext(peer:&Cert,cipher:&[u8])->Result<()> {
  match packets[1] {pgp::Packet::SEIP(p)=>ensure!(p.version()==2,"AEAD required"),_=>bail!("Missing encrypted data")}
  Ok(())
 }
+// Unwrap only the per-message session key. Long-term keys stay on the token;
+// AEAD, decompression and message verification are deliberately not done here.
+fn decapsulate<D:Decryptor>(own:&Cert,key:&mut D,cipher:&[u8])->Result<(SymmetricAlgorithm,SessionKey)> {
+ check_ciphertext(own,cipher)?;
+ let pile=pgp::PacketPile::from_bytes(cipher)?;
+ let packets:Vec<_>=pile.children().collect();
+ let algorithm=match packets[1] {pgp::Packet::SEIP(pgp::packet::SEIP::V2(p))=>p.symmetric_algo(),_=>bail!("AEAD required")};
+ ensure!(matches!(algorithm,SymmetricAlgorithm::AES128|SymmetricAlgorithm::AES192|SymmetricAlgorithm::AES256),"AES required");
+ let pk=match packets[0]{pgp::Packet::PKESK(p)=>p,_=>bail!("Missing recipient")};
+ let (reported,session)=pk.decrypt(key,Some(algorithm)).context("Decapsulation failed; no retry")?;
+ ensure!(reported.map(|a|a==algorithm).unwrap_or(true) && session.len()==algorithm.key_size()?,"Session key mismatch");
+ Ok((algorithm,session))
+}
 // Public verification is deliberately independent of token configuration and PINs.
 // Sequoia checks cryptographic validity, certificate bindings and policy; the
 // native host separately decides whether the primary fingerprint is trusted.
@@ -189,6 +202,15 @@ fn execute()->Result<()> {
  let own=public(field(&v,"own")?)?;let peer=public(field(&v,"peer")?)?;
  let payload=Zeroizing::new(B64.decode(field(&v,"payload")?)?);ensure!(payload.len()<=LIMIT,"Payload too large");
  let p=StandardPolicy::new();
+ if field(&v,"op")?=="decapsulate-browser" {
+  use sha2::{Digest,Sha256};
+  let kem=selected(&own,false)?;let fingerprint=kem.fingerprint().to_hex();
+  let mut key=Level3Decryptor::new(kem,Pkcs11Operation::new(config,pin)?)?;
+  let (algorithm,session)=decapsulate(&own,&mut key,&payload)?;
+  // This is a sensitive pipe-only reply: never persist or log it. SessionKey
+  // wipes its native allocation on drop; browser copies have bounded lifetimes.
+  println!("{}",serde_json::json!({"data":B64.encode(&session),"algorithm":u8::from(algorithm),"recipientKey":fingerprint,"cipherHash":format!("{:x}",Sha256::digest(&*payload))}));return Ok(());
+ }
  if field(&v,"op")?=="open-browser" {
   let kem=selected(&own,false)?;
   let inner=Open{verify:Verify{expected:selected(&peer,true)?.fingerprint(),cert:peer,encryption_required:true},own,key:Level3Decryptor::new(kem,Pkcs11Operation::new(config,pin)?)?};
@@ -275,6 +297,24 @@ mod tests {
    std::fs::write(std::path::Path::new(&folder).join("browser-open.json"),serde_json::to_vec(&serde_json::json!({"packet":{"raw":B64.encode(clear),"signature":B64.encode(signature),"encrypted":true,"expectedEmail":"alice@example.invalid","expectedFingerprint":public.fingerprint().to_hex(),"recipient":"bob@example.invalid"},"material":{"certificates":[B64.encode(public.to_vec().unwrap())],"bindings":[{"email":"alice@example.invalid","fingerprint":public.fingerprint().to_hex()}],"saved":[public.fingerprint().to_hex()]}})).unwrap()).unwrap();
   }
   let mut bad=cipher;let n=bad.len();bad[n-8]^=1;assert!(open(&bad).is_err());
+ }
+ #[test] fn native_decapsulation_for_wasm_fixture() {
+  use sha2::{Digest,Sha256};
+  let alice=identity();let bob=identity();let wrong=identity();
+  let payload=include_bytes!("../../tests/multipart-fixture.mime");
+  let cipher=sealed_payload(key(&alice,true),alice.clone(),bob.clone(),payload).unwrap();
+  let (algorithm,session)=decapsulate(&bob,&mut key(&bob,false),&cipher).unwrap();
+  assert_eq!(session.len(),algorithm.key_size().unwrap());
+  assert!(decapsulate(&wrong,&mut key(&wrong,false),&cipher).is_err());
+  assert!(decapsulate(&bob,&mut key(&bob,false),payload).is_err());
+  if let Ok(folder)=std::env::var("IWA_DECRYPTION_FIXTURE_DIR") {
+   let dir=std::path::Path::new(&folder);std::fs::create_dir_all(dir).unwrap();
+   let cert=alice.strip_secret_key_material();
+   // Only a disposable software-key test session is exported. Hardware sessions
+   // never use this fixture path or any persistent file.
+   let request=serde_json::json!({"cipher":B64.encode(&cipher),"sessionKey":B64.encode(&session),"algorithm":u8::from(algorithm),"cipherHash":format!("{:x}",Sha256::digest(&cipher)),"recipientKey":selected(&bob,false).unwrap().fingerprint().to_hex()});
+   std::fs::write(dir.join("decrypt.json"),serde_json::to_vec(&serde_json::json!({"request":request,"payload":B64.encode(payload),"certificate":B64.encode(cert.to_vec().unwrap()),"fingerprint":cert.fingerprint().to_hex()})).unwrap()).unwrap();
+  }
  }
  #[test] fn browser_encryption_fixture_and_packet_guards() {
   let alice=identity();let bob=identity();let mallory=identity();
