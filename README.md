@@ -709,3 +709,14 @@ interoperability with exact MIME recovery. Negative tests reject wrong session
 keys, key lengths, algorithms and recipients, ciphertext substitution, corrupted
 final AEAD tags, truncation and plaintext input. See the
 [decryption boundary](experiments/mac-iwa/README.md#browser-decryption-with-native-decapsulation-preview-08).
+
+
+### Proposed provisioning and recovery application
+
+The [provisioning and recovery design](docs/provisioning-recovery-design.md)
+describes a separate restricted boot environment, reusable encrypted vault format,
+backup YubiKeys, per-device PUK/management-key records, interrupted-operation
+recovery, and authenticated SCP11 connections. It distinguishes recoverable
+externally generated identity keys from non-exportable on-device keys and keeps
+provisioning authority separate from the daily mail vault. This is a design
+proposal, not an implemented or hardware-validated provisioning application.

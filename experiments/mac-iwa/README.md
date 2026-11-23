@@ -628,3 +628,9 @@ changes. Gmail's first attempt stopped without a result; a fresh user-authorized
 attempt passed, without an automatic private-key retry. Local test reports and
 message content are excluded from Git. These results specifically exercise the
 new WASM decryption boundary, unlike the earlier native-decryption tests.
+
+
+The future [provisioning and recovery application](../../docs/provisioning-recovery-design.md)
+would reuse the envelope-encryption model with separate provisioning keys/policy, tested backup
+devices, per-device administration secrets and authenticated SCP. The proposal
+also identifies format-versioning and anti-rollback work beyond the mail preview.
