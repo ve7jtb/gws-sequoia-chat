@@ -4,6 +4,17 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+The separate [signed Mac IWA experiment](experiments/mac-iwa/README.md) now also
+constructs Level 3 v6 OpenPGP signatures in a browser WASM worker. Its native
+PKCS#11 bridge receives only the signing digest and returns hybrid signature
+components. On **2026-11-23**, the installed **0.10.1** preview passed a physical
+YubiKey test through its actual **Compose interface**: native Sequoia `sq`
+independently decrypted the WASM-encrypted message and verified its hybrid
+signature, signed headers, plain text, formatted HTML and all 1,024 attachment
+bytes. The Send confirmation was cancelled; no email was sent. All 24 PIV slot
+records and PIN/touch policies were unchanged. This IWA remains separate from
+the standalone loopback app. See the [Compose test and its scope](experiments/mac-iwa/README.md#live-compose-interface--sequoia-verification-2026-11-23).
+
 ## What gets sent
 
 Each bundle uses two linked Chat messages, with one attachment per message. Google Chat rejects multiple non-media attachments in a single message:

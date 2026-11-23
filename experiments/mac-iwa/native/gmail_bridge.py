@@ -8,10 +8,9 @@ from email.utils import getaddresses
 from pathlib import Path
 from email import policy
 from email.parser import BytesParser
-from chat_bridge import browser_mime
 
 SCOPES=','.join('https://www.googleapis.com/auth/'+s for s in ('gmail.readonly','gmail.send'))
-FIELDS={'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject','mime'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
+FIELDS={'chat-mail-cert-save':{'message','fingerprint'},'chat-mail-cert-trust':{'message','fingerprint','email','confirmed'},'chat-mail-read':{'message'},'chat-mail-list':{'page','query'},'chat-mail-open':{'message','contact'},'chat-mail-prepare':{'contact','subject'},'chat-mail-send':{'review','confirmed'},'chat-mail-connect':set(),'chat-mail-login':set()}
 
 def encrypted_payload(m,msg):
     """Recognize a complete supported envelope, never a subject or filename.
@@ -230,8 +229,8 @@ def action(b,r):
         if len(raw)>262144:raise ValueError('Message exceeds browser MIME limit')
         return {'raw':base64.b64encode(raw).decode()}
     if op=='chat-mail-prepare':
-        account();contact,peer=b.peer(r['contact']);raw=browser_mime(r,b.cfg['chat_email'],contact['email'])
-        return b.prepare_browser_signature(r,contact,peer,raw,'Gmail')
+        account();contact,peer=b.peer(r['contact'])
+        return b.prepare_browser_signature(r,contact,peer,'Gmail')
     if op=='chat-mail-send':
         account()
         if not re.fullmatch('[a-f0-9]{48}',r['review']):raise ValueError('Bad review')

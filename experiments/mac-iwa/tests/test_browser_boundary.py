@@ -1,5 +1,5 @@
 """Authorization checks at the new browser/native MIME boundary."""
-import base64,json,sys,tempfile,unittest
+import base64,hashlib,json,sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
@@ -58,7 +58,7 @@ class EncryptionBoundary(unittest.TestCase):
    b.chat.private_dir.side_effect=mkdir
    b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
    rid='a'*48;ticket=b.data/('encryption-'+rid+'.json')
-   ticket.write_text(json.dumps({'created':time.time(),'service':'Chat','space':'spaces/TEST','contact':'id','recipient':contact['email'],'fingerprint':'f','subject':'Test'}))
+   ticket.write_text(json.dumps({'created':time.time(),'service':'Chat','space':'spaces/TEST','contact':'id','recipient':contact['email'],'fingerprint':'f','subject':'Test','stage':'signed','sender':b.cfg['chat_email'],'senderHash':hashlib.sha256((b.data/'own').read_bytes()).hexdigest(),'recipientHash':hashlib.sha256(peer.read_bytes()).hexdigest()}))
    request={'review':rid,'cipher':'YQ=='}
    with patch('chat_bridge.subprocess.run',return_value=SimpleNamespace(returncode=1,stdout=b'')):
     with self.assertRaises(ValueError):b.complete_browser_encryption(request)

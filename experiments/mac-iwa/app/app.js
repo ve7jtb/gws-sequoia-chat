@@ -7,12 +7,20 @@ let ownEmail="";
 let certificateReview=null,managementReview=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
 const say=(text,error=false)=>{$('result').textContent=text;$('result').classList.toggle('error',error);};
-function call(op,data={}) {
- if(busy)return Promise.reject(Error('An operation is already running.'));
- busy=true;$('transport').disabled=true;$('busy').hidden=false;document.querySelectorAll('button').forEach(b=>b.disabled=true);
+// UI locking is separate from the transport so one signing session can retain
+// the lock across WASM preparation, one native digest request, and finalization.
+function operationBusy(active) {
+ busy=active;$('transport').disabled=active;$('busy').hidden=!active;
+ document.querySelectorAll('button').forEach(b=>b.disabled=active);
+ if(!active){$('newer').disabled=page===0;$('older').disabled=!next;}
+}
+function nativeRequest(op,data={}) {
+ // Public metadata stays available while locked. Recheck the vault immediately
+ // before each private operation, including the new digest-only signing route.
+ if(['chat-login','chat-mail-login','chat-spaces','chat-messages','chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-mail-send','chat-mail-cert-save','chat-mail-cert-trust','chat-prepare','chat-browser-prepare','chat-browser-export','chat-browser-cert-save','chat-browser-cert-trust','chat-sign-digest','chat-send','chat-open','chat-decrypt','chat-encryption-complete'].includes(op)){try{window.vaultGate?.();}catch(e){return Promise.reject(e);}}
  return new Promise((resolve,reject)=>{
   let port,finished=false;
-  function finish(err,value){if(finished)return;finished=true;busy=false;$('transport').disabled=false;$('busy').hidden=true;document.querySelectorAll('button').forEach(b=>b.disabled=false);$('newer').disabled=page===0;$('older').disabled=!next;if(port)port.disconnect();err?reject(err):resolve(value);}
+  function finish(err,value){if(finished)return;finished=true;if(port)port.disconnect();err?reject(err):resolve(value);}
   try {
    port=chrome.runtime.connect(EXTENSION_ID,{name:'sequoia-chat'});
    port.onMessage.addListener(r=>{if(r.type==='progress'){say(r.message);return;}if(r.type==='error')finish(Error(r.message));else finish(null,r.data??r);});
@@ -20,6 +28,17 @@ function call(op,data={}) {
    port.postMessage({op,...data});
   }catch(_){finish(Error('Companion extension unavailable.'));}
  });
+}
+// Preserve the browser-owned Google transport: only offline certificate,
+// hardware and draft-review operations are sent to the native bridge.
+function dispatchRequest(op,data={}) {
+ if(window.googleTransport?.handles(op))return window.googleTransport.call(op,data,nativeRequest,{account:ownEmail,contacts});
+ return nativeRequest(op,data);
+}
+function call(op,data={}) {
+ if(busy)return Promise.reject(Error('An operation is already running.'));
+ operationBusy(true);
+ return Promise.resolve().then(()=>dispatchRequest(op,data)).finally(()=>operationBusy(false));
 }
 function event(id,fn){$(id).addEventListener('click',()=>Promise.resolve().then(fn).catch(e=>say(e.message,true)));}
 function options(id,rows,value,label){const el=$(id),old=el.value;el.replaceChildren();for(const row of rows){const o=document.createElement('option');o.value=value(row);o.textContent=label(row);el.append(o);}if([...el.options].some(o=>o.value===old))el.value=old;}
@@ -67,7 +86,7 @@ function serviceLabels(){
 }
 function tab(name){document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));}));
-async function bootstrap(){const r=await call('chat-state');ownEmail=r.account;contacts=r.contacts;renderContacts();$('account').textContent='Configured sending identity: '+r.account+' · YubiKey '+r.serial;say('Ready. Sign in to that Google account or reconnect its saved session.');tab('inbox');}
+async function bootstrap(){const r=await call('chat-state');ownEmail=r.account;contacts=r.contacts;renderContacts();$('account').textContent='Configured sending identity: '+r.account+' · YubiKey '+r.serial;say('Ready. Sign in to Google. Gmail and Chat use direct APIs; access clears on lock or restart.');tab('inbox');}
 async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
 async function messages(token=''){const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openMessage=m.name;$('open').showModal();});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}
 // Ordinary mail never borrows the green trusted-signature result from a
@@ -107,12 +126,37 @@ function showOrdinary(r,message){
  renderFiles(r.attachments);if(message)renderCertificateActions(message,r.certificateActions);else $('read-certificates').replaceChildren();$('reader').hidden=false;
  say('Gmail message opened — not encrypted; signature: '+r.signatureStatus+'; certificate trust: '+r.certificateTrust+'.');
 }
-event('login',async()=>{const result=await call(isMail()?'chat-mail-login':'chat-login');const url=new URL(result.authorizationUrl);if(url.origin!=='https://accounts.google.com'||!['/o/oauth2/auth','/o/oauth2/v2/auth'].includes(url.pathname))throw Error('Unexpected sign-in address');const link=document.getElementById('google-auth');link.href=url.href;link.hidden=false;say('Click Continue to Google sign-in, complete consent, then choose Connect / reconnect '+service()+'.');});
+event('login',async()=>{await window.googleTransport.login(ownEmail);say('Google connected directly. Access lasts until expiry or vault lock.');await loadSpaces();});
 event('connect',()=>loadSpaces());event('more-spaces',()=>loadSpaces(spaceNext));
 event('status',async()=>{const r=await call('status');say(r.connected?'Expected YubiKey '+r.serial+' is connected.':'Connect key '+r.serial+'.');});
 event('load',async()=>{pages=[''];page=0;await messages();});
 event('older',async()=>{if(!next)return;pages[++page]=next;await messages(next);});event('newer',async()=>{if(page>0)await messages(pages[--page]);});
-event('prepare',async()=>{review=null;if((!isMail()&&!$('space').value)||!$('recipient').value||!$('subject').value||!$('body').value)throw Error('Select a conversation and trusted recipient, then enter a subject and message.');const recipient=contacts.find(c=>c.id===$('recipient').value);if(!recipient)throw Error('Choose a trusted recipient.');const mime=await processMessage(null,null,{sender:ownEmail,recipient:recipient.email,subject:$('subject').value,body:$('body').value,html:$('formatted').checked?formatMessage($('body').value):'',attachments:await attachmentData()});const signed=await call(isMail()?'chat-mail-prepare':'chat-prepare',{...(!isMail()?{space:$('space').value}:{}),contact:recipient.id,subject:$('subject').value,mime});const encrypted=await processMessage(null,null,null,{...signed,payload:mime});const r=await call('chat-encryption-complete',{review:signed.review,cipher:encrypted.cipher});review=r.review;$('send-details').textContent='Subject: '+r.subject+'\n'+(isMail()?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;$('confirm-send').showModal();say(service()+' signature verified locally; encrypted message ready for review.');});
+event('prepare',async()=>{
+ review=null;
+ if(busy)throw Error('An operation is already running.');
+ if((!isMail()&&!$('space').value)||!$('recipient').value||!$('subject').value||!$('body').value)throw Error('Select a conversation and trusted recipient, then enter a subject and message.');
+ const recipient=contacts.find(c=>c.id===$('recipient').value);
+ if(!recipient)throw Error('Choose a trusted recipient.');
+ // Snapshot editable fields before any asynchronous work. Changes typed while
+ // the native PIN dialog is open cannot change what this operation signs.
+ const mail=isMail(),space=$('space').value;
+ const compose={sender:ownEmail,recipient:recipient.email,subject:$('subject').value,
+  body:$('body').value,html:$('formatted').checked?formatMessage($('body').value):''};
+ operationBusy(true);
+ try {
+  compose.attachments=await attachmentData();
+  // This metadata-only route does not receive MIME or prompt for a PIN.
+  const material=await dispatchRequest(mail?'chat-mail-prepare':'chat-prepare',{
+   ...(!mail?{space}:{}),contact:recipient.id,subject:compose.subject});
+  const {signAndEncrypt}=await import('./signing-session.js');
+  const encrypted=await signAndEncrypt(material,compose,
+   request=>nativeRequest('chat-sign-digest',request),
+   {createWorker:()=>new Worker(signingWorkerURL(),{type:'module'})});
+  const r=await nativeRequest('chat-encryption-complete',{review:material.review,cipher:encrypted.cipher});
+  review=r.review;$('send-details').textContent='Subject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;
+  $('confirm-send').showModal();say((mail?'Gmail':'Chat')+' signature constructed and verified in WASM; encrypted message ready for review.');
+ } finally {operationBusy(false);}
+});
 event('cancel-send',()=>{$('confirm-send').close();review=null;});
 event('send',async()=>{const rid=review;review=null;$('confirm-send').close();if(!rid)throw Error('Prepare a new bundle first.');const r=await call(isMail()?'chat-mail-send':'chat-send',{review:rid,confirmed:true});say((isMail()?'Gmail message sent: ':'Chat message sent: ')+r.sent);$('subject').value='';$('body').value='';$('files').value='';$('file-list').textContent='';});
 event('cancel-open',()=>{$('open').close();openMessage=null;});event('decrypt',async()=>{const name=openMessage;$('read-certificates').replaceChildren();$('open').close();$('reader').hidden=true;const selectedService=service(),selectedContact=$('signer').value;const packet=await call(isMail()?'chat-mail-open':'chat-open',{message:name,contact:selectedContact});const material=await call('chat-verification-material');const envelope=packet.cipher?packet:await processMessage(packet,material);if(!envelope.encrypted||!envelope.cipher)throw Error('No supported encrypted envelope.');const clear=await call('chat-decrypt',{contact:selectedContact,payload:envelope.cipher,service:selectedService});const r=await processMessage(clear,material);if(!r.verified)throw Error('Signature verification failed.');$('read-subject').textContent=r.subject;$('verified').classList.remove('error');$('verified').textContent='Encryption: Encrypted (decrypted) · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint;$('read-body').textContent=r.text;$('toggle-html').hidden=!r.html;renderSafeHtml($('read-html'),r.html||'');$('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;say(service()+' decryption and signature verification passed.');});
@@ -122,7 +166,8 @@ event('trust',async()=>{if(!cert||!$('trust-confirm').checked)throw Error('Indep
 event('test',async()=>{if(!window.confirm('Run the fixed hardware test? Three native PIN dialogs; no key or policy changes.'))return;const r=await call('test');$('test-details').textContent=JSON.stringify(r,null,2);say(r.passed&&r.unchanged?'PASS — signing, decryption and unchanged slot records.':'Test stopped; inspect local results.',!r.passed);});
 bootstrap().catch(e=>say(e.message,true));
 
-// File bytes cross Native Messaging only as bounded data, never as paths.
+// Attachment bytes stay in the signing worker. Only the completed ciphertext
+// crosses Native Messaging for review/transport; file paths are never accepted.
 async function attachmentData(){const files=[...$('files').files];if(files.length>10||files.reduce((n,f)=>n+f.size,0)>131072)throw Error('Maximum 10 attachments and 128 KiB total.');const result=[];for(const f of files){let binary='';for(const b of new Uint8Array(await f.arrayBuffer()))binary+=String.fromCharCode(b);result.push({name:f.name,data:btoa(binary)});}return result;}
 $('files').addEventListener('change',()=>{$('file-list').textContent=[...$('files').files].map(f=>f.name+' ('+f.size+' bytes)').join(' · ');});
 for(const [id,prefix,suffix] of [['bold','**','**'],['italic','*','*'],['heading','# ',''],['list','- ','']])event(id,()=>{const e=$('body'),a=e.selectionStart,b=e.selectionEnd;e.setRangeText(prefix+e.value.slice(a,b)+suffix,a,b,'select');e.focus();});

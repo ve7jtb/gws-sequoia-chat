@@ -13,13 +13,33 @@ class ChatTests(unittest.TestCase):
    with self.assertRaises(ValueError):mod.validate(r)
  def bridge(self,d):
   b=mod.ChatBridge.__new__(mod.ChatBridge);b.data=Path(d);b.chat=Mock();b.cfg={};return b
- def test_send_consumes_review_before_network_failure(self):
+ def test_legacy_native_google_transport_is_disabled(self):
+  # Browser-owned OAuth/HTTP must never fall back to an old gws credential.
+  requests=[{'op':'chat-send','review':'a'*48,'confirmed':True},
+            {'op':'chat-mail-send','review':'a'*48,'confirmed':True},
+            {'op':'chat-login'},{'op':'chat-mail-connect'},
+            {'op':'chat-spaces','page':''}]
   with tempfile.TemporaryDirectory() as d:
-   b=self.bridge(d);rid='a'*48;p=Path(d)/('draft-'+rid);p.mkdir();(p/'review.json').write_text(json.dumps({'space':'spaces/TEST','created':time.time()}));b.chat.send.side_effect=RuntimeError('synthetic failure')
-   r={'op':'chat-send','review':rid,'confirmed':True}
-   with self.assertRaises(RuntimeError):b.action(r)
-   with self.assertRaises(FileNotFoundError):b.action(r)
-   b.chat.send.assert_called_once();self.assertTrue((Path(d)/('sent-'+rid)).is_dir())
+   b=self.bridge(d)
+   for request in requests:
+    with self.assertRaisesRegex(ValueError,'Google transport moved to the IWA'):b.action(request)
+   b.chat.send.assert_not_called();b.chat.gws.assert_not_called()
+ def test_browser_export_consumes_review_before_returning_ciphertext(self):
+  # Export grants one network attempt to the browser. Native code cannot infer
+  # whether the later HTTP request succeeds, so it must not re-export on retry.
+  import direct_transport
+  with tempfile.TemporaryDirectory() as d:
+   b=self.bridge(d);rid='a'*48;p=Path(d)/('draft-'+rid);p.mkdir()
+   contact={'id':'contact','email':'peer@example.invalid','fingerprint':'B'*64}
+   b.peer=Mock(return_value=(contact,Path(d)/'public'));b.contacts=Mock(return_value=[contact]);b.chat.space_name.side_effect=lambda s:s
+   (p/'review.json').write_text(json.dumps({'space':'spaces/TEST','created':time.time(),'contact':'contact','recipient':contact['email'],'fingerprint':contact['fingerprint']}))
+   (p/'manifest.json').write_text(json.dumps({'recipient':contact['email'],'recipient_fingerprint':contact['fingerprint']}))
+   (p/'message.pgp').write_bytes(b'test ciphertext');(p/'pq-mail-sender-key.pgp').write_bytes(b'public')
+   r={'op':'chat-browser-export','review':rid,'service':'Chat','confirmed':True}
+   result=direct_transport.action(b,r);self.assertIn('cipher',result)
+   self.assertFalse(p.exists());self.assertTrue((Path(d)/('exported-'+rid)).is_dir())
+   with self.assertRaises(FileNotFoundError):direct_transport.action(b,r)
+   b.chat.send.assert_not_called();b.chat.gws.assert_not_called()
  def test_expired_review_never_sends(self):
   with tempfile.TemporaryDirectory() as d:
    b=self.bridge(d);rid='a'*48;p=Path(d)/('draft-'+rid);p.mkdir();(p/'review.json').write_text(json.dumps({'space':'spaces/TEST','created':0}))

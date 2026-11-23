@@ -1,4 +1,4 @@
-//! Verification, public-key encryption and session-key message decryption.
+//! Verification, split-phase signing, public-key encryption and message decryption.
 //! No MIME parser, network, token, PIN, long-term private-key operation,
 //! filesystem or trust-store mutation is exposed.
 use anyhow::{ensure,Context,Result};
@@ -8,6 +8,8 @@ use pgp::{Cert,KeyHandle,parse::{Parse,stream::{VerificationHelper,MessageStruct
 use pgp::serialize::SerializeInto;
 use pgp::cert::amalgamation::ValidAmalgamation;
 use wasm_bindgen::prelude::*;
+mod signing;
+pub use signing::{prepare_signing, finalize_signing, cancel_signing};
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
@@ -122,7 +124,7 @@ pub fn encrypt_signed(input:&str)->Result<String,JsValue>{
 // This helper never requests hardware operations and does not retry a bad key.
 struct SessionOpen {
  key:pgp::crypto::SessionKey, algorithm:pgp::types::SymmetricAlgorithm,
- recipient:pgp::Fingerprint, signatures:Vec<u8>,
+ recipient:pgp::Fingerprint, signatures:Vec<u8>, vault:bool,
 }
 impl VerificationHelper for SessionOpen {
  fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>> {Ok(Vec::new())}
@@ -136,7 +138,7 @@ impl VerificationHelper for SessionOpen {
     self.signatures.extend(pgp::Packet::Signature((*sig).clone()).to_vec()?);count+=1;
    }
   }}
-  ensure!(encrypted && count==1 && self.signatures.len()<=65536,"One signature and authenticated encryption required");Ok(())
+  ensure!(encrypted && count==if self.vault {0}else{1} && self.signatures.len()<=65536,"Unexpected signature structure");Ok(())
  }
 }
 impl pgp::parse::stream::DecryptionHelper for SessionOpen {
@@ -145,7 +147,7 @@ impl pgp::parse::stream::DecryptionHelper for SessionOpen {
   ensure!(hint==Some(self.algorithm) && decrypt(Some(self.algorithm),&self.key),"Authentication failed");Ok(None)
  }
 }
-fn decrypt_session(v:&serde_json::Value)->Result<serde_json::Value> {
+fn decrypt_session_mode(v:&serde_json::Value,vault:bool)->Result<serde_json::Value> {
  use std::io::Read;
  use sha2::{Digest,Sha256};
  use pgp::types::SymmetricAlgorithm as S;
@@ -157,7 +159,7 @@ fn decrypt_session(v:&serde_json::Value)->Result<serde_json::Value> {
  let key:pgp::crypto::SessionKey=B64.decode(field(v,"sessionKey")?)?.into();
  ensure!(key.len()==algorithm.key_size()?,"Session key length mismatch");
  let recipient:pgp::Fingerprint=field(v,"recipientKey")?.parse()?;
- let helper=SessionOpen{key,algorithm,recipient,signatures:Vec::new()};
+ let helper=SessionOpen{key,algorithm,recipient,signatures:Vec::new(),vault};
  let p=StandardPolicy::new();
  let mut reader=pgp::parse::stream::DecryptorBuilder::from_bytes(&cipher)?.with_policy(&p,None,helper)?;
  let mut clear=Vec::new();reader.by_ref().take((LIMIT+1) as u64).read_to_end(&mut clear)?;
@@ -172,7 +174,47 @@ pub fn decrypt_with_session_key(input:&str)->Result<String,JsValue>{
  let run=||->Result<String>{
   ensure!(input.len()<=400000,"Request too large");
   let request:serde_json::Value=serde_json::from_str(input)?;
-  Ok(serde_json::to_string(&decrypt_session(&request)?)?)
+  Ok(serde_json::to_string(&decrypt_session_mode(&request,false)?)?)
  };
  run().map_err(|_|JsValue::from_str("Decryption request rejected"))
+}
+
+// Vault envelopes are deliberately unsigned, with an explicit purpose and
+// vault/wrapper identifiers inside authenticated encryption. This separate API
+// cannot relax the signed-message reader's signature requirement.
+#[wasm_bindgen]
+pub fn wrap_vault_key(input:&str)->Result<String,JsValue>{
+ let run=||->Result<String>{
+  use std::io::Write;
+  use pgp::serialize::stream::{Message,Encryptor,LiteralWriter};
+  ensure!(input.len()<100000,"Request too large");
+  let v:serde_json::Value=serde_json::from_str(input)?;
+  let cert=public(field(&v,"certificate")?)?;let p=StandardPolicy::new();
+  ensure!(cert.primary_key().key().version()==6,"v6 required");
+  let keys:Vec<_>=cert.keys().with_policy(&p,None).alive().revoked(false).for_transport_encryption().filter(|k|k.key().pk_algo()==pgp::types::PublicKeyAlgorithm::MLKEM768_X25519).collect();
+  ensure!(keys.len()==1,"One supported PIV hybrid key required");
+  let fingerprint=keys[0].key().fingerprint().to_hex();
+  let secret=B64.decode(field(&v,"secret")?)?;ensure!(secret.len()==32,"32-byte wrapping secret required");
+  ensure!(field(&v,"vaultId")?.len()==36 && field(&v,"wrapperId")?.len()==36,"Invalid identifiers");
+  let payload=serde_json::json!({"purpose":"sequoia-iwa-vault-wrap-v1","vaultId":v["vaultId"],"wrapperId":v["wrapperId"],"secret":v["secret"]});
+  let mut out=Vec::new();{
+   let encrypted=Encryptor::for_recipients(Message::new(&mut out),keys).build()?;
+   let mut writer=LiteralWriter::new(encrypted).build()?;writer.write_all(&serde_json::to_vec(&payload)?)?;writer.finalize()?;
+  }
+  Ok(serde_json::json!({"cipher":B64.encode(out),"recipientKey":fingerprint}).to_string())
+ };
+ run().map_err(|_|JsValue::from_str("Vault wrapping rejected"))
+}
+#[wasm_bindgen]
+pub fn unwrap_vault_key(input:&str)->Result<String,JsValue>{
+ let run=||->Result<String>{
+  ensure!(input.len()<100000,"Request too large");let v:serde_json::Value=serde_json::from_str(input)?;
+  let result=decrypt_session_mode(&v,true)?;
+  let raw=B64.decode(field(&result,"raw")?)?;ensure!(raw.len()<1024,"Vault payload limit");
+  let value:serde_json::Value=serde_json::from_slice(&raw)?;
+  ensure!(value["purpose"]=="sequoia-iwa-vault-wrap-v1" && value["vaultId"]==v["vaultId"] && value["wrapperId"]==v["wrapperId"],"Vault binding mismatch");
+  ensure!(B64.decode(field(&value,"secret")?)?.len()==32,"Invalid wrapping secret");
+  Ok(serde_json::json!({"secret":value["secret"]}).to_string())
+ };
+ run().map_err(|_|JsValue::from_str("Vault unwrapping rejected"))
 }

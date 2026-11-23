@@ -1,10 +1,128 @@
 # Sequoia Chat Lab — experimental Mac IWA
 
-A signed Isolated Web App calls a tightly scoped Chrome extension, which calls
-an installed native host through Chrome Native Messaging. There is no listening
-HTTP server for the IWA. The preview adds Google Chat and Gmail through a separately
-authorized gws session; gws itself uses its usual OAuth callback listener.
-The repository’s main loopback Mail/Chat application remains separate.
+A signed Isolated Web App uses Sequoia WebAssembly for message cryptography and
+browser REST APIs for Gmail/Google Chat. A scoped extension connects it to native
+YubiKey operations and the Google/passkey authorization UI. The repository's
+main loopback Mail/Chat application remains separate. There is no listening HTTP
+server for the IWA. Earlier preview milestones below describe their historical
+native/gws transport; the current boundary is described here and under Direct
+Gmail and Chat transport.
+
+## Browser-owned signing (0.10.1 preview, 2026-11-23)
+
+The Level 3 v6 signing path now constructs its OpenPGP signature inside a fresh
+WASM worker. It preserves the exact composed MIME, v6 salt, creation time and
+signature template while awaiting the YubiKey. Only a SHA-512 digest, the fixed
+configured signing fingerprint and one-use operation identifiers cross the
+extension/native bridge for signing. The MIME body and attachment bytes do not
+cross that boundary during the signing operation. Existing PKCS#11 operations
+perform ML-DSA-65 and Ed25519 signing, with one native PIN prompt for the composite
+operation and unchanged hardware touch policies.
+
+The native helper verifies both returned components. WASM verifies them again,
+assembles v6 OnePassSig/Literal/Signature packets, verifies the full signed stream
+and encrypts it for the selected recipient. The resulting ciphertext then goes
+through the existing separate review/export/send flow. Signing does not send a
+message or grant certificate trust. The native signer cannot inspect MIME
+addresses or subject from a digest: exact composition/metadata binding is now
+performed by the trusted signed IWA worker; native routing remains bound to the
+selected local contact and certificate hashes.
+
+Preparation is PIN-free. Signing authorization is consumed **before** the PIN
+prompt, including cancellation/failure. Worker state is consumed on every
+finalization attempt and expires after six minutes; native tickets expire after
+ten minutes. Wrong request/digest/key/hash, either altered signature component,
+replays and stale responses fail closed without retry or native signing-packet
+fallback. A worker timeout retains the UI operation lock until an already-started
+native operation settles. A bridge ownership fix prevents delayed cleanup from
+an older connection releasing a newer signing operation's lock.
+
+Automated validation used newly generated disposable software keys; the separate
+physical-key and real Compose checks are recorded below:
+
+- The actual WASM module's signed stream and detached signature verify with the
+  independent native OpenSSL-backed Sequoia implementation. `sq` decrypts and
+  verifies its encrypted output with exact MIME recovery.
+- The real browser worker/session modules, exercised through a Node Web Worker
+  shim, make one digest-only callback and produce output that `sq` decrypts and
+  verifies. Unicode subject, plain text, HTML and every attachment byte survive.
+- Both components are independently tamper-tested; fresh v6 salt, matching
+  one-pass salt, delayed completion, expiry, cancellation and malformed/oversized
+  input tests pass. The worker rejects mismatched compose metadata before PIN.
+- Publication checks pass 60 Python tests with no skips, eight native Rust tests,
+  46 Node tests and the standalone HTML-formatting test, including browser
+  coordination, direct-transport routing and extension lock regressions.
+  Browser-target WASM signing, verification, encryption, decryption and vault
+  interoperability checks also pass with disposable software fixtures.
+
+This is **automated interoperability validation, not a new live YubiKey or mail
+send result**. No real private keys, card keys, certificates or touch policies
+were accessed or changed for these tests. Hardware component signing and
+OpenPGP session-key decapsulation remain native; certificate-store migration and
+removing the extension are separate work. Software `.p12` signing is not enabled
+by this change. See [WASM signing tests](wasm/README.md#split-phase-signing).
+
+### Physical signing check (2026-11-23)
+
+The updated 0.10.1 IWA and native bridge were installed with the existing app
+origin/extension ID and user configuration preserved. A local physical test then
+used the actual signing worker in a Node Web Worker shim, its digest-only native
+authorization path and the existing Level 3 YubiKey PKCS#11 backend. One native
+PIN-authorized ML-DSA-65 + Ed25519 signature passed. Independent native Sequoia
+`sq` decrypted the encrypted output using a disposable software recipient and
+verified the hardware sender's hybrid signature, plain text, HTML and all binary
+attachment bytes. All 24 PIV slot records, full public-key hashes, PIN/touch
+policies and backend hashes matched before/after; PIN retries remained full.
+No email or card writes occurred, and disposable recipient secrets were removed.
+
+This is a **physical-key test of the real worker/native signing boundary**, not
+a Chrome Compose/send test or hardware decryption test. The IWA itself was
+reopened successfully with its configured identity after installation. The old
+Hardware test button still exercises the earlier native test, so use
+`tests/signing_hardware.py` for this new isolated check. PINs remain in the native
+masked dialog; the harness has no provisioning/reset/write command.
+
+### Live Compose interface → Sequoia verification (2026-11-23)
+
+The installed **0.10.1** preview then passed the actual **Chrome Canary IWA
+Compose** flow with the existing Level 3 YubiKey. A temporary, explicitly trusted
+software recipient allowed independent decryption without another hardware
+operation. The test entered a subject, plain text, Markdown formatting and a
+1,024-byte binary attachment through Compose, then selected **Sign and prepare
+Gmail email…** and completed the native PIN prompt.
+
+The IWA reported **“Gmail signature constructed and verified in WASM; encrypted
+message ready for review.”** The test checked the recipient and fingerprint in
+the Send confirmation and selected **Cancel**. Native Sequoia `sq` independently
+decrypted and verified the resulting local PGP/MIME draft:
+
+| Check | Result |
+| --- | --- |
+| Hardware signature components | ML-DSA-65 in 9c + Ed25519 in 84 |
+| WASM signature construction | v6 one-pass/signature packets, SHA-512, matching 32-byte salt |
+| Encryption | ML-KEM-768 + X25519; SEIPv2 AES-256/OCB; ZLIB compression |
+| Native Sequoia verification | One authenticated hybrid signature from the expected sender |
+| Signed From, To, subject, plain text and formatted HTML | Exact match |
+| Binary attachment | All 1,024 bytes matched |
+| Hardware audit | All 24 slots, including ten occupied slots, public-key hashes and PIN/touch policies unchanged |
+| PIN retries / installed PKCS#11 files | 3/3 before and after; all eight backend file hashes unchanged |
+
+This validates the real Compose → WASM → Native Messaging → PKCS#11 path, beyond
+the Node worker harness above. The YubiKey still performs the private signing
+operations; WASM constructs and verifies the signature packets and encrypts the
+message. The recipient decrypted with disposable software keys. This run did
+not test Gmail delivery or hardware recipient decryption, and sent no email.
+
+After verification, the temporary recipient/trust and pending send ticket were
+removed from the live app, and its disposable recipient secret was deleted.
+Existing contacts and trust records retained their original hashes. Device
+identifiers, personal certificates, message artifacts, PINs and private test
+reports are not published. To reproduce: import a disposable hybrid v6 recipient,
+prepare the same kind of Compose message, cancel Send, and independently decrypt
+the staged PGP/MIME ciphertext with `sq` using that recipient's secret and the
+expected sender's public certificate. Compare exact signed MIME and take public
+slot/policy snapshots around the operation; never provision or change policies
+as part of this test.
 
 ## Gmail preview (0.4.0)
 
@@ -629,8 +747,271 @@ attempt passed, without an automatic private-key retry. Local test reports and
 message content are excluded from Git. These results specifically exercise the
 new WASM decryption boundary, unlike the earlier native-decryption tests.
 
+### IWA credential vault (preview 0.9)
+
+The browser stores an AES-256-GCM encrypted vault in IndexedDB. Each vault has a
+random 256-bit content key. PIV and FIDO PRF methods independently wrap that same
+key; adding another method requires an unlocked vault. PIV becomes the default
+when enrolled. Names can be edited, methods removed (except the last), and an
+encrypted backup exported/restored into an empty instance. Removal does not
+revoke a hardware credential or remove its wrapper from older exported backups.
+
+The configured Level 3 PIV path uses fresh ML-KEM-768 + X25519 OpenPGP envelopes
+created in baseline WASM. Only decapsulation runs natively; WASM authenticates an
+explicit vault/wrapper-purpose payload. Enrolment verifies an actual unwrap
+before saving. No keys, PIN policies or touch policies are provisioned/changed.
+An optional classical P-256/P-384 ECDH backend supports older YubiKeys without
+FIDO or ML-KEM: the fixed local `vault_piv` configuration supplies `serial`,
+`slot` (9d or 82–95), `algorithm` (ECDH-P256/ECDH-P384) and base64 DER SPKI `public`.
+The existing PKCS#11 helper checks the token public key before deriving; the
+browser applies context-bound HKDF and authenticated wrapping. Classical vault
+backups are explicitly **not post-quantum resistant**. This optional configuration
+must refer to an existing key; it is not inferred from the currently inserted key.
+`configure_vault_piv.py --serial SERIAL --slot SLOT --algorithm ECDH-P384`
+performs a PIN-free public-key read; add `--apply` to save that public mapping,
+then select the classical PIV option in Vault. It never creates token keys.
+
+Chromium does not offer ordinary WebAuthn from an IWA origin. The experiment's
+existing scoped extension therefore opens an extension-owned PRF chooser. Its
+stable extension ID is the RP scope, **not** the PQ Mail website RP. Start with
+an assertion to discover an existing credential; creation is a separate explicit
+choice after that attempt, with a fresh random user handle and required user
+verification. PRF on creation is used when available, otherwise an assertion is
+needed. Unsupported PRF fails closed. The extension keeps no PRF output; it
+returns it only to the requesting IWA for HKDF/AES-GCM wrapping.
+
+Vault item names, .p12 bytes/passwords and secret settings are encrypted at rest.
+The current UI stores .p12 backups; it does not yet select software identities
+for sending. Existing Google credentials remain in gws's native OS-keyring-backed
+store and are **not migrated**. Once a vault exists, account and message operations
+through the IWA require unlock. This application gate is not a replacement for
+native credential encryption. Public certificates/configuration remain readable.
+
+Lock clears live vault references, input fields and the content-key byte buffer;
+a five-minute inactivity timer and page exit also lock it. JavaScript, WebCrypto
+and IPC memory copies cannot be guaranteed erased. Vault writes use IndexedDB
+compare-and-swap to reject stale concurrent windows. Restored backups must unlock
+before persistence. No plaintext exports or automatic private-key retries exist.
+
+Offline tests cover independent PIV/PRF wraps, restart, tampering and wrong-key
+rejection, last-method protection, classical P-256/P-384 ECDH agreement, extension
+origin/request binding, and native Sequoia decapsulation of a WASM-created vault
+envelope followed by WASM unwrap.
+
+Live Mac preview 0.9 testing enrolled PIV and a USB-security-key FIDO PRF
+credential on the same vault. Each method unlocked the saved synthetic test item
+after independently closing and reopening the IWA; PIV remained the default.
+The extension now keeps the bounded passkey ceremony alive across MV3 idle
+periods and aborts the popup ceremony if its request disappears. Seven vault and
+PRF broker regression tests pass. An earlier PIV decapsulation attempt failed;
+the subsequent restart/unlock passed, but the intermittent failure's cause is
+not established. This is not yet evidence of reliable repeated PIV operation.
+The native helper now records a bounded local diagnostic history containing only
+fixed status codes, elapsed time and process exit status. Errors distinguish
+ML-KEM, X25519, adapter timeout/input rejection, and unclassified cryptographic
+validation; no raw stderr, PIN, session key or vault content is logged. A live
+instrumented PIV unlock passed in 969 ms after PIN submission (including any
+touch wait), followed by successful browser vault authentication. This single
+successful observation does not establish the earlier failure's cause.
+No PIV keys or touch policies were changed. Google credentials remain in native
+gws storage; these tests used only a synthetic vault item.
+
 
 The future [provisioning and recovery application](../../docs/provisioning-recovery-design.md)
 would reuse the envelope-encryption model with separate provisioning keys/policy, tested backup
 devices, per-device administration secrets and authenticated SCP. The proposal
 also identifies format-versioning and anti-rollback work beyond the mail preview.
+
+
+### Single-PIN PIV diagnostic run
+
+`piv_soak.py` is a local Terminal-only diagnostic for the configured Level 3
+identity. It checks the connected serial, all 24 PIV slot states and public keys,
+and requires `Touch policy: Never` on 9c/84/9d/85 before requesting one hidden PIN.
+The PIN remains only in run memory and anonymous subprocess pipes; it is never
+saved in the vault, files, arguments or environment. Owned buffers are cleared
+on exit, but Python/OS copies cannot be guaranteed erased. No application-wide
+PIN caching is enabled.
+
+Five rounds by default (maximum twenty, with a fifteen-minute authorization
+window) exercise hybrid ML-DSA-65 + Ed25519 signing, hybrid ML-KEM-768 + X25519
+message decryption and signature verification, byte-exact synthetic multipart
+MIME/HTML/attachment recovery, and baseline WASM vault envelope wrapping and
+unwrapping. Each vault round uses a fresh WASM instance and checks wrong binding,
+wrong session-key and unsigned-message rejection. This tests the cryptographic
+path without opening or editing the user's real vault or sending messages.
+FIDO PRF, browser UI and OAuth flows are not automated by this PIV PIN runner.
+
+Every private operation starts a fresh native process/session. Any failure stops
+all further private operations immediately; there is no retry with the cached
+PIN. A read-only after snapshot is attempted even on failure. `result.json`
+contains operation timings, fixed error codes and the key/policy comparison;
+`unchanged: false` or an unavailable snapshot must not be reported as unchanged.
+The runner takes the same operation lock as the IWA Chat/Vault helper.
+
+```sh
+python3 -I -B experiments/mac-iwa/piv_soak.py \
+  --installed "$HOME/Library/Application Support/Sequoia IWA Lab" \
+  --serial YOUR_TEST_SERIAL --node /absolute/path/to/node \
+  --rounds 5 --out /absolute/path/to/new-result-directory
+```
+
+Five control-flow tests verify stop-on-failure, authorization expiry, refusal of
+touch-required slots, and redaction of error/timeout data. Hardware execution is
+separate from those automated tests and requires the user's local PIN entry.
+
+### Standalone Google transport feasibility (preview 0.9.1)
+
+Open **Hardware test → Standalone Google OAuth / CORS feasibility probe**.
+This bundled JavaScript page uses `fetch` directly, without gws, the extension
+or the native helper. Only this page permits connections to four exact Google
+origins; the main app retains its existing self-only network CSP. Cookies and
+Authorization headers are omitted. No remote executable script is loaded.
+
+Live Mac IWA checks on 2026-11-23 returned readable responses:
+
+| Probe | HTTP status | Interpretation |
+| --- | --- | --- |
+| OpenID discovery | 200 | Public discovery reachable |
+| Token endpoint, intentionally invalid grant | 400 | Error response readable |
+| Gmail profile without credentials | 401 | Unauthorized response readable |
+| Chat spaces without credentials | 401 | Unauthorized response readable |
+
+The redirect probe uses a public client ID, `response_type=code`, S256 PKCE,
+a random state and only `openid` scope. Using the existing Desktop client,
+Google rejected the `isolated-app://…/oauth-callback.html` redirect before consent
+with **400 invalid_request**, naming `redirect_uri` in its error details. This
+establishes failure for that client/redirect combination, not every possible
+Google authentication architecture. No Cloud registration was changed.
+
+The optional callback page clears query/fragment data and reports only whether
+state matched and a code/error was present; it does not exchange or persist a
+code. The probe deliberately discards the PKCE verifier, so it cannot become a
+production authorization flow accidentally. Its report contains no credentials.
+
+**Decision:** retain working gws authentication. Investigate a supported HTTPS
+authorization companion and its secure return channel before replacing it.
+Authenticated API CORS, authorization-header preflights, attachment endpoints,
+PKCE code exchange, refresh-token availability and restart refresh remain
+untested. Anonymous 400/401 responses do not establish those capabilities. A
+hosted companion is an additional dependency, not a fully self-contained IWA.
+Never bundle a confidential web-client secret or disable browser protections.
+
+References: [Google origin validation](https://developers.google.com/identity/protocols/oauth2/javascript-implicit-flow),
+[Google code model](https://developers.google.com/identity/oauth2/web/guides/use-code-model),
+[IWA CSP](https://developer.chrome.com/docs/iwa/introduction).
+
+### Static Google authorization prototype (2026-11-23)
+
+Mac preview 0.9.2 successfully loaded the GitHub Pages authorization companion
+in a credentialless iframe and completed the exact-origin/nonce-bound
+`postMessage` handshake. The Google Identity Services library loaded and enabled
+its sign-in button. A shared Web OAuth test client was created with
+`https://ve7jtb.github.io` as its authorized JavaScript origin.
+
+**Authorization did not complete.** GIS reported failure to open its popup,
+although a disconnected Google account chooser appeared. The IWA handled the
+error and displayed “Google authorization stopped. No token saved.” No access
+token was received and the direct Gmail profile test was not run. No messages
+were read or sent; existing gws sessions were unchanged. Two validator tests
+passed, but this is not an end-to-end OAuth success.
+
+Chrome documents that popups from a credentialless iframe use `noopener` and
+cannot communicate with that iframe:
+https://developer.chrome.com/blog/iframe-credentialless/ . This rules out the
+current credentialless-iframe GIS popup design. A future prototype needs a
+supported return channel (for example, a separately evaluated extension bridge
+or an appropriately hosted non-credentialless flow); it must not weaken IWA
+isolation or claim that static hosting alone solves OAuth. The baseline gws
+transport remains the working implementation.
+
+### Normal iframe with explicit headers (2026-11-23)
+
+Preview 0.9.5 tested a public synthetic HTTPS fixture at
+https://sequoia-iwa-header-test.ve7jtb.chatgpt.site . GET response headers were
+verified as COEP `require-corp`, COOP `same-origin-allow-popups`, and CORP
+`cross-origin`. The normal iframe loaded and completed its nonce-bound message
+handshake with `credentialless=false`.
+
+The popup still had `window.opener === null`; the iframe's `window.open()`
+returned null and no reply arrived. This popup was **same-origin with the HTTPS
+iframe**, but cross-origin with the top-level IWA. Its generic fixture label
+“separate-origin” refers to the original local two-port fixture and should not
+be interpreted as proof of a separate-origin provider test. Even this simpler
+return channel failed, so no Google authorization was attempted.
+
+The diagnostic reported `crossOriginIsolated=false` for the IWA and iframe;
+we did not change the existing IWA isolation headers or enable new permissions.
+The result establishes that these companion headers alone do not repair the
+popup return channel in this preview, not a claim about every possible browser
+configuration. No PINs, Google tokens, messages, token keys or policies were
+accessed/changed. The working gws transport remains unchanged.
+
+The first localhost HTTP fixture was blocked by the IWA's enforced HTTPS-only
+frame CSP before loading. The HTTPS fixture is served by a minimal Worker with
+fixed routes and no application storage or credential handling.
+
+### Extension OAuth succeeds (2026-11-23)
+
+Preview/extension 0.9.6 successfully used `chrome.identity.launchWebAuthFlow`
+to intercept the fixed `https://bfofmobbkplpofnjjlcikmamjngbmcpp.chromiumapp.org/google`
+callback registered on the shared Web test client. Google returned a short-lived
+Gmail read-only token; the IWA then fetched `/gmail/v1/users/me/profile` directly
+and displayed PASS for the authorized test account. No message was retrieved or
+sent, and no gws/native helper handled OAuth or the Gmail API request. PIV vault
+unlock still uses the existing native helper.
+
+The extension verifies callback origin/path, OAuth state, bearer type, expiry
+and required scope. Its operation accepts no caller-selected URLs or scopes.
+The access token is delivered only to the requesting, exact-origin top-level
+IWA port, and neither extension nor IWA persists it. Disconnecting during
+authorization discards the eventual result. No refresh token or client secret
+is used. Google/browser sign-in cookies and prior consent remain outside the
+IWA vault; locking clears app access, not the Google browser session.
+
+Live checks confirmed vault lock clears the temporary token and disables the
+profile test. After closing/reopening with 0.9.7, the app required vault unlock
+before starting authorization. Version 0.9.7 adds clearer locked-vault wording;
+the installed extension's OAuth implementation is 0.9.6. Six automated tests
+passed across callback validation, disconnect handling, static-message validation
+and the existing PRF broker. Expiry is implemented but was not waited out in the
+live test. This remains a diagnostic profile-read flow: inbox, Chat, sending and
+attachments still use the established gws transport.
+
+### Direct Gmail and Chat transport (0.10 preview, 2026-11-23)
+
+The IWA now has browser-owned REST transport for Gmail and Google Chat. The
+main sign-in button uses the extension's `chrome.identity.launchWebAuthFlow`
+callback; it requests the fixed `gmail.readonly`, `gmail.send`,
+`chat.spaces.readonly`, `chat.messages.readonly`, and `chat.messages.create`
+scopes. Account identity must match the configured sending identity. Access
+tokens stay in closure memory and clear on vault lock, expiry or page exit.
+There is no refresh token, client secret or Google token in Native Messaging.
+Reauthentication is required after locking or restarting the IWA.
+
+Gmail supports inbox paging/search, raw MIME retrieval, ordinary and signed
+messages, and sending the reviewed encrypted PGP/MIME message. Chat supports
+conversation/message paging, bounded media downloads, and the existing linked
+public-certificate/encrypted-bundle messages. Requests use only fixed Google
+API origins, reject redirects, bound response bytes and never automatically
+retry a send. A partial Chat send reports the certificate message reference
+so the conversation can be inspected before another attempt.
+
+The native helper retains YubiKey operations, public-certificate management,
+and single-use reviewed ciphertext export. Attached-key save/trust still
+re-verifies the browser-supplied raw message before changing local trust.
+Legacy native Google transport entry points are disabled; the IWA installer no
+longer requires or copies `gws`, its wrapper, or an OAuth client-secret file.
+Existing standalone gws sessions are left untouched. The standalone CLI remains
+a separate supported experiment.
+
+Validation: 14 JavaScript OAuth/direct-transport/PRF tests and three offline
+native export tests pass, including exact binary upload bytes, account mismatch,
+late response after lock, redirect/traversal rejection, single-use export and
+changed-trust rejection. These are automated fixtures, **not a live Google
+send/receive result**. The WASM-signing changes are integrated in the 0.10.1 build and its automated
+regressions pass; live verification of the combined preview is pending.
+
+API references: [Gmail send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send),
+[Chat media upload](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload),
+[Chat media download](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/download).

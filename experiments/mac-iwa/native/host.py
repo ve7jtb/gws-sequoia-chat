@@ -141,7 +141,7 @@ def run_test(cfg, emit=frame_write):
                 os.waitpid(pid,0)
 
 
-def operation_error(op):
+def operation_error(op, error=None):
     """Return fixed, operation-specific guidance without exposing CLI secrets.
 
     Connection failures happen before the hardware operation. Keep them separate
@@ -153,6 +153,28 @@ def operation_error(op):
         return 'Google Chat connection failed. Complete Google sign-in and all three Chat permissions, then reconnect. No YubiKey operation was attempted.'
     if op and op.startswith('chat-mail-'):
         return 'Gmail operation stopped. Check the Gmail connection, selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
+    if op and op.startswith('chat-vault-'):
+        # Reflect only our fixed diagnostics, never arbitrary exceptions, native
+        # stderr, PINs or secret output. Cancellation is not a token PIN failure.
+        # PIV_UNLOCK_DIAGNOSTICS: these fixed component labels consume the
+        # status protocol from chat_bridge.py and crypto/src/main.rs. They may
+        # remain when disk history is removed. If removing the protocol too,
+        # retain a generic failure response: never expose str(error)/raw stderr
+        # or add an automatic private-operation retry.
+        reasons={'PIN cancelled or invalid':'PIN dialog cancelled or local PIN format rejected',
+                 'Vault crypto MLKEM_FAILED':'ML-KEM-768 PKCS#11 component failed',
+                 'Vault crypto X25519_FAILED':'X25519 PKCS#11 component failed',
+                 'Vault crypto ADAPTER_TIMEOUT_OR_INPUT':'PKCS#11 adapter timed out or rejected input',
+                 'Vault crypto MLKEM_RESPONSE_SIZE':'ML-KEM-768 returned an invalid response length',
+                 'Vault crypto X25519_RESPONSE_SIZE':'X25519 returned an invalid response length',
+                 'Vault crypto CRYPTO_FAILED':'native cryptographic validation failed (unclassified)',
+                 'Vault helper timeout':'native cryptographic helper timed out',
+                 'Expected YubiKey not connected':'configured YubiKey not connected',
+                 'Cryptographic operation failed; no retry':'PKCS#11 decapsulation failed',
+                 'Wrong PIV key':'public-key mismatch',
+                 'Required vault YubiKey absent':'configured classical PIV key not connected'}
+        reason=reasons.get(str(error),'native vault operation could not complete')
+        return 'Vault stopped: '+reason+'. No retry or vault write was performed.'
     if op and op.startswith('chat-'):
         return 'Chat operation stopped. Check the selected trusted certificate and any native PIN dialog. No automatic send or cryptographic retry was performed.'
     return 'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'
@@ -176,10 +198,10 @@ def main():
             else:
                 from chat_bridge import ChatBridge
                 frame_write({'type':'result','data':ChatBridge(ROOT,cfg,frame_write).action(request)})
-    except Exception:
+    except Exception as e:
         # Avoid reflecting low-level errors, PINs, or environment data. Full
         # public test diagnostics remain only in the local hardware result folder.
-        message = operation_error(op)
+        message = operation_error(op, e)
         frame_write({'type':'error','message':message})
         return 1
     return 0

@@ -1,3 +1,8 @@
+// Signing uses its own fixed worker because it must retain the v6 template and
+// salt across an asynchronous hardware request. Neither policy accepts URLs
+// supplied by a message, certificate, native response or user setting.
+const signingWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-signing-worker',{createScriptURL:url=>{if(url!=='/signing-worker.js')throw Error('Unexpected signing worker');return url;}});
+function signingWorkerURL(){return signingWorkerPolicy?signingWorkerPolicy.createScriptURL('/signing-worker.js'):'/signing-worker.js';}
 // A fresh worker per message bounds lifetime and drops decrypted content on
 // completion. A timeout never retries hardware or falls back to native verify.
 const messageWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-message-worker',{createScriptURL:url=>{if(url!=='/message-worker.js')throw Error('Unexpected worker');return url;}});

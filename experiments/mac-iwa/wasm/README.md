@@ -1,17 +1,20 @@
 # Experimental Sequoia WASM verifier
 
-This prototype exposes **detached public signature verification only** inside an
-IWA Web Worker. Preview 0.6 uses this baseline verifier for Gmail and decrypted
-Chat messages, with MIME parsing/composition in a separate browser module.
-OpenPGP encryption/decryption, YubiKey signing and OAuth remain native. The WASM
-worker has no extension/native connection and never falls back to native crypto.
+The baseline module implements public signature verification/encryption,
+authenticated session-key decryption, vault wrapping and split-phase OpenPGP
+signing-packet construction. It never receives a PIN or long-term signing secret.
+A dedicated signing worker prepares the v6 digest, waits for the fixed native
+hardware signer, and finalizes/verifies the returned composite signature before
+encryption. The worker has no extension/native connection of its own; the main
+page relays only its bounded digest request and signature response.
 
 The pinned Sequoia fork's RustCrypto backend supports the Level 3
 ML-DSA-65 + Ed25519 signatures exercised here. The explicit
 `allow-experimental-crypto` and `allow-variable-time-crypto` features are required
-by that backend. This is not approval to move secret-key operations into it.
-Only public keys and signed data enter this exported API; secret certificates
-are excluded. Saved certificate trust remains a separate decision.
+by that backend. Long-term private-key signing operations remain native; this is
+not approval to add software signing secrets to that backend. Saved certificate
+trust remains a separate decision. Earlier preview sections below describe the
+successive verification/encryption/decryption milestones.
 
 ## Build and reproduce
 
@@ -170,3 +173,61 @@ finished: this software-only fixture contains a test session key. Tests cover
 exact MIME recovery and hybrid verification, wrong keys/lengths/algorithms,
 recipient mismatch, ciphertext substitution, final-tag corruption, truncation
 and plaintext rejection. Hardware session keys never use the fixture export path.
+
+## Split-phase signing
+
+Preview 0.10.1 exports `prepare_signing`, `finalize_signing` and `cancel_signing`.
+Preparation accepts a public v6 sender certificate, its current self-certified
+email, exact payload and fresh 32-byte operation ID. It retains Sequoia's prepared
+signature template, fresh salt and creation time in worker memory, returning only
+one SHA-512 digest and the selected Level 3 hybrid signing fingerprint. There is
+one pending operation per worker and a six-minute expiry.
+
+The native response must echo the operation/key/hash/digest bindings and contain
+exactly the 64-byte Ed25519 and 3,309-byte ML-DSA-65 signature components. Every
+finalization attempt consumes the pending state. Finalization verifies both
+components, constructs v6 one-pass/literal/signature packets and verifies the
+finished packet stream against the retained bytes. Cancellation/worker
+termination releases references; no guarantee is made about physical erasure of
+JavaScript, WASM or OS memory copies. No long-term private key enters this module.
+
+Reproduce with disposable fixtures in a private temporary directory. Build the
+native example using the same configured OpenSSL dependency as the native helper:
+
+```sh
+cargo build --locked --release --manifest-path ../crypto/Cargo.toml --example signing_fixture
+../crypto/target/release/examples/signing_fixture generate /tmp/iwa-signing-fixture
+IWA_SIGNING_FIXTURE_BIN=../crypto/target/release/examples/signing_fixture \
+  TEST_SQ=/absolute/path/to/sq node tests/signing.mjs /tmp/iwa-signing-fixture
+```
+
+The example is a **test-only software signer**, never installed by the native host.
+Remove the temporary fixture directory after testing; it contains disposable
+software secret keys. The suite tests native verification of inline/detached
+signatures, independent `sq` decrypt/verify, exact MIME recovery, fresh v6 salt,
+one-pass salt consistency, both component alterations, binding substitution,
+replay, cancellation, expiry and malformed/oversized/private-certificate inputs.
+
+From the `experiments/mac-iwa` directory, also exercise the actual signing worker
+and its asynchronous session coordinator (Node 24):
+
+```sh
+node --test tests/signing-session.test.mjs tests/signing-routing.test.mjs \
+  tests/native-bridge-lock.test.cjs tests/google-direct.test.mjs
+IWA_SIGNING_FIXTURE_BIN="$PWD/crypto/target/release/examples/signing_fixture" \
+  TEST_SQ=/absolute/path/to/sq node tests/signing-worker-interop.mjs /tmp/iwa-signing-fixture
+```
+
+The Node-only worker shim fetches only the fixed bundled WASM asset. It tests the
+real browser module, one digest-only callback, independent `sq` decryption and
+verification, text/HTML/attachment recovery, and pre-PIN metadata/size rejection.
+These tests do not contact a Google account, use an installed identity or perform
+hardware operations. They do not replace a subsequent live IWA/YubiKey test.
+
+The subsequent **2026-11-23** physical-key test passed through the installed
+**0.10.1 IWA Compose interface**. Native PKCS#11 supplied ML-DSA-65/Ed25519
+components to the actual WASM signing worker; independent native `sq` decrypted
+its ML-KEM-768/X25519 message and authenticated the hybrid signature. Signed
+headers, plain text, formatted HTML and all 1,024 attachment bytes matched. Send
+was cancelled, no email was sent, and all 24 PIV slot records and touch policies
+were unchanged. See the [full result and limitations](../README.md#live-compose-interface--sequoia-verification-2026-11-23).

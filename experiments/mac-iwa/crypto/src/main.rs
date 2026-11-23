@@ -12,6 +12,7 @@ use pgp::{Cert,KeyHandle,crypto::{SessionKey,Decryptor},packet::{PKESK,SKESK},
 use sequoia_pqmail_piv::{PublicKey,Level3Signer,Level3Decryptor,process::{Config,Pkcs11Operation}};
 use std::{io::{self,Read,Write},path::PathBuf};
 use zeroize::Zeroizing;
+mod digest_sign;
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
@@ -182,6 +183,10 @@ fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
 fn execute()->Result<()> {
  let mut input=Zeroizing::new(Vec::new());io::stdin().take((LIMIT*4+1) as u64).read_to_end(&mut input)?;ensure!(input.len()<=LIMIT*4,"Input too large");
  let mut v:serde_json::Value=serde_json::from_slice(&input)?;input.clear();
+ if field(&v,"op")?=="signing-material" {
+  let own=public(field(&v,"own")?)?;let key=selected(&own,true)?;
+  println!("{}",serde_json::json!({"signingFingerprint":key.fingerprint().to_hex()}));return Ok(());
+ }
  if field(&v,"op")?=="inspect-public" {
   let cert=public(field(&v,"certificate")?)?;
   println!("{}",serde_json::json!({"fingerprint":cert.fingerprint().to_hex(),"version":cert.primary_key().key().version(),"algorithms":cert.keys().map(|k|format!("{}",k.key().pk_algo())).collect::<Vec<_>>(),"emails":current_emails(&cert)}));return Ok(());
@@ -199,7 +204,15 @@ fn execute()->Result<()> {
  let pin=Zeroizing::new(v["pin"].take().as_str().context("PIN required")?.as_bytes().to_vec());
  let cfg=&v["config"];let path=|n|->Result<PathBuf>{Ok(PathBuf::from(field(cfg,n)?))};
  let config=Config{python:path("python")?,adapters:path("adapters")?,openssl:path("openssl")?,provider:path("provider")?,module:path("module")?,serial:field(cfg,"serial")?.into()};
- let own=public(field(&v,"own")?)?;let peer=public(field(&v,"peer")?)?;
+ let own=public(field(&v,"own")?)?;
+ if field(&v,"op")?=="sign-digest" {
+  // Validate the digest and fixed public key before the operation-scoped PIN is
+  // passed to PKCS#11. No MIME, arbitrary slot, or supplied key is accepted.
+  let key=selected(&own,true)?;digest_sign::validate_request(&v,&key)?;
+  let signer=Level3Signer::new(key,Pkcs11Operation::new(config,pin)?)?;
+  println!("{}",digest_sign::sign(signer,&v)?);return Ok(());
+ }
+ let peer=public(field(&v,"peer")?)?;
  let payload=Zeroizing::new(B64.decode(field(&v,"payload")?)?);ensure!(payload.len()<=LIMIT,"Payload too large");
  let p=StandardPolicy::new();
  if field(&v,"op")?=="decapsulate-browser" {
@@ -241,7 +254,37 @@ fn execute()->Result<()> {
  ensure!(result.len()<=LIMIT,"Result too large");
  println!("{}",serde_json::json!({"data":B64.encode(result)}));Ok(())
 }
-fn main(){if execute().is_err(){eprintln!("Cryptographic operation failed; no plaintext released and no automatic retry");std::process::exit(1)}}
+// PIV_UNLOCK_DIAGNOSTICS: safe component status protocol for investigating the
+// intermittent vault failure, separate from Python's optional on-disk history.
+// If retiring this protocol, replace main's status emission with a fixed generic
+// error and keep exit(1). Update native/chat_bridge.py, native/host.py, piv_soak.py
+// and diagnostics tests together. Never replace it with Debug/Display of the
+// full error chain, and never remove failure propagation or add a retry.
+// Map errors to a closed vocabulary. Never print the error chain: provider
+// diagnostics can contain input bytes. Component identification is sufficient
+// to distinguish a token failure from later packet/session-key validation.
+fn diagnostic_code(error: &anyhow::Error) -> &'static str {
+ for cause in error.chain() {
+  let message=cause.to_string();
+  if message.starts_with("PKCS#11 ML-KEM-768 failed (exit ") {return "MLKEM_FAILED";}
+  if message.starts_with("PKCS#11 X25519 failed (exit ") {return "X25519_FAILED";}
+  if message=="PKCS#11 adapter timed out or rejected input; no retry" {return "ADAPTER_TIMEOUT_OR_INPUT";}
+  if message.starts_with("Incorrect ML-KEM-768 response size") {return "MLKEM_RESPONSE_SIZE";}
+  if message.starts_with("Incorrect X25519 response size") {return "X25519_RESPONSE_SIZE";}
+ }
+ "CRYPTO_FAILED"
+}
+fn main(){if let Err(error)=execute(){eprintln!("IWA_CRYPTO_STATUS={}",diagnostic_code(&error));std::process::exit(1)}}
+
+#[test]
+fn diagnostics_do_not_echo_error_data() {
+ assert_eq!(diagnostic_code(&anyhow::anyhow!("private data")),"CRYPTO_FAILED");
+ for (component,code) in [("ML-KEM-768","MLKEM_FAILED"),("X25519","X25519_FAILED")] {
+  let e=anyhow::anyhow!("PKCS#11 {} failed (exit Some(1)); no retry",component).context("Decapsulation failed; no retry");
+  assert_eq!(diagnostic_code(&e),code);
+ }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -297,6 +340,25 @@ mod tests {
    std::fs::write(std::path::Path::new(&folder).join("browser-open.json"),serde_json::to_vec(&serde_json::json!({"packet":{"raw":B64.encode(clear),"signature":B64.encode(signature),"encrypted":true,"expectedEmail":"alice@example.invalid","expectedFingerprint":public.fingerprint().to_hex(),"recipient":"bob@example.invalid"},"material":{"certificates":[B64.encode(public.to_vec().unwrap())],"bindings":[{"email":"alice@example.invalid","fingerprint":public.fingerprint().to_hex()}],"saved":[public.fingerprint().to_hex()]}})).unwrap()).unwrap();
   }
   let mut bad=cipher;let n=bad.len();bad[n-8]^=1;assert!(open(&bad).is_err());
+ }
+ #[test] fn wasm_vault_roundtrip() {
+  // Opt-in cross-runtime test, restricted to ephemeral software key material.
+  let Ok(node)=std::env::var("IWA_VAULT_NODE") else{return};
+  use sha2::{Digest,Sha256};
+  let cert=identity();let secret=B64.encode([42u8;32]);
+  let path=std::env::temp_dir().join(format!("iwa-vault-test-{}",std::process::id()));
+  let script=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../wasm/tests/vault.mjs");
+  let id="12345678-1234-1234-1234-123456789abc";
+  let input=serde_json::json!({"certificate":B64.encode(cert.clone().strip_secret_key_material().to_vec().unwrap()),"secret":secret,"vaultId":id,"wrapperId":id});
+  std::fs::write(&path,input.to_string()).unwrap();
+  assert!(std::process::Command::new(&node).arg(&script).arg(&path).arg("wrap").status().unwrap().success());
+  let wrapped=std::path::PathBuf::from(format!("{}.wrapped",path.display()));
+  let v:serde_json::Value=serde_json::from_slice(&std::fs::read(&wrapped).unwrap()).unwrap();let cipher=B64.decode(v["cipher"].as_str().unwrap()).unwrap();
+  let (algorithm,session)=decapsulate(&cert,&mut key(&cert,false),&cipher).unwrap();
+  let request=serde_json::json!({"cipher":v["cipher"],"recipientKey":v["recipientKey"],"algorithm":u8::from(algorithm),"sessionKey":B64.encode(session),"cipherHash":format!("{:x}",Sha256::digest(&cipher)),"vaultId":id,"wrapperId":id,"expected":secret});
+  std::fs::write(&path,request.to_string()).unwrap();
+  let passed=std::process::Command::new(node).arg(script).arg(&path).arg("unwrap").status().unwrap().success();
+  std::fs::remove_file(path).unwrap();std::fs::remove_file(wrapped).unwrap();assert!(passed);
  }
  #[test] fn native_decapsulation_for_wasm_fixture() {
   use sha2::{Digest,Sha256};
