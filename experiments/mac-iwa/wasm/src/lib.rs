@@ -1,6 +1,7 @@
 //! Verification, split-phase signing, public-key encryption and message decryption.
-//! No MIME parser, network, token, PIN, long-term private-key operation,
-//! filesystem or trust-store mutation is exposed.
+//! No network, token, PIN, filesystem or trust-store mutation is exposed.
+//! Public/hardware workers remain public-only; the separate opt-in software
+//! provider decrypts bounded encrypted identities for one operation per worker.
 use anyhow::{ensure,Context,Result};
 use base64::{Engine,engine::general_purpose::STANDARD as B64};
 use sequoia_openpgp as pgp;
@@ -16,6 +17,10 @@ mod certificates;
 pub use certificates::{inspect_public, inspect_identity};
 mod bundle;
 pub use bundle::inspect_bundle;
+// Software custody is a separate, opt-in, one-shot worker API. Hardware paths
+// continue accepting public material only; no native fallback handles secrets.
+mod software;
+pub use software::{software_inspect, software_sign, software_decapsulate};
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}

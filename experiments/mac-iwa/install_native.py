@@ -38,6 +38,36 @@ def validate(config):
         raise ValueError('Explicit enrollment email required')
 
 
+# The installer validates the executable's public, side-effect-free contract.
+# This prevents accidentally packaging the separately built message oracle or
+# an older broad worker under the production executable filename.
+PRODUCTION_OPERATIONS = frozenset(('identity-current','identity-canonical',
+    'identity-restore','identity-bundle-read','identity-key-snapshot',
+    'decryption-material','signing-material','inspect-public',
+    'decapsulate-components','sign-digest'))
+
+
+def validate_crypto_binary(binary):
+    """Check capability metadata before copying any part of the installation."""
+    try:
+        result=subprocess.run([str(binary),'--capabilities'],input=b'',
+            stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10)
+        if result.returncode or len(result.stdout)>8192:raise ValueError()
+        value=json.loads(result.stdout)
+        if (not isinstance(value,dict) or
+            set(value)!={'service','version','operations','testOracle'} or
+            value['service']!='sequoia-iwa-hardware' or type(value['version']) is not int or
+            value['version']!=1 or value['testOracle'] is not False or
+            not isinstance(value['operations'],list) or
+            not all(isinstance(op,str) for op in value['operations']) or
+            len(value['operations'])!=len(PRODUCTION_OPERATIONS) or
+            frozenset(value['operations'])!=PRODUCTION_OPERATIONS):raise ValueError()
+    except (OSError,ValueError,TypeError,subprocess.TimeoutExpired):
+        # Never echo executable output: even an accidental wrong program must
+        # not place its diagnostics or environment in the user's install log.
+        raise ValueError('Expected the production hardware worker; test or legacy executables cannot be installed') from None
+
+
 def install_code(destination,crypto_binary):
     """Copy the small native service, never a mail transport or Java runtime.
 
@@ -45,6 +75,7 @@ def install_code(destination,crypto_binary):
     Existing legacy runtimes are left alone during an upgrade: neither local
     test evidence nor older standalone tools are erased by installing this code.
     """
+    validate_crypto_binary(crypto_binary)
     for name in NATIVE_MODULES:
         shutil.copy2(ROOT/'native'/name,destination/'native'/name)
     shutil.copy2(crypto_binary,destination/'runtime/sequoia-iwa-crypto')

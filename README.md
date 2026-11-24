@@ -4,6 +4,18 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.17.2 adds experimental vault-protected software OpenPGP identities and
+separates the production helper from test-only message code.** Import an encrypted
+Level 3 v6 OpenPGP secret-key file into the existing PRF/PIV vault, then select it
+in Compose or for matching encrypted messages. Software operations run in fresh
+WASM workers and stop on vault lock; hardware authorization and private-key
+operations remain native. PKCS#12 operation support and other software profiles
+are not included yet. Installed tests on **2026-11-23** passed software import,
+Compose signing, lock/unlock, signing and decryption after a full app restart,
+and disposable-identity cleanup. Independent Sequoia tests passed in both
+directions; the physical key/policy audit remained unchanged. See
+[software custody, limits and test results](experiments/mac-iwa/README.md#vault-protected-software-identities-and-production-helper-0172).
+
 **IWA 0.16.0 moves the hardware-test workflow into the browser and shares its
 public bundle parser with native authorization.** The IWA builds and verifies
 a local synthetic signing/encryption/decryption test; the helper supplies

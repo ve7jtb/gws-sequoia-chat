@@ -1,11 +1,17 @@
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap,classicalOpen} from './vault/piv.js';
+import {createSoftwareIdentityStore} from './software/store.js';
+import {softwareCrypto} from './software/client.js';
+import {inspectIdentity} from './identities/client.js';
 const engine=new Vault();let record=null,revision=0,active=false,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',{createScriptURL:u=>{if(u!=='/vault/worker.js')throw Error();return u;}});
 function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker(workerPolicy?workerPolicy.createScriptURL('/vault/worker.js'):'/vault/worker.js',{type:'module'});const t=setTimeout(()=>{w.terminate();reject(Error('Vault cryptography timed out.'));},30000);w.onmessage=({data})=>{clearTimeout(t);w.terminate();data.ok?resolve(data.result):reject(Error(data.error));};w.onerror=()=>{clearTimeout(t);w.terminate();reject(Error('Vault cryptography failed.'));};w.postMessage({op,input});});}
-function lock(){window.dispatchEvent(new Event('iwa-vault-locked'));epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();}
+function lock(){softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
+ // Unlock completes after its component request releases the general UI lock.
+ // Refresh this control here too, so it becomes usable immediately on success.
+ el('vault-lock').disabled=!engine.unlocked;
  el('vault-unlocked').hidden=!engine.unlocked;el('vault-unlock').hidden=!record||engine.unlocked;
  el('vault-methods').replaceChildren();for(const w of record?.wrappers||[]){const o=document.createElement('option');o.value=w.id;o.textContent=w.name+' · '+(w.type==='piv'?'PIV':'FIDO PRF')+(w.id===record.default?' (default)':'');el('vault-methods').append(o);}if(record)el('vault-methods').value=record.default;
  el('vault-method-list').replaceChildren();if(engine.unlocked)for(const w of record.wrappers){const row=document.createElement('div');row.textContent=w.name+' · '+w.type+(w.type==='piv'?' · '+w.binding.serial:'');for(const [label,fn] of [['Rename',async()=>{const name=prompt('Name for this unlock method',w.name);if(name!==null){await engine.rename(w.id,name);await commit();}}],['Remove',async()=>{if(confirm('Remove this vault unlock method? This does not delete any credential or token key.')){await engine.remove(w.id);await commit();}}]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);row.append(b);}el('vault-method-list').append(row);}
@@ -13,8 +19,34 @@ function render(){
  el('vault-state').textContent=record?(engine.unlocked?'Unlocked — auto-locks after five minutes of inactivity.':'Locked — choose an enrolled method.'):'No IWA vault yet. Use PIV by default, or FIDO PRF for software-only credentials.';
  el('vault-add-piv').textContent=record?'Add PIV unlock method':'Create vault with PIV (default)';el('vault-add-prf').textContent=record?'Add FIDO PRF unlock method':'Create software-only vault with FIDO PRF';
 }
-async function commit(){try{await persist(engine.record,revision);record=structuredClone(engine.record);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();}
+async function commit(options={}){try{options.guard?.();const candidate=engine.record;await persist(candidate,revision,options);options.guard?.();record=structuredClone(candidate);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();window.dispatchEvent(new Event('iwa-software-identities-changed'));}
 function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lock();tell('Vault locked after inactivity.');},300000);}
+// The service below is the sole software-identity path into the unlocked
+// vault. UI code receives public snapshots and operations, never the raw vault
+// object, content key or password-bearing item list. Persistence remains the
+// same encrypted IndexedDB record and compare-and-swap revision used by PIV/PRF.
+const sameVault=expected=>engine.unlocked&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
+const softwareIdentities=createSoftwareIdentityStore({
+ inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,
+ changed:()=>window.dispatchEvent(new Event('iwa-software-identities-changed')),
+ access:{
+  snapshot:()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),
+  async assertCurrent(expected){
+   if(!sameVault(expected))throw Error('Software identity vault changed.');const latest=await load();
+   if(!sameVault(expected))throw Error('Software identity vault locked or changed.');
+   if(!latest||latest.id!==expected.vaultId||latest.revision!==expected.revision){lock();throw Error('Vault changed in another window; unlock the latest copy.');}
+  },
+  async replaceItems(items,expected,{signal}={}){
+   if(active)throw Error('Finish the current vault operation first.');active=true;
+   const guard=()=>{if(!sameVault(expected)||signal?.aborted)throw Error('Software identity write cancelled.');};
+   try{
+    guard();const latest=await load();guard();if(!latest||latest.id!==expected.vaultId||latest.revision!==expected.revision)throw Error('Vault changed in another window.');
+    engine.data={...engine.data,items};await engine.save();guard();await commit({guard,signal});
+   }catch(e){if(engine.unlocked)lock();throw e;}finally{active=false;}
+  }
+ }
+});
+window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);}finally{active=false;render();}}
 async function pivSecret(w){
  if(w.binding.kind==='ecdh')return classicalOpen(w.binding,call);
@@ -44,7 +76,7 @@ async function enroll(type,check){
  }finally{secret?.fill(0);}
 }
 el('vault-add-piv').onclick=()=>run(c=>enroll('piv',c));el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
-el('vault-unlock').onclick=()=>run(async check=>{const fresh=await load();if(fresh){record=fresh;revision=fresh.revision;}validate(record);const w=structuredClone(record.wrappers.find(w=>w.id===el('vault-methods').value));if(!w)throw Error('Select an unlock method.');let secret;try{secret=w.type==='piv'?await pivSecret(w):await prf(w);check();await engine.unlock(record,w.id,secret);check();tell('Vault unlocked.');}finally{secret?.fill(0);}});
+el('vault-unlock').onclick=()=>run(async check=>{const fresh=await load();if(fresh){record=fresh;revision=fresh.revision;}validate(record);const w=structuredClone(record.wrappers.find(w=>w.id===el('vault-methods').value));if(!w)throw Error('Select an unlock method.');let secret;try{secret=w.type==='piv'?await pivSecret(w):await prf(w);check();await engine.unlock(record,w.id,secret);check();tell('Vault unlocked.');window.dispatchEvent(new Event('iwa-vault-unlocked'));}finally{secret?.fill(0);}});
 el('vault-lock').onclick=()=>{lock();tell('Vault locked.');};
 el('vault-store').onclick=()=>run(async check=>{if(!engine.unlocked)throw Error('Unlock first.');const file=el('vault-file').files[0],name=el('vault-item-name').value.trim();if(!name||name.length>100)throw Error('Enter an item name.');let item;if(file){if(!/\.(p12|pfx)$/i.test(file.name)||file.size>1000000)throw Error('Choose a .p12/.pfx up to 1 MB.');item={id:crypto.randomUUID(),name,kind:'password-protected .p12',file:b64(await file.arrayBuffer()),password:el('vault-password').value};if(!item.password)throw Error('Enter the existing .p12 password.');}else{const value=el('vault-secret').value;if(!value||value.length>65536)throw Error('Enter a secret up to 64 KiB.');item={id:crypto.randomUUID(),name,kind:'secret setting',value};}check();engine.data.items.push(item);await engine.save();await commit();el('vault-password').value=el('vault-secret').value=el('vault-file').value='';tell('Saved encrypted in the IWA vault. This does not select a software signing identity or change gws credentials.');});
 el('vault-export').onclick=()=>run(async()=>{if(!record)throw Error('Create a vault first.');const url=URL.createObjectURL(new Blob([JSON.stringify(record)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='sequoia-vault.encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);tell('Exported encrypted vault only. Keep an enrolled authenticator available.');});

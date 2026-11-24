@@ -16,8 +16,8 @@ for(const [name,cipher] of [['first',a],['second',b]]){
  const input=path.join(dir,name+'.pgp'),output=path.join(dir,name+'.mime');fs.writeFileSync(input,cipher);
  const result=spawnSync(sq,['--home=none','--cert-store=none','--key-store=none','decrypt','--recipient-file',path.join(dir,'recipient-secret.pgp'),'--signer-file',path.join(dir,'sender-public.pgp'),'--signatures','1','--output',output,input],{encoding:'utf8'});
  assert.equal(result.status,0,result.stderr);
- if(process.env.IWA_CRYPTO_TEST_BIN){
-  const check=spawnSync(process.env.IWA_CRYPTO_TEST_BIN,[],{input:JSON.stringify({op:'check-ciphertext',peer:request.recipientCertificate,payload:cipher.toString('base64')}),encoding:'utf8'});
+ if(process.env.IWA_CRYPTO_ORACLE_BIN){
+  const check=spawnSync(process.env.IWA_CRYPTO_ORACLE_BIN,[],{input:JSON.stringify({op:'check-ciphertext',peer:request.recipientCertificate,payload:cipher.toString('base64')}),encoding:'utf8'});
   assert.equal(check.status,0,check.stderr);assert.equal(JSON.parse(check.stdout).valid,true);
  }
  assert.deepEqual(fs.readFileSync(output),Buffer.from(request.payload,'base64'));

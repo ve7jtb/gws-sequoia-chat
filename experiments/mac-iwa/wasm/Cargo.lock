@@ -1666,7 +1666,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "ed25519-dalek",
  "getrandom 0.4.3",
+ "ml-dsa",
  "ml-kem",
  "sequoia-openpgp",
  "sequoia-public-bundle",
@@ -1674,6 +1676,7 @@ dependencies = [
  "sha2",
  "wasm-bindgen",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

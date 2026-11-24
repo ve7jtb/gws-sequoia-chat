@@ -1,3 +1,5 @@
+# Historical Python MIME/trust code is a regression oracle only. Its explicit
+# test executable is not the installed production hardware worker.
 import sys,json,base64,tempfile,shutil,os,unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ def check_fixture(kind):
  raw=b'From: sender@example.invalid\r\nSubject: Signed public fixture\r\nContent-Type: multipart/signed; boundary=outer; protocol="application/pgp-signature"\r\n\r\n--outer\r\n'+base64.b64decode(fixture['payload'])+b'\r\n--outer\r\nContent-Type: application/pgp-signature\r\nContent-Transfer-Encoding: base64\r\n\r\n'+fixture['signature'].encode()+b'\r\n--outer--\r\n'
  raw=raw.replace(b'From: sender@example.invalid',('From: '+email).encode())
  with tempfile.TemporaryDirectory() as d:
-  root=Path(d);(root/'runtime').mkdir();(root/'runtime/sequoia-iwa-crypto').symlink_to(os.environ['IWA_CRYPTO_TEST_BIN'])
+  root=Path(d);(root/'runtime').mkdir();(root/'runtime/sequoia-iwa-crypto').symlink_to(os.environ['IWA_CRYPTO_ORACLE_BIN'])
   b=SimpleNamespace(root=root,data=root,contacts=lambda:[])
   msg=g.BytesParser(policy=g.policy.default).parsebytes(raw)
   result=g.signed_message(b,raw,msg)
@@ -59,7 +61,7 @@ def check_fixture(kind):
 
  print('PASS',kind,'real MIME attached certificate, valid/untrusted, valid/trusted, tamper rejection; no PIN')
 
-@unittest.skipUnless(os.environ.get('IWA_PUBLIC_TEST_FIXTURES') and os.environ.get('IWA_CRYPTO_TEST_BIN'), 'Generate Rust public fixtures and set IWA_CRYPTO_TEST_BIN')
+@unittest.skipUnless(os.environ.get('IWA_PUBLIC_TEST_FIXTURES') and os.environ.get('IWA_CRYPTO_ORACLE_BIN'), 'Generate Rust public fixtures and set IWA_CRYPTO_ORACLE_BIN')
 class PublicPipelineTests(unittest.TestCase):
  def test_v4(self):check_fixture('v4')
  def test_v6(self):check_fixture('v6')

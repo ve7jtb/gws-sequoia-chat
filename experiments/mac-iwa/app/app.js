@@ -1,5 +1,6 @@
 // All remote and signed message text is rendered with textContent. No remote
-// HTML, scripts, images or links execute; credentials never enter this page.
+// HTML, scripts, images or links execute. Imported software-key passwords are
+// cleared from the form immediately and stored only inside the encrypted vault.
 const $=id=>document.getElementById(id);
 const isMail=()=>$("transport").value==="mail";
 const service=()=>isMail()?"Gmail":"Chat";
@@ -7,9 +8,9 @@ const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','cha
 let ownEmail="";
 let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount,legacyAccountEmail;
 let certificateReview=null,managementReview=null;
-let identityUi,ownIdentityStore,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
-let sendIdentities=[],decryptionChoice=null;
-let hardwareTestAbort=null,hardwareTestReport=null;
+let identityUi,softwareUi,ownIdentityStore,hardwareIdentitySelection,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
+let sendIdentities=[],decryptionChoice=null,identityListGeneration=0;
+let hardwareTestAbort=null,hardwareTestReport=null,softwareTestAbort=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
 // Local encrypted email is staged only until the user selects its expected
 // trusted signer. It is never uploaded, cached, or treated as a provider ID.
@@ -24,6 +25,10 @@ function operationBusy(active) {
  // coordinator retains this lock and performs only a final public audit.
  $('test-cancel').disabled=!active||!hardwareTestAbort;
  $('test-export').disabled=active||!hardwareTestReport;
+ $('software-test-export').disabled=active||!softwareUi?.hasReport?.();
+ // Lock is always available to invalidate software work; terminating a worker
+ // or abandoning a native request never silently retries the private operation.
+ $('vault-lock').disabled=!window.vaultIsUnlocked?.();
  if(!active){$('newer').disabled=page===0;$('older').disabled=!next;}
 }
 function nativeRequest(op,data={},options={}) {
@@ -47,6 +52,17 @@ function nativeRequest(op,data={},options={}) {
   }catch(_){finish(Error('Companion extension unavailable.'));}
  });
 }
+// Provider choice is pinned by a revision-checked inventory snapshot. An error
+// in software custody never causes a native key lookup or a hardware retry.
+function identityRequest(snapshot){
+ if(snapshot?.provider==='software'){
+  if(!window.softwareIdentities)throw Error('Software identity provider is not ready.');
+  return window.softwareIdentities.native(snapshot);
+ }
+ if(snapshot&&Object.hasOwn(snapshot,'provider'))throw Error('Unknown identity provider.');
+ return nativeRequest;
+}
+function custodyLabel(identity){return identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial;}
 // Certificate bytes and trust decisions stay within the signed IWA origin.
 // Legacy operation names below are UI aliases, not native capabilities.
 function assertAccount(snapshot=accountSnapshot){
@@ -71,7 +87,7 @@ function dispatchRequest(op,data={}) {
   // Carry a revision-bound account through asynchronous Google and identity
   // work. A second window changing settings invalidates it even before the
   // storage event arrives; no native configuration is a fallback authority.
-  return window.googleTransport.call(op,data,nativeRequest,{account:snapshot.email,contacts,certificateStore,composeReviews,identitySelection,assertAccount:()=>assertAccount(snapshot)}).then(result=>{assertAccount(snapshot);return result;});
+  return window.googleTransport.call(op,data,nativeRequest,{account:snapshot.email,contacts,certificateStore,composeReviews,identitySelection,identityRequest,assertAccount:()=>assertAccount(snapshot)}).then(result=>{assertAccount(snapshot);return result;});
  }
  return nativeRequest(op,data);
 }
@@ -88,21 +104,27 @@ function options(id,rows,value,label){const el=$(id),old=el.value;el.replaceChil
 function renderContacts(){for(const id of ['recipient','signer'])options(id,contacts,c=>c.id,c=>c.email);$('contact-list').replaceChildren();for(const c of contacts){const el=document.createElement('div');el.className='contact';el.textContent=c.email+'\n'+c.fingerprint;$('contact-list').append(el);}}
 // Local inventory is independent of Gmail/Chat login and never prompts for PINs.
 async function refreshCertificates(){const r=await call('chat-cert-list');contacts=r.contacts;renderContacts();renderSavedCertificates(r.certificates);}
-function identityLabel(c){return c.email+' · v6 ML-DSA-65 + Ed25519 · YubiKey '+c.serial+' · '+c.fingerprint.slice(-12);}
+function identityLabel(c){return c.email+' · v6 ML-DSA-65 + Ed25519 · '+custodyLabel(c)+' · '+c.fingerprint.slice(-12);}
 async function refreshSendIdentities(){
+ const generation=++identityListGeneration;
  if(!identitySelection||!ownEmail){sendIdentities=[];for(const id of ['send-identity','test-identity'])options(id,[],c=>c.id,identityLabel);$('send-identity-help').textContent='Configure your Google account in Account, then restore its supported public identity in Identities.';return;}
  const account=ownEmail,snapshot=accountSnapshot;
  const listed=await identitySelection.list(account);
- if(account!==ownEmail||snapshot!==accountSnapshot)return;
+ if(generation!==identityListGeneration||account!==ownEmail||snapshot!==accountSnapshot)return;
  sendIdentities=listed.choices;
- const before=$('send-identity').value;for(const id of ['send-identity','test-identity'])options(id,sendIdentities,c=>c.id,identityLabel);
+ const before=$('send-identity').value;options('send-identity',sendIdentities,c=>c.id,identityLabel);
+ options('test-identity',sendIdentities.filter(c=>c.provider!=='software'),c=>c.id,identityLabel);
  // This preference contains only a public inventory identifier. It never
  // selects a native executable, slot or grant, and is revalidated on every use.
  let remembered;try{remembered=localStorage.getItem('sequoia-iwa-send-identity');}catch(_){}
  if(!sendIdentities.some(c=>c.id===before)&&sendIdentities.some(c=>c.id===remembered))$('send-identity').value=remembered;
- $('send-identity-help').textContent=sendIdentities.length?'The selected signed bundle is checked against its YubiKey before the PIN prompt. Signing: 9c + 84; decryption: 9d + 85.':'Restore a Level 3 v6 certificate bundle for '+ownEmail+' in Identities first. Public-only file imports and v4 views cannot authorize hardware operations.';
+ updateIdentityHelp();
 }
-$('send-identity').addEventListener('change',()=>{
+function updateIdentityHelp(){
+ const selected=sendIdentities.find(c=>c.id===$('send-identity').value);
+ $('send-identity-help').textContent=!selected?'Restore a matching Level 3 v6 YubiKey identity, or unlock the vault and import an encrypted software OpenPGP identity.':selected.provider==='software'?'Software (experimental): keys are unlocked only in a disposable browser worker. The vault must remain unlocked; no YubiKey signing operation is used.':'The selected signed bundle is checked against its YubiKey before the PIN prompt. Signing: 9c + 84; decryption: 9d + 85.';
+}
+$('send-identity').addEventListener('change',()=>{updateIdentityHelp();
  invalidateCertificateViews();try{localStorage.setItem('sequoia-iwa-send-identity',$('send-identity').value);}catch(_){}
 });
 // Store changes invalidate both sending reviews and pending recipient choices.
@@ -110,7 +132,7 @@ $('send-identity').addEventListener('change',()=>{
 const ownIdentityUpdates=typeof BroadcastChannel==='function'?new BroadcastChannel('sequoia-iwa-own-identities'):null;
 if(ownIdentityUpdates)ownIdentityUpdates.onmessage=()=>{invalidateCertificateViews();refreshSendIdentities().catch(e=>say(e.message,true));};
 function invalidateCertificateViews(){
- hardwareTestAbort?.abort();
+ hardwareTestAbort?.abort();softwareTestAbort?.abort();
  // A stored trust change must invalidate prepared sends and old green reader
  // labels, including changes made in another IWA window. An in-flight native
  // operation is never retried or unlocked by this public-storage notification.
@@ -183,7 +205,7 @@ event('migration-import',async()=>{
 function serviceLabels(){
  const mail=isMail(),name=service();
  $('service-title').textContent='Sequoia '+name+' Lab';
- $('service-lead').textContent=name+' transport. YubiKey signatures. Encrypted and verified by Sequoia.';
+ $('service-lead').textContent=name+' transport. Hardware or vault-protected software identities. Encrypted and verified by Sequoia.';
  $('login').textContent='Sign in to '+name;
  $('connect').textContent='Connect / reconnect '+name;
  $('google-auth').textContent='Continue to '+name+' sign-in';
@@ -201,12 +223,13 @@ function serviceLabels(){
  $('send').textContent='Send via '+name;
  $('save-encrypted').hidden=!mail;
  $('open-title').textContent='Decrypt and verify '+name+(mail?' email':' bundle');
- $('open-help').textContent=(mail?'Verify against the selected trusted sender certificate.':'The attached certificate must match this trusted contact.')+' Enter the PIN only in the native dialog that follows.';
- $('decrypt').textContent='Decrypt '+name+' with YubiKey';
+ $('open-help').textContent=(mail?'Verify against the selected trusted sender certificate.':'The attached certificate must match this trusted contact.')+' Choose the matching hardware or unlocked software identity next.';
+ $('decrypt').textContent='Decrypt '+name;
 }
 function tab(name){if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
-document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));if(b.dataset.tab==='identities')identityUi?.refresh().catch(e=>say(e.message,true));}));
+document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));if(b.dataset.tab==='identities'){identityUi?.refresh().catch(e=>say(e.message,true));softwareUi?.refresh().catch(e=>say(e.message,true));}}));
 function clearAccountSession(){
+ window.dispatchEvent(new Event('iwa-account-changed'));
  // Public configuration can change while the vault remains enrolled/unlocked.
  // Drop only account-bound transient work: Google tokens, pending signatures,
  // decrypted readers and one-use send/export reviews. Never rewrite the vault.
@@ -261,15 +284,30 @@ async function bootstrap(){
  normalizeAccount=accountModule.accountEmail;legacyAccountEmail=accountModule.legacyAccount;
  certificateStore=createCertificateStore({inspect:inspectCertificate,storage:createIndexedDbStorage()});
  ownIdentityStore=createIdentityStore({inspect:inspectCertificate});
- identitySelection=createIdentitySelection({store:ownIdentityStore,inspect:inspectIdentity,match:matchRecipients});
+ hardwareIdentitySelection=createIdentitySelection({store:ownIdentityStore,inspect:inspectIdentity,match:matchRecipients});
+ const {createProviderSelection}=await import('./identities/providers.js');
+ identitySelection=createProviderSelection({hardware:hardwareIdentitySelection,software:()=>window.softwareIdentities,match:matchRecipients});
  composeReviews=createComposeReviews({certificateStore,identitySelection,gate:()=>{window.vaultGate?.();assertAccount();}});
  // Public inventory and file import must work even when the native helper is
  // unavailable. Startup loads only IWA public stores; hardware metadata is read
  // only when the user explicitly invokes a hardware control or migration.
  const {initializeIdentities}=await import('./identities/ui.js');
  identityUi=await initializeIdentities({request:nativeRequest,say,isBusy:()=>busy,setBusy:operationBusy,identityStore:ownIdentityStore});
+ const {initializeSoftwareUi}=await import('./software-ui.js');
+ softwareUi=initializeSoftwareUi({isBusy:()=>busy,setBusy:operationBusy,say,account:()=>ownEmail,
+  changed:async()=>{invalidateCertificateViews();await refreshSendIdentities();},
+  test:async(identity,onProgress)=>{
+   const account=accountSnapshot;assertAccount(account);softwareTestAbort=new AbortController();
+   try{
+    const {runSoftwareTest}=await import('./software-test.js');
+    return await runSoftwareTest({identity,selection:identitySelection,request:identityRequest(identity),
+     gate:()=>{assertAccount(account);window.vaultGate?.();},signal:softwareTestAbort.signal,onProgress,
+     createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
+     createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'})});
+   }finally{softwareTestAbort=null;}
+  }});
  await refreshCertificates();
- await refreshAccount();
+ await refreshAccount();await softwareUi.refresh();
  say(ownEmail?'Ready. Local certificates and account settings are available; unlock the vault and sign in to Google.':'Ready. Configure your Google account in Account. Contacts, saved identities and the existing vault are available.');tab(ownEmail?'inbox':'account-settings');
 }
 async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
@@ -371,12 +409,12 @@ event('prepare',async()=>{
   const encrypted=await signAndEncrypt(material,compose,
    async request=>{
     await certificateStore.assertContact(selected);await assertSender();
-    const result=await nativeRequest('chat-sign-digest',request);
+    const result=await identityRequest(sender)('chat-sign-digest',request,{signal:signingAbort.signal});
     await assertSender();return result;
    },
    {createWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),signal:signingAbort.signal});
   await assertSender();const r=await composeReviews.complete(material.review,encrypted.cipher);
-  review=r.review;$('send-details').textContent='Send as: '+r.sender+' · YubiKey '+r.serial+'\nSigning certificate: '+r.senderFingerprint+'\nSubject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;
+  review=r.review;$('send-details').textContent='Send as: '+r.sender+' · '+custodyLabel(sender)+'\nSigning certificate: '+r.senderFingerprint+'\nSubject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;
   $('confirm-send').showModal();say((mail?'Gmail':'Chat')+' signature constructed and verified in WASM; encrypted message ready for review.');
  } catch(e){if(prepared)composeReviews.cancel(prepared);throw e;}
  finally {signingAbort=null;operationBusy(false);}
@@ -410,14 +448,14 @@ function reviewMatchedIdentity(matched,generation,account){
  if(decryptionChoice)cancelDecryptionChoice();
  return new Promise((resolve,reject)=>{
   decryptionChoice={matched,generation,account,resolve,reject};
-  options('decrypt-identity',matched.choices,c=>c.id,c=>c.email+' · YubiKey '+c.serial+' · '+c.fingerprint.slice(-12));
-  $('matched-identity-help').textContent=matched.choices.length===1?'The encrypted recipient packet matches this saved identity. Connect the indicated YubiKey; Continue checks its signed bundle before requesting your PIN.':'More than one saved device matches this recipient key. Select the YubiKey to use; no private operation has started.';
+  options('decrypt-identity',matched.choices,c=>c.id,c=>c.email+' · '+custodyLabel(c)+' · '+c.fingerprint.slice(-12));
+  $('matched-identity-help').textContent=matched.choices.length===1?'The encrypted recipient packet matches this saved identity. Review its custody provider before continuing.':'More than one saved identity matches this recipient key. Select its custody provider; no private operation has started.';
   showMatchedIdentity();$('matched-identity').showModal();
  });
 }
 function showMatchedIdentity(){
  const selected=decryptionChoice?.matched.choices.find(c=>c.id===$('decrypt-identity').value);
- $('matched-identity-details').textContent=selected?'YubiKey: '+selected.serial+'\nOpenPGP v6 · ML-KEM-768 + X25519\nSlots: 9d + 85\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
+ $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v6 · ML-KEM-768 + X25519'+(selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nSlots: 9d + 85; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
 }
 $('decrypt-identity').addEventListener('change',showMatchedIdentity);
 event('matched-identity-cancel',cancelDecryptionChoice);
@@ -426,7 +464,7 @@ event('matched-identity-continue',async()=>{
  const pending=decryptionChoice;if(!pending)throw Error('Match the encrypted message again.');
  const selected=pending.matched.choices.find(c=>c.id===$('decrypt-identity').value);
  try{
-  if(!selected)throw Error('Select the matching YubiKey.');
+  if(!selected)throw Error('Select the matching identity.');
   await identitySelection.assert(selected);assertReading(pending.generation);assertAccount(pending.account);window.vaultGate?.();
   if(decryptionChoice!==pending)throw Error('Recipient selection changed.');
   decryptionChoice=null;$('matched-identity').close();pending.resolve(selected);
@@ -456,7 +494,7 @@ async function decryptSelected(){
  try{matched=await identitySelection.match(envelope.cipher,account.email);}finally{operationBusy(false);}
  await certificateStore.assertContact(selected);assertReading(generation);assertAccount(account);window.vaultGate?.();
  const recipient=await reviewMatchedIdentity(matched,generation,account);
- const r=await decryptInIwa({cipher:envelope.cipher,service:selectedService,identity:identitySelection.nativeBinding(recipient),recipientKey:recipient.recipientKey,
+ const r=await decryptInIwa({cipher:envelope.cipher,service:selectedService,native:identityRequest(recipient),identity:identitySelection.nativeBinding(recipient),recipientKey:recipient.recipientKey,
   validateMaterial:material=>identitySelection.validateMaterial(material,recipient,'decryption'),
   verification:{material:await certificateStore.material(),expectedEmail:selected.email,
    expectedFingerprint:selected.fingerprint,recipient:recipient.email},
@@ -464,7 +502,7 @@ async function decryptSelected(){
  await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);assertAccount(account);window.vaultGate?.();
  if(!r.verified)throw Error('Signature verification failed.');
  $('read-subject').textContent=r.subject;$('verified').classList.remove('error');
- $('verified').textContent='Encryption: Encrypted (decrypted) with YubiKey '+recipient.serial+' · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint;
+ $('verified').textContent='Encryption: Encrypted (decrypted) with '+custodyLabel(recipient)+' · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint;
  $('read-body').textContent=r.text;$('toggle-html').hidden=!r.html;renderSafeHtml($('read-html'),r.html||'');
  $('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;
  say((local?'Local email':selectedService)+' decryption and signature verification passed using IWA trust.');
@@ -489,13 +527,13 @@ event('trust',async()=>{
 event('test',async()=>{
  if(busy)throw Error('An operation is already running.');
  const account=accountSnapshot;assertAccount(account);window.vaultGate?.();
- const choice=$('test-identity').value,selected=await identitySelection.get(choice,ownEmail);
+ const choice=$('test-identity').value,selected=await hardwareIdentitySelection.get(choice,ownEmail);
  if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nSigning: ML-DSA-65 (9c) + Ed25519 (84). Decryption: ML-KEM-768 (9d) + X25519 (85).\nExpect two native PIN dialogs; touch if requested. No email, keys, certificates or policies will be changed.'))return;
  hardwareTestReport=null;$('test-details').textContent='';hardwareTestAbort=new AbortController();operationBusy(true);
  try{
   const {runHardwareTest}=await import('./hardware-test.js');
   const gate=async()=>{assertAccount(account);window.vaultGate?.();if($('test-identity').value!==choice)throw Error('Test identity changed.');};
-  const result=await runHardwareTest({identity:selected,selection:identitySelection,native:nativeRequest,gate,signal:hardwareTestAbort.signal,
+  const result=await runHardwareTest({identity:selected,selection:hardwareIdentitySelection,native:nativeRequest,gate,signal:hardwareTestAbort.signal,
    createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
    createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'}),
    onProgress:message=>{$('test-progress').textContent=message;say(message);}});
@@ -542,8 +580,8 @@ async function readLocalFile(file){
   // and the fixed configured recipient are verified after native decapsulation.
   localEncrypted={encrypted:true,cipher:r.cipher};
   $('open-title').textContent='Decrypt and verify local email';
-  $('open-help').textContent='Select the expected trusted sender. This local file is not uploaded. Enter the PIN only in the native dialog that follows.';
-  $('decrypt').textContent='Decrypt local email with YubiKey';$('open').showModal();
+  $('open-help').textContent='Select the expected trusted sender. This local file is not uploaded. Choose the matching identity next.';
+  $('decrypt').textContent='Decrypt local email';$('open').showModal();
   say('Encrypted local email ready; review the expected trusted sender.');return;
  }
  showOrdinary(r,null);say('Local copy verified with baseline WASM; no upload, certificate save or trust change.');
@@ -552,5 +590,12 @@ $('local-mail').addEventListener('change',async()=>{try{await readLocalFile($('l
 
 // Browser-staged ciphertext and captured verification evidence are transient.
 // Lock/exit cannot leave an actionable send ticket or a stale trust dialog.
-window.addEventListener('iwa-vault-locked',()=>{signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();});
-window.addEventListener('pagehide',()=>{hardwareTestAbort?.abort();readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});
+window.addEventListener('iwa-vault-locked',()=>{
+ signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();identityListGeneration++;
+ // Hide software choices synchronously. A delayed older inventory read cannot
+ // repopulate them after locking, even if its public validation was in flight.
+ sendIdentities=sendIdentities.filter(c=>c.provider!=='software');options('send-identity',sendIdentities,c=>c.id,identityLabel);updateIdentityHelp();
+ refreshSendIdentities().catch(e=>say(e.message,true));
+});
+for(const event of ['iwa-vault-unlocked','iwa-software-identities-changed'])window.addEventListener(event,()=>{invalidateCertificateViews();refreshSendIdentities().catch(e=>say(e.message,true));});
+window.addEventListener('pagehide',()=>{softwareTestAbort?.abort();hardwareTestAbort?.abort();readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});

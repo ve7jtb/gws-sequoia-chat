@@ -51,7 +51,9 @@ export function createTransport(session){
    const contact=await context.certificateStore.trustedContact(d.contact);
    const identity=await context.identitySelection.get(d.identity,context.account);
    assertAccount();
-   const own=await native('chat-selected-signing-material',{identity:context.identitySelection.nativeBinding(identity)});
+   if(identity.provider==='software'&&!context.identityRequest)throw Error('Software identity dispatcher is unavailable; no native fallback.');
+   const request=context.identityRequest?context.identityRequest(identity):native;
+   const own=await request('chat-selected-signing-material',{identity:context.identitySelection.nativeBinding(identity)});
    await context.identitySelection.validateMaterial(own,identity,'signing');
    assertAccount();
    return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space,identity});

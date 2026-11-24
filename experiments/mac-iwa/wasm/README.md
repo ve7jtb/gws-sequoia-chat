@@ -192,10 +192,11 @@ mkdir -p /tmp/iwa-public-fixtures
 IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures \
   cargo test --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml \
   detached_public_verification_v4_v6_and_tampering
-cargo build --release --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+cargo build --release --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml \
+  --example message_oracle
 python3 experiments/mac-iwa/wasm/tests/prepare.py \
   --fixtures /tmp/iwa-public-fixtures \
-  --native experiments/mac-iwa/crypto/target/release/sequoia-iwa-crypto \
+  --oracle experiments/mac-iwa/crypto/target/release/examples/message_oracle \
   --output experiments/mac-iwa/app/wasm-fixtures.json
 node experiments/mac-iwa/wasm/tests/run.mjs experiments/mac-iwa/app/wasm-fixtures.json
 ```
@@ -311,8 +312,9 @@ decrypts/verifies its output with `TEST_SQ`. Generate its disposable fixture wit
 `IWA_ENCRYPTION_FIXTURE_DIR` and the native Rust test
 `browser_encryption_fixture_and_packet_guards`; use a private temporary directory
 and delete it afterward, since it contains a disposable software secret key.
-Pass that directory to `node tests/encrypt.mjs`. Set `IWA_CRYPTO_TEST_BIN` to also
-exercise the native public packet guard against WASM ciphertext. The test checks
+Pass that directory to `node tests/encrypt.mjs`. Set `IWA_CRYPTO_ORACLE_BIN` to
+the separately built `message_oracle` to also exercise its public packet guard
+against WASM ciphertext. The test checks
 two exact-byte round trips, fresh ciphertext randomness, and rejection cases.
 The existing `tests/run.mjs` verification cases remain unchanged.
 

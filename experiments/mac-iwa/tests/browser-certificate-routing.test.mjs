@@ -12,14 +12,15 @@ const packet={raw:Buffer.from('synthetic captured message bytes').toString('base
 const verified=()=>({signatureStatus:'valid',certificateTrust:'untrusted',encrypted:false,
  certificateActions:[{fingerprint:fp,email:mail,canTrust:true,certificate}],signatures:[{status:'valid',fingerprint:fp}]});
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
-function application(){
+function application({software=false}={}){
  const nodes=new Map(),events=new Map(),native=[],storage=[],displays=[],decryptions=[],matches=[];
- const matchedShown=deferred();
+ const matchedShown=deferred(),softwareCalls=[];
  let revision=1,identityRevision=1,accountChanged=false,unlocked=true,worker=async()=>verified();
  const ownIdentity=()=>({id:'saved-identity',revision:identityRevision,serial:'12345678',
+  ...(software?{provider:'software',name:'Local test',vaultId:'vault',identityId:'local'}:{}),
   email:'recipient@example.invalid',fingerprint:'B'.repeat(64),recipientKey:'C'.repeat(64),
   certificateHash:'d'.repeat(64),bundleHash:'e'.repeat(64)});
- const nativeBinding=identity=>{const {serial,email,fingerprint,certificateHash,bundleHash}=identity;
+ const nativeBinding=identity=>{if(software)return {provider:'software',identityId:identity.identityId,vaultId:identity.vaultId,email:identity.email};const {serial,email,fingerprint,certificateHash,bundleHash}=identity;
   return {serial,email,fingerprint,certificateHash,bundleHash};};
  // WASM matching and the own-identity store have independent integration
  // suites. This fake preserves their public snapshot/revision contract while
@@ -51,7 +52,7 @@ function application(){
  const context={Promise,Error,AbortController,structuredClone,setTimeout,clearTimeout,Uint8Array,btoa:value=>Buffer.from(value,'binary').toString('base64'),
   document:{getElementById:node,querySelectorAll:()=>[],createElement:element},
   EXTENSION_ID:'synthetic-extension',
-  window:{addEventListener:(name,fn)=>events.set(name,fn),vaultGate(){if(!unlocked)throw Error('Vault locked');},googleTransport:{handles:op=>op==='chat-mail-read',call:async()=>({...packet})}},
+  window:{softwareIdentities:software?{native:selected=>{assert.equal(selected.provider,'software');return async(op,data)=>{softwareCalls.push({op,data});return {software:true};};}}:undefined,addEventListener:(name,fn)=>events.set(name,fn),vaultGate(){if(!unlocked)throw Error('Vault locked');},googleTransport:{handles:op=>op==='chat-mail-read',call:async()=>({...packet})}},
   chrome:{runtime:{connect(){
    const listeners=[];
    return {disconnect(){},onMessage:{addListener:fn=>listeners.push(fn)},onDisconnect:{addListener(){}},
@@ -72,7 +73,7 @@ function application(){
  vm.runInContext(source.replace('bootstrap().catch(e=>say(e.message,true));',''),context);
  vm.runInContext("certificateStore=storeArg;identitySelection=identitySelectionArg;composeReviews={clear(){}};ownEmail='recipient@example.invalid';accountSnapshot={email:ownEmail,revision:'synthetic'};accountSettings=accountSettingsArg;contacts=[{id:'contact',email:'sender@example.invalid'}];runMessageWorker=(...args)=>workerArg(...args);processMessage=(...args)=>workerArg(...args);showOrdinary=(...args)=>displayArg(...args);",context);
  node('signer').value='contact';
- return {context,native,storage,displays,decryptions,matches,node,matchedShown:matchedShown.promise,
+ return {context,native,softwareCalls,storage,displays,decryptions,matches,node,matchedShown:matchedShown.promise,
   async chooseMatched(){await matchedShown.promise;await node('matched-identity-continue').listeners.get('click')();},
   reviseIdentity:()=>identityRevision++,reviseAccount:()=>accountChanged=true,
   setWorker:fn=>worker=fn,
@@ -234,7 +235,7 @@ test('matched identity dialog shows the recipient key and requires explicit cont
  a.setWorker(async()=>calls++===0?localCipher:{verified:true,subject:'Signed subject',sender:mail,text:'Signed body',html:'',attachments:[],signatures:[{fingerprint:fp}]});
  await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected();await a.matchedShown;
  assert.equal(a.node('matched-identity').open,true);assert.equal(a.decryptions.length,0);
- assert.match(a.node('matched-identity-details').textContent,/YubiKey: 12345678/);
+ assert.match(a.node('matched-identity-details').textContent,/YubiKey 12345678/);
  assert.match(a.node('matched-identity-details').textContent,/Recipient subkey: C{64}/);
  assert.equal(a.matches.length,1);assert.equal(a.matches[0].cipher,localCipher.cipher);
  await a.chooseMatched();await opening;
@@ -251,4 +252,23 @@ test('stale matched identity or cancelled view never reaches decryption',async()
   await rejected;assert.equal(a.decryptions.length,0);assert.equal(a.native.length,0);
   assert.equal(a.node('reader').hidden,true);assert.equal(a.node('matched-identity').open,false);
  }
+});
+
+test('software recipient review identifies vault custody and dispatches only to software provider',async()=>{
+ const a=application({software:true});let calls=0;
+ a.setWorker(async()=>calls++===0?localCipher:{verified:true,subject:'Signed subject',sender:mail,text:'Signed body',html:'',attachments:[],signatures:[{fingerprint:fp}]});
+ await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected();await a.matchedShown;
+ assert.match(a.node('matched-identity-details').textContent,/Software \(experimental\) · Local test/);
+ assert.match(a.node('matched-identity-details').textContent,/no hardware PIN prompt/);
+ assert.ok(!a.node('matched-identity-details').textContent.includes('Slots:'));
+ await a.chooseMatched();await opening;
+ const request=a.decryptions[0];assert.equal(request.identity.provider,'software');
+ const response=await request.native('chat-selected-decryption-material',{identity:request.identity,service:'Gmail'});
+ assert.equal(response.software,true);assert.equal(a.softwareCalls.length,1);assert.equal(a.native.length,0);
+});
+test('software provider disappearing after review cannot fall back to native hardware',async()=>{
+ const a=application({software:true});a.setWorker(async()=>localCipher);
+ await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected(),rejected=assert.rejects(opening,/Software identity provider/);
+ await a.matchedShown;a.context.window.softwareIdentities=undefined;await a.chooseMatched();await rejected;
+ assert.equal(a.decryptions.length,0);assert.equal(a.softwareCalls.length,0);assert.equal(a.native.length,0);
 });

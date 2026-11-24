@@ -6,11 +6,14 @@ function signingWorkerURL(){return signingWorkerPolicy?signingWorkerPolicy.creat
 const decryptionWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-decryption-worker',{
  createScriptURL:url=>{if(url!=='/decryption-worker.js')throw Error('Unexpected worker');return url;}});
 async function decryptInIwa(options){
+ if(options.identity?.provider==='software'&&typeof options.native!=='function')throw Error('Software decryption provider is unavailable; no native fallback.');
  if(busy)throw Error('An operation is already running.');
  operationBusy(true);decryptionAbort=new AbortController();
  try{
   const {decryptWithHardware}=await import('./decryption-session.js');
-  return await decryptWithHardware({...options,native:nativeRequest,signal:decryptionAbort.signal,
+  // The selected identity fixes the component provider. A software failure must
+  // never fall back to a hardware request (or the reverse).
+  return await decryptWithHardware({...options,native:options.native||nativeRequest,signal:decryptionAbort.signal,
    createWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'})});
  }finally{decryptionAbort=null;operationBusy(false);}
 }

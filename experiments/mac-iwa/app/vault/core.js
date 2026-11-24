@@ -27,7 +27,10 @@ async function wrappingKey(v,w,secret){
 }
 export class Vault {
  constructor(){this.lock();}
- lock(){this.key?.fill(0);this.key=null;this.data=null;this.record=null;}
+ lock(){this.epoch=(this.epoch||0)+1;this.key?.fill(0);this.key=null;this.data=null;this.record=null;}
+ // A WebCrypto promise can resolve after lock/navigation. Its result must not
+ // recreate an unlocked vault or commit an older content revision.
+ assertLive(epoch,key,record){if(this.epoch!==epoch||this.key!==key||this.record!==record||!this.unlocked)throw Error('Vault operation cancelled by locking or changing the vault.');}
  get unlocked(){return !!this.key;}
  async create(w,secret,id=crypto.randomUUID()){
   if(this.unlocked)throw Error('Lock the current vault first.');
@@ -35,17 +38,19 @@ export class Vault {
   try{await this.add(w,secret);return this.record;}catch(e){this.lock();throw e;}
  }
  async unlock(record,id,secret){
-  this.lock();validate(record);const w=record.wrappers.find(w=>w.id===id);if(!w)fail();let wrap;
+  this.lock();validate(record);record=structuredClone(record);const epoch=this.epoch,w=record.wrappers.find(w=>w.id===id);if(!w)fail();let wrap;
   try{wrap=await wrappingKey(record,w,secret);const value=await open(wrap,w.box,context(record,w));const key=bytes(value.key);if(key.length!==32)fail();
-   try{const data=await open(key,record.body,['Sequoia IWA vault content',1,record.id,record.revision]);if(!Array.isArray(data.items))fail();this.key=key;this.data=data;this.record=structuredClone(record);}catch(e){key.fill(0);throw e;}
+   try{const data=await open(key,record.body,['Sequoia IWA vault content',1,record.id,record.revision]);if(!Array.isArray(data.items))fail();
+    if(this.epoch!==epoch)throw Error('Vault unlock cancelled.');this.key=key;this.data=data;this.record=record;
+   }catch(e){key.fill(0);throw e;}
   }finally{wrap?.fill(0);}
  }
  async add(w,secret){
   if(!this.unlocked)throw Error('Unlock the vault before enrolling another method.');
   if(this.record.wrappers.length>=16||this.record.wrappers.some(x=>x.type===w.type&&JSON.stringify(x.binding)===JSON.stringify(w.binding)))throw Error('Unlock method already enrolled or limit reached.');
-  const k=await wrappingKey(this.record,w,secret);
-  try{w={...w,box:await seal(k,{key:b64(this.key)},context(this.record,w))};}finally{k.fill(0);}
-  this.record.wrappers.push(w);
+  const epoch=this.epoch,key=this.key,record=this.record,k=await wrappingKey(record,w,secret);
+  try{this.assertLive(epoch,key,record);w={...w,box:await seal(k,{key:b64(key)},context(record,w))};}finally{k.fill(0);}
+  this.assertLive(epoch,key,record);this.record.wrappers.push(w);
   // Enrolling a PIV key makes it the default, without removing existing PRF wraps.
   if(w.type==='piv')this.record.default=w.id;
   return this.save();
@@ -53,7 +58,10 @@ export class Vault {
  async save(){
   if(!this.unlocked)throw Error('Unlock the vault first.');
   if(JSON.stringify(this.data).length>2000000)throw Error('Vault exceeds 2 MB.');
-  this.record.revision++;this.record.body=await seal(this.key,this.data,['Sequoia IWA vault content',1,this.record.id,this.record.revision]);validate(this.record);return this.record;
+  const epoch=this.epoch,key=this.key,record=this.record,previous=record.revision;
+  const body=await seal(key,structuredClone(this.data),['Sequoia IWA vault content',1,record.id,previous+1]);
+  this.assertLive(epoch,key,record);if(record.revision!==previous)throw Error('Concurrent vault update rejected.');
+  record.revision=previous+1;record.body=body;validate(record);return record;
  }
  async remove(id){if(!this.unlocked)throw Error('Unlock first.');if(this.record.wrappers.length<=1)throw Error('Cannot remove the last unlock method.');this.record.wrappers=this.record.wrappers.filter(w=>w.id!==id);if(this.record.default===id)this.record.default=(this.record.wrappers.find(w=>w.type==='piv')||this.record.wrappers[0]).id;return this.save();}
  async rename(id,name){if(!this.unlocked||!name.trim()||name.length>80)throw Error('Enter a name of 1–80 characters.');this.record.wrappers.find(w=>w.id===id).name=name.trim();return this.save();}
@@ -62,4 +70,24 @@ export class Vault {
 // overwriting a newer vault. Failed writes must lock the in-memory instance.
 export function database(){return new Promise((resolve,reject)=>{const r=indexedDB.open('sequoia-iwa-vault',1);r.onupgradeneeded=()=>r.result.createObjectStore('vault');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 export async function load(){const db=await database();return new Promise((resolve,reject)=>{const t=db.transaction('vault'),r=t.objectStore('vault').get('current');r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);t.oncomplete=()=>db.close();});}
-export async function persist(record,expected){validate(record);const db=await database();return new Promise((resolve,reject)=>{const t=db.transaction('vault','readwrite'),s=t.objectStore('vault'),r=s.get('current');r.onsuccess=()=>{const old=r.result;if((old?.revision??0)!==expected||(old&&old.id!==record.id)){t.abort();return;}s.put(structuredClone(record),'current');};t.oncomplete=()=>{db.close();resolve();};t.onabort=t.onerror=()=>{db.close();reject(Error('Vault changed in another window or could not be saved. Unlock the latest copy.'));};});}
+export async function persist(record,expected,{signal,guard=()=>{}}={}){
+ validate(record);guard();if(signal?.aborted)throw Error('Vault write cancelled.');const db=await database();
+ return new Promise((resolve,reject)=>{
+  let t,finished=false;
+  const finish=error=>{if(finished)return;finished=true;signal?.removeEventListener('abort',cancel);db.close();error?reject(error):resolve();};
+  const cancel=()=>{try{t?.abort();}catch(_){}finish(Error('Vault write cancelled.'));};
+  try{
+   guard();if(signal?.aborted){cancel();return;}signal?.addEventListener('abort',cancel,{once:true});
+   t=db.transaction('vault','readwrite');const s=t.objectStore('vault'),r=s.get('current');
+   r.onsuccess=()=>{
+    try{guard();if(signal?.aborted)throw Error();const old=r.result;
+     if((old?.revision??0)!==expected||(old&&old.id!==record.id)){t.abort();return;}
+     // Guard and put run synchronously in the same transaction callback. A
+     // lock before commit aborts that transaction through the signal above.
+     s.put(structuredClone(record),'current');
+    }catch(_){try{t.abort();}catch(_){}finish(Error('Vault changed or write cancelled.'));}
+   };
+   t.oncomplete=()=>finish();t.onabort=t.onerror=()=>finish(Error('Vault changed in another window or could not be saved. Unlock the latest copy.'));
+  }catch(_){finish(Error('Vault could not be saved.'));}
+ });
+}

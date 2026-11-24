@@ -22,3 +22,9 @@ sequoia-public-bundle = { path = "../bundle-parser" }
 # never receive or generate these disposable ML-KEM/X25519 private keys.
 ml-kem = { version = "=0.3.4", default-features = false, features = ["zeroize"] }
 x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+
+# Historical message algorithms and vector generation are compiled only for
+# explicitly requested examples/tests. They are never an installed helper.
+[[example]]
+name = "message_oracle"
+test = true

@@ -1,14 +1,14 @@
-"""Make public-only test vectors using the native OpenSSL verifier as oracle.
+"""Make public-only test vectors using the separate OpenSSL message_oracle example.
 
 MIME extraction remains native Python. No mail API, account token or YubiKey is
 used. User-supplied Proton files are never embedded in the distributable IWA.
 """
 import argparse,base64,json,subprocess,sys
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--fixtures',type=Path,required=True);p.add_argument('--native',type=Path,required=True);p.add_argument('--proton',type=Path);p.add_argument('--tampered',type=Path);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--fixtures',type=Path,required=True);p.add_argument('--oracle',type=Path,required=True,help='Explicitly built message_oracle example, never the installed helper');p.add_argument('--proton',type=Path);p.add_argument('--tampered',type=Path);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
 cases=[]
 def add(name,request,wanted):
-    run=subprocess.run([str(a.native)],input=json.dumps({'op':'verify-detached',**request}).encode(),stdout=subprocess.PIPE,check=True)
+    run=subprocess.run([str(a.oracle)],input=json.dumps({'op':'verify-detached',**request}).encode(),stdout=subprocess.PIPE,check=True)
     expected=json.loads(run.stdout)['signatures']
     assert expected and all(s['status']==wanted for s in expected),(name,expected)
     cases.append({'name':name,'request':request,'expected':expected})

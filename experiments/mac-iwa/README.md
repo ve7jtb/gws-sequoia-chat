@@ -9,6 +9,85 @@ server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
 in the latest sections below. This change does not move the main loopback app's store.
 
+## Vault-protected software identities and production helper (0.17.2)
+
+**Identities → Software identities** imports a password-encrypted `.pgp`, `.asc`
+or `.gpg` secret-key file into the existing encrypted PRF/PIV vault. The initial
+profile is Level 3 v6: separate ML-DSA-65 + Ed25519 certification and signing keys,
+and ML-KEM-768 + X25519 encryption. Import verifies the password, every private
+key against its public certificate, current bindings and the configured email.
+It does not create keys on a YubiKey or grant recipient trust. PKCS#12 files remain
+opaque vault backups; they are not usable software identities in this preview.
+
+Compose lists unlocked software identities alongside live-matched YubiKey
+identities, clearly identifying their custody provider. Incoming encrypted
+messages match the actual recipient subkey in WASM; matching more than one
+provider requires a choice. Software errors never fall back to a native key.
+Software identities disappear from selection on vault lock and return after
+unlock. Removing an identity removes its encrypted local record, leaving the
+original file, recipient trust and hardware keys unchanged.
+
+The vault stores both the encrypted OpenPGP file and its password inside its
+authenticated ciphertext. Each private operation uses a new disposable WASM
+worker; unlocked long-term keys never enter the extension or native helper.
+Lock, cancellation, expiry, account changes and storage revisions invalidate
+pending operations. A restarted app must unlock the vault again. **Software
+custody is experimental:** the browser/OS can retain memory copies, and the
+selected WASM crypto paths have not received an independent side-channel audit.
+See the [private-crypto review and limits](wasm/SOFTWARE-KEYS.md).
+
+Each software identity has a **Test signing and decryption — no email** action.
+It exercises the normal signing, encryption, recipient-matching, decryption and
+verification workers with fresh text, HTML and a binary attachment. Its report
+records only public metadata and outcomes. Self-trust is temporary; it is not
+saved as a contact. Public certificate export is separate from trust management.
+
+The installed native executable now accepts only production public-card and
+component operations. Old whole-message modes and verification fixtures live in
+an explicitly built `message_oracle` example. Installers reject that oracle and
+older broad workers. No test executable is installed. Native authorization still
+independently validates the live signed bundle, serial, public keys and one-use
+grants before private hardware operations. See the
+[production/test executable boundary](crypto/README.md).
+
+Validation passed **215 JavaScript**, **122 Python**, **18 production-worker
+Rust**, **7 test-oracle Rust**, and **24 WASM Rust** tests. The real baseline
+worker integration imports an encrypted identity, checks vault persistence and
+restart, rejects cancellation and stale contexts, signs/encrypts/decrypts exact
+text/HTML/attachment content, then removes the identity without resurrection.
+It terminates all 54 workers and makes no native-helper calls. Independent
+OpenSSL-backed Sequoia verifies/decrypts the WASM message; the WASM workers
+verify/decrypt Sequoia's reply. Wide-arithmetic assets build, but are not runtime
+validated on the available Node 20; the production software provider always
+uses baseline WASM.
+
+The signed Mac IWA and scoped extension were updated to **0.17.2** with the same
+origin, extension identity and permissions. Installed UI checks on **2026-11-23** passed encrypted
+software import, explicit software selection, offline Compose signing/encryption,
+software round trips before and after a full app restart, and removal of the
+disposable identity. Locking removed software choices, and restart required vault
+unlock before the saved identity became usable, without reimporting its file or
+re-entering its OpenPGP password. The public JSON reports confirm
+valid hybrid signatures and exact text, HTML and attachment recovery. No email
+was sent, no recipient trust was added, the disposable entry was removed, and the
+vault was left locked. Existing vault enrollment and the prior item were kept.
+
+A separate before/after physical audit confirmed all **24 PIV slot records**, ten
+existing public keys, PIN/touch policies, **3/3 PIN retries** and eleven protected
+configuration/backend files unchanged. The existing hardware wrapper was used
+only to unlock the vault; software signing and decryption made no native helper
+calls. This is not a new physical signing test of the narrower native worker.
+
+For a disposable encrypted fixture generated as described in
+[software test setup](wasm/SOFTWARE-KEYS.md#regression-coverage-and-disposable-browser-fixture):
+
+```sh
+IWA_MESSAGE_ORACLE_BIN=/path/to/examples/message_oracle \
+  node experiments/mac-iwa/tests/software-identity-interop.mjs \
+  /path/to/disposable-fixture baseline
+```
+
+
 ## IWA hardware tests and shared public parser (0.16.0)
 
 Hardware-test orchestration now runs in the IWA. **Hardware test** selects a
@@ -304,8 +383,10 @@ mkdir -p /tmp/iwa-public-fixtures
 export IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures
 export CARGO_TARGET_DIR=/tmp/iwa-native-test-target
 cargo test --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
-cargo build --release --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+cargo build --release --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml \
+  --bin sequoia-iwa-crypto --example message_oracle
 export IWA_CRYPTO_TEST_BIN="$CARGO_TARGET_DIR/release/sequoia-iwa-crypto"
+export IWA_CRYPTO_ORACLE_BIN="$CARGO_TARGET_DIR/release/examples/message_oracle"
 python3 -m unittest discover -s experiments/mac-iwa/tests -p 'test_*.py'
 export IWA_SPLIT_DECAP_FIXTURE=/tmp/iwa-split-decap-fixture.json
 CARGO_TARGET_DIR=/tmp/iwa-wasm-host-test-target cargo +1.88.0 test --locked \
@@ -319,9 +400,10 @@ node experiments/mac-iwa/wasm/tests/bundle.mjs pkg
 node experiments/mac-iwa/wasm/tests/split-decryption.mjs "$IWA_SPLIT_DECAP_FIXTURE"
 ```
 
-The Python integrations use `IWA_CRYPTO_TEST_BIN`; without it they are skipped.
-The public signature/verification integrations additionally need
-`IWA_PUBLIC_TEST_FIXTURES`, populated by the native Rust tests above. The actual
+The production-worker Python integrations use `IWA_CRYPTO_TEST_BIN`. The
+public signature/verification integrations use the separate
+`IWA_CRYPTO_ORACLE_BIN` and `IWA_PUBLIC_TEST_FIXTURES`, populated by the Rust
+tests above. Integrations without their required paths are skipped. The actual
 worker tests require freshly built WASM and the generated split fixture. Passing
 these software regressions does not substitute for the separately reported
 physical-key and installed-UI tests.
@@ -997,15 +1079,18 @@ mkdir -p /tmp/iwa-public-fixtures
 export IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures
 export CARGO_TARGET_DIR=/tmp/iwa-crypto-target
 cargo test --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
-cargo build --locked --release --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+cargo build --locked --release --manifest-path experiments/mac-iwa/crypto/Cargo.toml \
+  --bin sequoia-iwa-crypto --example message_oracle
 export IWA_CRYPTO_TEST_BIN="$CARGO_TARGET_DIR/release/sequoia-iwa-crypto"
+export IWA_CRYPTO_ORACLE_BIN="$CARGO_TARGET_DIR/release/examples/message_oracle"
 python3 -m unittest discover -s experiments/mac-iwa/tests -p 'test_*.py'
 node experiments/mac-iwa/tests/test_format.cjs
 ```
 
 These fixtures contain temporary public certificates and signatures, not private
-keys or user messages. Without the two fixture environment variables, the two
-Python integration tests are skipped; the other 24 run normally.
+keys or user messages. Without `IWA_CRYPTO_ORACLE_BIN` and
+`IWA_PUBLIC_TEST_FIXTURES`, the public verification integrations are skipped. The production boundary tests use
+`IWA_CRYPTO_TEST_BIN`; neither worker may substitute for the other.
 
 Version **0.4.2** reads ordinary unencrypted Gmail messages without a YubiKey
 prompt or trusted-contact selection. These messages are explicitly marked
@@ -1575,9 +1660,14 @@ contains operation timings, fixed error codes and the key/policy comparison;
 `unchanged: false` or an unavailable snapshot must not be reported as unchanged.
 The runner takes the same operation lock as the IWA Chat/Vault helper.
 
+This historical diagnostic uses the explicitly built
+[message oracle](crypto/README.md#explicitly-build-the-historical-message-oracle),
+not the installed production worker's component interface.
+
 ```sh
 python3 -I -B experiments/mac-iwa/piv_soak.py \
   --installed "$HOME/Library/Application Support/Sequoia IWA Lab" \
+  --oracle /absolute/path/to/examples/message_oracle \
   --serial YOUR_TEST_SERIAL --node /absolute/path/to/node \
   --rounds 5 --out /absolute/path/to/new-result-directory
 ```

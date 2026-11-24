@@ -2,7 +2,8 @@
 """Single-PIN, bounded PIV diagnostic suite. No mail, provisioning or vault edits.
 
 A hidden Terminal prompt authorizes this entire run, not subsequent app use.
-Every operation uses the installed helper and a fresh PKCS#11 process/session.
+Every operation uses an explicitly supplied test-only message oracle and a fresh
+PKCS#11 process/session. The installed production helper rejects these modes.
 The PIN exists only in this process and anonymous child pipes; no argv/env/file
 contains it. Python/OS copies cannot be guaranteed wiped, so the runner exits
 when finished. FIDO PRF ceremonies and browser UI tests are deliberately excluded.
@@ -49,11 +50,19 @@ def run_rounds(rounds,step,deadline):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--installed',type=Path,required=True)
+    p.add_argument('--oracle',type=Path,required=True,help='Separately built message_oracle test example')
     p.add_argument('--serial',required=True)
     p.add_argument('--node',type=Path,required=True)
     p.add_argument('--rounds',type=int,default=5,choices=range(1,21))
     p.add_argument('--out',type=Path,required=True)
     a=p.parse_args();os.umask(0o077)
+    # Validate the diagnostic marker before snapshots, PIN entry or operations.
+    # The production binary intentionally cannot serve the old message API.
+    marker=subprocess.run([str(a.oracle.resolve(strict=True)),'--capabilities'],
+                          input=b'',stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10)
+    if marker.returncode or len(marker.stdout)>8192 or json.loads(marker.stdout)!={
+            'service':'sequoia-iwa-test-oracle','version':1,'testOracle':True}:
+        raise RuntimeError('Explicit message_oracle executable required; no test started')
     cfg=json.loads((a.installed/'private/config.json').read_text())
     if cfg['serial']!=a.serial:raise RuntimeError('Configured serial mismatch; no test started')
     a.out.mkdir(parents=True,exist_ok=False,mode=0o700)
@@ -78,7 +87,7 @@ def main():
             app=Path(cfg['app']);backend={'python':'/usr/bin/python3','adapters':str(app/'adapters'),
                 'openssl':str(app/'native/bin/openssl'),'provider':str(app/'native/lib/pkcs11.dylib'),
                 'module':str(app/'native/lib/libykcs11.dylib'),'serial':a.serial}
-            crypto=[str(a.installed/'runtime/sequoia-iwa-crypto')]
+            crypto=[str(a.oracle.resolve(strict=True))]
             wasm=[str(a.node),str(ROOT/'tests/vault-hardware.mjs')]
             print(f'Confirmed {a.serial}, matching public keys and no-touch policies. {a.rounds} rounds; one PIN; stop on any failure.',flush=True)
             # No getpass fallback to visible stdin is allowed.
@@ -113,7 +122,7 @@ def main():
                 opened=invoke('open',sealed)['data'] # Sequoia requires a valid hybrid signature.
                 if base64.b64decode(opened)!=raw:raise RuntimeError('MESSAGE_BYTES_MISMATCH')
                 # Fresh WASM envelope and session key per round; no real vault is
-                # read or changed. Same native decapsulation route as IWA vault.
+                # read or changed. Historical full-message oracle, separate from the IWA component path.
                 seed=base64.b64encode(os.urandom(32)).decode();vid=str(uuid.uuid4());wid=str(uuid.uuid4())
                 wrapped=request(wasm,{'op':'wrap','certificate':cert,'secret':seed,'vaultId':vid,'wrapperId':wid})
                 session=invoke('decapsulate-browser',wrapped['cipher'])
