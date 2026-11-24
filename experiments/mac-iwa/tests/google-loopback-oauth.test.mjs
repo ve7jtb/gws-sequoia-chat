@@ -114,7 +114,7 @@ test('runLoopbackPkceOAuth binds 127.0.0.1:0, verifies PKCE, drops refresh_token
   });
 
   assert.equal(boundHost, '127.0.0.1');
-  assert.deepEqual(boundOpts, { localPort: 0 });
+  assert.equal(boundOpts, undefined);
   assert.equal(serverClosed, true);
   assert.equal(openedAuthUrl.searchParams.get('redirect_uri'), 'http://127.0.0.1:54321/callback');
   assert.equal(openedAuthUrl.searchParams.get('code_challenge_method'), 'S256');

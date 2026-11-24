@@ -180,7 +180,7 @@ export async function runLoopbackPkceOAuth({
   const { verifier, challenge, method } = await generatePkce();
   const state = generateState();
 
-  const server = new ServerSocket('127.0.0.1', { localPort: 0 });
+  const server = new ServerSocket('127.0.0.1');
   const { readable: acceptStream, localPort } = await server.opened;
   const acceptReader = acceptStream.getReader();
 
