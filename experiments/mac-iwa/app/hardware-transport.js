@@ -69,6 +69,7 @@ function createHardwareTransport(deps = {}){
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
         dialog.removeEventListener('cancel', onCancel);
+        inputEl.removeEventListener('keydown', onKeyDown);
         inputEl.value = '';
         if(dialog.open) dialog.close();
       };
@@ -81,13 +82,19 @@ function createHardwareTransport(deps = {}){
         }
         resolve(pin);
       };
+      const onKeyDown = (ev)=>{
+        if(ev.key === 'Enter'){ ev.preventDefault(); onOk(); }
+      };
       const onCancel = ()=>{
         cleanup();
         reject(Error('PIV PIN entry cancelled; no card operation was attempted.'));
       };
+      okBtn.disabled = false;
+      cancelBtn.disabled = false;
       okBtn.addEventListener('click', onOk);
       cancelBtn.addEventListener('click', onCancel);
       dialog.addEventListener('cancel', onCancel);
+      inputEl.addEventListener('keydown', onKeyDown);
       dialog.showModal();
       inputEl.focus();
     });

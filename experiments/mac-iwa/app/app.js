@@ -20,7 +20,7 @@ const say=(text,error=false)=>{$('result').textContent=text;$('result').classLis
 // the lock across WASM preparation, one native digest request, and finalization.
 function operationBusy(active) {
  busy=active;$('transport').disabled=active;$('busy').hidden=!active;
- document.querySelectorAll('button').forEach(b=>b.disabled=active);
+ document.querySelectorAll('button').forEach(b=>{if(!b.closest('#smartcard-pin-dialog'))b.disabled=active;});
  // A test can be cancelled while its native PIN/touch attempt settles. The
  // coordinator retains this lock and performs only a final public audit.
  $('test-cancel').disabled=!active||!hardwareTestAbort;
