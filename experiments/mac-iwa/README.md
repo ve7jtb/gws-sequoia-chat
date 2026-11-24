@@ -9,6 +9,145 @@ server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
 in the latest sections below. This change does not move the main loopback app's store.
 
+## Browser-owned bundle inspection and account startup (0.15.1)
+
+The 0.15.1 implementation moves public compressed-bundle inspection into the
+signed IWA and removes native account discovery from startup. This section
+describes the current code and local validation; the older numbered sections
+retain their historical test results. **The signed 0.15.1 update passed startup,
+account persistence, on-key restore and offline bundle-review checks, then a
+fresh two-way offline signing/decryption exchange with independent Sequoia.**
+
+### Public bundle parsing and the native transport boundary
+
+The dedicated identity worker calls the baseline WASM `inspect_bundle` export.
+It bounds the compressed `PQMZIP01` container and expanded data, parses the
+supported public profile, authenticates the envelope signature, validates the
+OpenPGP certificate/key bindings, and derives public component hashes and slot
+descriptions. Composite bundle signatures require both components to verify.
+Unsupported profiles, secret-key packets, ambiguous/trailing data, malformed
+compression, oversized inputs and altered signatures fail closed. No browser
+parser failure falls back to native bundle decoding.
+
+**Restore certificate bundle from YubiKey…** invokes the new
+`chat-identity-bundle-read` public transport. Native code reads only the committed
+current object bank, validates the fixed framing, chunk lengths/generation and
+transport checksum, and returns at most 64 KiB of opaque compressed bytes plus
+the actual public-key hashes for all 24 PIV slots. It re-reads the observed
+objects, slot states and serial to reject a changing snapshot. This transport
+does not decompress the bundle, parse its certificates or declare its signature
+valid. The IWA hashes the exact returned compressed bytes, authenticates them in
+WASM, and matches every signed component against the native public snapshot
+before showing the review. The separate `chat-identity-key-snapshot` operation
+reads only the public slot states and does not read bundle objects. Neither
+operation accepts a browser-selected slot, object identifier, executable path,
+PIN or private-operation command.
+
+**Import identity from file** now works without an extension, native helper or
+connected key. A valid signed bundle may be reviewed and saved with
+`bundleSignatureVerified: true` and `liveKeysMatched: false`. Its serial, public
+certificates and signed mapping are visible, but it is excluded from Compose and
+recipient selection. **Match connected YubiKey…** explicitly obtains a public
+key snapshot, compares every mapped component and shows a second review. Saving
+that review records the live-match evidence; file generation/freshness remains
+unestablished. A raw public certificate import remains unmapped. Saving either
+form grants no recipient trust. Inventory revisions prevent an old live-match
+operation from resurrecting or replacing a record removed or changed in another
+window.
+
+The WASM parser is a constrained mirror of the public format/profile rules in
+the pinned `sequoia-pqmail-piv` adapter, with independent RustCrypto verification
+and cross-implementation fixtures. The existing adapter combines its decoder
+with OpenSSL, process and filesystem dependencies and cannot currently link into
+`wasm32`. **A shared target-independent parser crate has not been extracted.**
+This duplication is a maintenance limitation: changes to supported container,
+signature or profile rules must keep both readers and their vectors aligned.
+See [the WASM implementation and reproduction command](wasm/README.md#compressed-public-bundle-inspection-0151).
+
+All native private-operation checks remain in place. Selected signing and
+decryption independently re-read and authenticate the live signed on-key bundle,
+bind the serial, bundle hash, canonical certificate hash, primary fingerprint and
+certified mailbox, and derive the supported slots before issuing a one-use grant.
+The private backend still checks live keys before the operation. Browser-saved
+metadata and a previous successful match never replace those checks. PIN entry,
+hardware signing and component decapsulation stay native; existing vault wrappers
+retain their fixed enrollment and do not follow the account or Compose selector.
+
+### IWA-owned account configuration and startup
+
+The **Account** tab reviews and saves one normalized Google account email in the
+IWA's origin-local public settings. The record contains only its schema version,
+revision and email: no token, password, serial, certificate, slot or vault key.
+The optional **Review account from existing helper…** action explicitly reads
+legacy `chat-state`, extracts only the email and still requires review before
+saving. Neither startup nor a restart performs that native read automatically.
+Default vault metadata is also read only through its explicit hardware control.
+
+Startup, contact management and ordinary Gmail/Chat operations use IWA state
+without a native helper dependency. Gmail and Chat REST calls remain browser
+requests; Google authorization and bounded Chat attachment transfers still use
+their extension brokers. A missing browser transport is an error, never a native
+transport fallback. Google sign-in must authenticate the configured email, and
+signing still requires a supported saved identity certifying that same email.
+An account change clears Google authorization, readers and pending send/export
+reviews. Revision checks also reject stale work before private operations and
+each send stage when a cross-window storage notification is delayed.
+
+This is public configuration persistence, not new OAuth persistence. Access
+tokens remain in memory and are cleared on lock, expiry or exit. **Restart still
+requires Google authorization**, even though the public account email survives.
+The encrypted vault database, its existing unlock methods and stable enrollment,
+saved own identities and contact trust are not migrated or rewritten by Account
+setup. Existing hardware restore, status, signing, decryption and vault controls
+remain available.
+
+### Validation and installed UI checks
+
+On 2026-11-23, the current implementation passed **187 JavaScript tests, 102
+Python tests, 21 native Rust tests, 20 WASM Rust tests and 11 actual-worker
+integration tests**, plus the actual baseline WASM bundle-vector runner. Coverage
+includes offline signed-file inspection, both composite signature components,
+strict framing/compression bounds, all-slot snapshot matching, unchanged native
+private-operation authorization, unmatched-identity exclusion, concurrent
+inventory/account changes, startup without native messaging and browser-only
+ordinary Gmail/Chat routing. Use the [regression commands below](#reproduce-the-current-regression-tests)
+and `node experiments/mac-iwa/wasm/tests/bundle.mjs pkg` for the actual baseline
+bundle vectors.
+
+A separate physical public-only check read a **47,538-byte** current compressed
+bundle through the new native transport. The actual baseline WASM reader and the
+independent native reader agreed on all **three public certificate views and ten
+mapped public-key hashes**. This exercised public reads and parsing; it did not
+request a PIN, sign/decrypt or send a message. The signed installed 0.15.1
+bundle is byte-identical to the verified build, with the existing IWA origin,
+extension ID and permissions preserved. The Account UI saved the existing email
+and restored it after a full app restart. The installed on-key restore review
+recognized the unchanged three-certificate bundle; offline file review correctly
+showed that live keys had not been matched and required a separate match before
+private use. Both reviews were cancelled without replacing the existing identity.
+Saved contacts/trust and vault enrollment remained present. Final read-only
+snapshots matched all 24 PIV slot records, ten occupied keys, PIN/touch policies,
+PIN retry counts and eleven protected configuration/backend files.
+
+### Two-way offline IWA and Sequoia hardware test (2026-11-23)
+
+The installed **0.15.1** app then passed a fresh exchange using the existing,
+bundle-authenticated Level 3 v6 identity and a physical YubiKey:
+
+| Direction | Verified result |
+| --- | --- |
+| IWA → Sequoia | Compose produced a hybrid signature using ML-DSA-65 in slot `9c` and Ed25519 in `84`, then encrypted and exported a local `.eml`. Independent Sequoia decrypted it and verified the signature, protected headers, plain text, HTML and all 69 attachment bytes. |
+| Sequoia → IWA | Sequoia prepared a fresh signed/encrypted reply. The IWA automatically matched its recipient subkey to the saved identity and reviewed ML-KEM-768/X25519 slots `9d`/`85` before PIN entry. It decrypted the reply and displayed **Valid hybrid / Trusted** for the expected sender. Plain text and formatted HTML were checked, and the downloaded 66-byte attachment matched the source bytes and SHA-256. |
+
+The final snapshot was identical to the pre-test snapshot across **all 24 PIV
+slot records and all ten existing keys**, including public-key hashes and
+PIN/touch policies. PIN retries remained **3/3**. Eleven protected configuration/
+backend files and nine runtime/IWA files also retained their hashes. The test
+wrote no keys, card certificates, on-key bundles or policies and sent no email.
+This verifies the installed offline `.eml` flow; it does not rerun Gmail/Chat
+transport tests or establish performance timings. Local account names, device
+identifiers and private test reports are not published.
+
 ## Selected sending identities and recipient matching (0.14.0 preview)
 
 Compose **Send as** lists saved, bundle-authenticated Level 3 v6 identities whose
@@ -92,6 +231,7 @@ env -u CARGO_TARGET_DIR sh experiments/mac-iwa/wasm/build.sh
 node --test experiments/mac-iwa/tests/*.test.mjs experiments/mac-iwa/tests/*.test.cjs
 node --test experiments/mac-iwa/tests/identity-worker-interop.mjs \
   experiments/mac-iwa/tests/decryption-worker-interop.mjs
+node experiments/mac-iwa/wasm/tests/bundle.mjs pkg
 node experiments/mac-iwa/wasm/tests/split-decryption.mjs "$IWA_SPLIT_DECAP_FIXTURE"
 ```
 

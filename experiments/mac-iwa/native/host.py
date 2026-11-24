@@ -162,8 +162,8 @@ def operation_error(op, error=None):
             return 'Connect YubiKey '+missing.group(1)+'. No PIN was submitted. Retry only after connecting that key.'
     if op in ('chat-selected-signing-material','chat-selected-decryption-material'):
         return 'Selected identity review stopped. Connect the selected Level 3 YubiKey and restore its current bundle if certificates changed. The signed bundle, exact public certificate and live keys must match. No PIN was submitted and no card data was changed.'
-    if op in ('chat-identity-restore','chat-identity-import'):
-        return 'Public certificate-bundle review stopped. Connect the configured Level 3 YubiKey and use its current compressed public bundle. The bundle signature and all mapped public keys must verify. No PIN was submitted and no card or identity data was changed.'
+    if op in ('chat-identity-bundle-read','chat-identity-key-snapshot'):
+        return 'Public YubiKey read stopped. Connect the configured YubiKey and retry with its current public bundle. No PIN was submitted and no card or identity data was changed.'
     if op=='chat-identity-current':
         return 'The configured public identity could not be read. No YubiKey operation was attempted.'
     if op=='chat-certificate-migration':

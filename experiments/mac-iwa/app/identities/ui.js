@@ -3,6 +3,8 @@
 // a private-key operation. The helper's installed signing authority stays fixed.
 import {createIdentityStore} from './store.js';
 import {inspectCertificate} from '../certificates/client.js';
+import {inspectBundle} from './client.js';
+import {parseCardBundle} from './bundle.js';
 
 const MAX_FILE=262144;
 const encode=bytes=>btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''));
@@ -59,7 +61,10 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  function describe(parent,identity){
   parent.append(element('p',identity.serial?'YubiKey serial: '+identity.serial:'Public certificate from file · no hardware mapping'));
   if(identity.bundleHash){
-   parent.append(element('p','Signed bundle verified; all mapped public keys matched the connected YubiKey at import. '+(identity.generation?'Card generation '+identity.generation+'.':'File bundle: card generation is unavailable; freshness is not established.')));
+   // Older saved entries were authenticated by the native parser. Do not
+   // mislabel their provenance merely because this UI now parses new imports
+   // in WASM; both retain the same independent live private-operation check.
+   parent.append(element('p','Signed bundle verified. '+(identity.liveKeysMatched?'All mapped public keys matched the connected YubiKey at import. ':'Hardware keys have not been matched. This identity cannot be selected for private operations yet. ')+(identity.generation?'Card generation '+identity.generation+'.':'File bundle: card generation is unavailable; freshness is not established.')));
    const digest=element('p','Bundle SHA-256: '+identity.bundleHash);digest.className='identity-fingerprint';parent.append(digest);
   }
   for(const c of identity.certificates)describeCertificate(parent,c);
@@ -74,6 +79,13 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
    const matches=current&&identity.serial===current.serial&&identity.certificates.some(c=>c.fingerprint===current.fingerprint);
    card.append(element('h3',matches?'Matches default vault identity':'Saved public identity'));
    describe(card,identity);
+   if(identity.bundleHash&&!identity.liveKeysMatched){
+    const match=element('button','Match connected YubiKey…');
+    match.addEventListener('click',()=>run(async()=>{
+     clearReview();say('Reading public keys only; no PIN or touch is required.');
+     review(await store.previewLiveMatch(identity.id,await request('chat-identity-key-snapshot')));
+    }));card.append(match);
+   }
    const remove=element('button','Forget local identity…');
    remove.addEventListener('click',()=>{
     if(isBusy())return;
@@ -98,21 +110,24 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  }
  listen('identity-refresh',async()=>{await configured();await refresh();say('Own public identities refreshed.');});
  listen('identity-restore',async()=>{
-  clearReview();say('Reading the configured YubiKey’s signed public bundle and matching its public keys. No PIN is required.');
-  review(await store.previewBundle(await request('chat-identity-restore')));
+  clearReview();say('Reading public card data, then verifying the compressed bundle in this IWA. No PIN is required.');
+  review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read'),inspectBundle)));
   say('Review the YubiKey certificate bundle before saving.');
  });
  listen('identity-file-review',async()=>{
   clearReview();const file=$('identity-file').files[0];
   if(!file||!file.size||file.size>MAX_FILE)throw Error('Choose a public certificate or bundle up to 256 KiB.');
   const bytes=new Uint8Array(await file.arrayBuffer()),kind=identityFileKind(bytes),encoded=encode(bytes);
-  review(kind==='bundle'?await store.previewBundle(await request('chat-identity-import',{bundle:encoded})):await store.previewCertificate(encoded));
+  // File inspection has no native dependency. Save an authenticated but unmatched
+  // bundle for offline review; a separate explicit public-key match enables its
+  // selection later. This never claims a file proves current card presence.
+  review(kind==='bundle'?await store.previewBundle(await inspectBundle(encoded)):await store.previewCertificate(encoded));
   say('Review the imported public identity before saving.');
  });
  listen('identity-review-save',async()=>{
   if(!pending||!$('identity-review-confirmed').checked)throw Error('Review and confirm the certificates and slot mappings first.');
   await store.save(pending,true);clearReview();channel?.postMessage({changed:true});await refresh();
-  say('Own public identity saved. Supported v6 profiles are now available in Compose and for matching incoming messages. Recipient trust and vault enrollment are unchanged.');
+  say('Own public identity saved. Hardware-matched, supported v6 profiles are available in Compose and incoming matching. For an unmatched bundle, use Match connected YubiKey first. Recipient trust and vault enrollment are unchanged.');
  });
  listen('identity-review-cancel',()=>clearReview());
  $('identity-review').addEventListener('cancel',()=>{if(pending)store.cancel(pending);pending=null;});
@@ -125,8 +140,8 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  });
  if(channel)channel.onmessage=()=>{clearReview();refresh().catch(e=>say(e.message,true));};
  window.addEventListener('pagehide',()=>{clearReview();channel?.close();});
- // Native metadata failure must not hide locally saved identities; a disconnected
- // helper still permits public file import and inspection of existing records.
- try{await configured();}catch(e){$('identity-current').textContent=e.message;}
+ // Startup must work without an extension/native host. Native enrollment is
+ // read only after the user explicitly requests Read default vault identity from helper.
+ $('identity-current').textContent='Default vault identity metadata is available through Read default vault identity from helper. No hardware is contacted at startup.';
  await refresh();return {refresh};
 }

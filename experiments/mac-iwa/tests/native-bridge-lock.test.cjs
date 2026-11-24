@@ -183,8 +183,8 @@ test('only exact IWA top-level ports can delegate Chat attachments, never to nat
 // calls. This test only covers relay authorization; native schema tests reject
 // caller-selected paths/slots, and bundle tests authenticate public contents.
 test('own identity metadata and bundle reads use the scoped native relay', () => {
-  for (const request of [{op:'chat-identity-current'}, {op:'chat-identity-restore'},
-    {op:'chat-identity-import',bundle:'synthetic-public-fixture'}]) {
+  for (const request of [{op:'chat-identity-current'}, {op:'chat-identity-bundle-read'},
+    {op:'chat-identity-key-snapshot'}]) {
     const s=setup(),client=s.client();client.onMessage.emit(request);
     assert.equal(s.connections.length,1);
     assert.deepEqual(s.connections[0].messages,[request]);
@@ -192,5 +192,13 @@ test('own identity metadata and bundle reads use the scoped native relay', () =>
     assert.deepEqual(client.messages,[{type:'result',data:{public:true}}]);
     const foreign=s.client({origin:'https://wrong.invalid',url:origin+'/',frameId:0});
     foreign.onMessage.emit(request);assert.equal(s.connections.length,1);
+  }
+});
+
+test('retired native public bundle decoders cannot bypass WASM inspection', () => {
+  for (const request of [{op:'chat-identity-restore'}, {op:'chat-identity-import',bundle:'synthetic'}]) {
+    const s=setup(),client=s.client();client.onMessage.emit(request);
+    assert.equal(s.connections.length,0);
+    assert.equal(client.messages.at(-1).type,'error');
   }
 });

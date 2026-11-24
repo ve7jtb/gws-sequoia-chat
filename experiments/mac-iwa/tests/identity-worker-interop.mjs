@@ -5,8 +5,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {Worker as Thread} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
-import {inspectIdentity,matchRecipients} from '../app/identities/client.js';
+import {inspectIdentity,matchRecipients,inspectBundle} from '../app/identities/client.js';
 import {createIdentitySelection} from '../app/identities/selection.js';
+import {parseCardBundle} from '../app/identities/bundle.js';
+import {createIdentityStore} from '../app/identities/store.js';
+import {createMemoryStorage} from '../app/certificates/store.js';
 
 const path=process.env.IWA_SPLIT_DECAP_FIXTURE;
 assert(path,'Set IWA_SPLIT_DECAP_FIXTURE to the disposable Sequoia software fixture');
@@ -90,4 +93,33 @@ test('actual WASM outputs satisfy saved-identity matching and selected native ma
  // used to obtain/redeem a native private-operation grant.
  inventory.revision++;
  await assert.rejects(selection.validateMaterial(material,chosen,'decryption'),/changed/);
+});
+
+test('actual bundle worker authenticates public bytes and binds every live key before selection',async()=>{
+ const publicFixture=JSON.parse(fs.readFileSync(new URL('../crypto/tests/data/restore-level3.json',import.meta.url)));
+ const offline=await inspectBundle(publicFixture.hybrid);
+ assert.equal(offline.bundleSignatureVerified,true);assert.equal(offline.liveKeysMatched,false);
+ assert.equal(offline.slots.length,10);assert.equal(offline.certificates.length,3);
+ const snapshot={format:'sequoia-iwa-public-snapshot',version:1,serial:offline.serial,generation:1,bundle:publicFixture.hybrid,warnings:[],
+  slots:['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))].map(slot=>({slot,publicKeySha256:publicFixture.keys[slot]?createHash('sha256').update(Buffer.from(publicFixture.keys[slot],'base64')).digest('hex'):null}))};
+ const live=await parseCardBundle(snapshot,inspectBundle);
+ assert.equal(live.liveKeysMatched,true);assert.equal(live.source,'yubikey');
+ assert.equal(live.bundleHash,createHash('sha256').update(Buffer.from(publicFixture.hybrid,'base64')).digest('hex'));
+ const changed=structuredClone(snapshot);changed.slots.find(s=>s.slot==='87').publicKeySha256='0'.repeat(64);
+ await assert.rejects(parseCardBundle(changed,inspectBundle),/does not match/);
+ // Certificate policy parsing follows bundle authentication in the real UI.
+ // Reuse the actual certificate WASM API below rather than a native parser.
+ const {inspect_public}=await import('../app/wasm/sequoia_iwa_verify.js');
+ const inspect=async encoded=>JSON.parse(inspect_public(JSON.stringify({certificate:encoded})));
+ // The normal inspector uses its own worker; that worker is tested separately.
+ // Here initialize the same module explicitly for a complete public-store check.
+ const wasm=await import('../app/wasm/sequoia_iwa_verify.js');
+ await wasm.default({module_or_path:fs.readFileSync(new URL('../app/wasm/sequoia_iwa_verify_bg.wasm',import.meta.url))});
+ const store=createIdentityStore({inspect,storage:createMemoryStorage()});
+ await store.save(await store.previewBundle(offline),true);
+ const selection=createIdentitySelection({store,inspect:inspectIdentity,match:matchRecipients});
+ const email=(await store.list()).identities[0].certificates[0].emails[0];
+ assert.deepEqual((await selection.list(email)).choices,[]);
+ await store.save(await store.previewBundle(live),true);
+ assert.equal((await selection.list(email)).choices.length,1);
 });

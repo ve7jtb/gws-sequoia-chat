@@ -16,6 +16,7 @@ from certificate_migration import read_public_file
 
 MAX_BUNDLE=65536
 MAX_REPLY=400000
+PUBLIC_SLOTS=('9a','9c','9d','9e',*(f'{slot:02x}' for slot in range(0x82,0x96)))
 
 
 def bundle_bytes(text):
@@ -71,13 +72,50 @@ def current(bridge):
     return result
 
 
+def public_snapshot(bridge,include_bundle):
+    """Read opaque bundle bytes and actual public keys, with no UI decoding.
+
+    Only the installed enrollment selects the physical device and executable.
+    The helper reads the fixed current bundle namespace and all 24 public slot
+    states twice. It does not parse the compressed bundle or claim signature,
+    live-key matching, identity selection or trust. WASM must independently
+    inspect the bytes and compare its authenticated mapping to this snapshot.
+    A file import can request the keys alone after an entirely offline review.
+    """
+    request={'op':'identity-bundle-read' if include_bundle else 'identity-key-snapshot',
+        'serial':serial(bridge),
+        'objectHelper':str(Path(bridge.cfg['app'])/'native/bin/hybrid-mail-provision')}
+    bridge.emit({'type':'progress','message':'Reading public YubiKey data — no PIN or touch required.'})
+    result=run_public(bridge,request)
+    fields={'format','version','serial','slots','warnings'}|({'bundle','generation'} if include_bundle else set())
+    if (set(result)!=fields or result.get('format')!='sequoia-iwa-public-snapshot' or
+        type(result.get('version')) is not int or result['version']!=1 or
+        result.get('serial')!=request['serial'] or result.get('warnings')!=[]):
+        raise ValueError('Invalid public snapshot response')
+    slots=result.get('slots')
+    if not isinstance(slots,list) or len(slots)!=len(PUBLIC_SLOTS):
+        raise ValueError('Invalid public slot snapshot')
+    for expected,item in zip(PUBLIC_SLOTS,slots):
+        if not isinstance(item,dict) or set(item)!={'slot','publicKeySha256'} or item['slot']!=expected:
+            raise ValueError('Invalid public slot snapshot')
+        digest=item['publicKeySha256']
+        if digest is not None and (not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest)):
+            raise ValueError('Invalid public key digest')
+    if include_bundle:
+        bundle_bytes(result['bundle'])
+        if type(result['generation']) is not int or not 1<=result['generation']<=9007199254740991:
+            raise ValueError('Invalid public bundle generation')
+    return result
+
+
 def preview(bridge,encoded=None,selected_serial=None):
     """Verify the signed bundle against the selected or configured live card.
 
-    Import is deliberately not an offline assertion of hardware ownership: a
-    file must match the same physical public keys as an on-key restore. The
-    browser stores the result only after the user reviews it. Native state,
-    contacts, trust, certificates and hardware keys are left unchanged.
+    This internal authorization path is intentionally distinct from browser
+    inventory parsing in WASM. Before selected signing or decryption, native
+    code independently validates the full signed bundle and live public keys.
+    No browser route accepts a bundle for this decoder. The optional file form
+    remains an internal regression/test facility with the same live checks.
     """
     if encoded is not None:bundle_bytes(encoded)
     request={'op':'identity-restore','serial':selected_serial or serial(bridge),

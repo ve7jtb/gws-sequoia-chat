@@ -1,7 +1,8 @@
 # Experimental Sequoia WASM verifier
 
-The baseline module implements public-certificate inspection, signature verification/encryption,
-recipient matching, hybrid combining and session-key recovery, vault wrapping and
+The baseline module implements public-certificate and compressed-bundle
+inspection, signature verification/encryption, recipient matching, hybrid
+combining and session-key recovery, vault wrapping and
 split-phase OpenPGP signing-packet construction. It never receives a PIN or
 long-term signing secret. A dedicated signing worker prepares the v6 digest,
 waits for the selected native hardware signer, and finalizes/verifies the returned
@@ -17,7 +18,90 @@ not approval to add software signing secrets to that backend. Saved certificate
 trust remains a separate decision. Earlier preview sections below describe the
 successive verification/encryption/decryption milestones.
 
-## Current identity and decryption boundary (0.14)
+## Compressed public bundle inspection (0.15.1)
+
+The `inspect_bundle` export parses and authenticates supported compressed
+`PQMZIP01` public certificate bundles in the disposable identity worker. It takes
+one bounded canonical base64 bundle, enforces 64 KiB limits on both stored and
+expanded data, consumes the exact zlib/container boundaries, verifies the
+supported pure or composite envelope signature, and checks the public OpenPGP
+profile and component-key bindings. Both components of a composite signature
+must verify. Canonical public SPKIs supply the SHA-256 hashes later compared with
+native public-slot reads. Unsupported profiles, secret-key material, substituted
+keys, altered signatures, trailing bytes and decompression bombs are rejected.
+
+The returned preview authenticates the public data's consistency under its
+included signing key; it does not establish ownership of a device or trust in
+an email address. It always starts as a file-sourced result with generation zero
+and `liveKeysMatched: false`. The IWA can review and save that result offline,
+but cannot select it for private operations. A separate explicit public-key
+snapshot comparison and reviewed save records live-match evidence. File
+freshness remains unestablished even after matching. For an on-key restore, the
+IWA additionally binds the exact compressed-byte hash to the native transport
+response before matching all signed components and displaying the review.
+
+Native discovery is now bounded framing and public-data transport: fixed current
+PIV bundle objects, validated chunk generation/length/checksum, and all 24 public
+slot states, re-read to reject changes. It does not decompress the browser's
+bundle or perform the UI's certificate/signature inspection. The identity worker
+has no native or private-key API, and errors do not invoke a native parser
+fallback. This change does not remove the native private authorization path:
+before selected signing/decryption, that path independently authenticates the
+current signed on-key bundle and live keys, validates the selected certificate
+and mailbox, and issues a bound one-use grant. Existing fixed vault enrollment
+and the signing/decryption component boundaries remain unchanged.
+
+The reader in [`src/bundle.rs`](src/bundle.rs) and its bounded DER helper mirror
+only the supported public format/profile rules of the pinned
+`sequoia-pqmail-piv` adapter at
+`6b99afc20984e16180e5bbfbabb51d8685d247e1`. The adapter currently combines its
+decoder with OpenSSL, process and filesystem dependencies, so it cannot link
+directly into `wasm32`; this module uses RustCrypto instead. **The proposed shared,
+target-independent public parser crate is not implemented.** Cross-implementation
+fixtures cover the current mirror, and future format/profile changes require
+reviewing both implementations rather than assuming automatic shared behavior.
+
+After building the baseline module, run its actual browser-target parser against
+the committed public-only vectors from the repository root:
+
+```sh
+node experiments/mac-iwa/wasm/tests/bundle.mjs pkg
+```
+
+The runner covers supported pure/composite signatures, all three certificate
+views and ten component hashes, compressed legacy input, component tampering,
+unsupported profiles, oversized/bomb inputs and caller-injected authority
+fields. [`identity-worker-interop.mjs`](../tests/identity-worker-interop.mjs) also exercises the real identity
+worker and public snapshot join. Current local validation passes **20 WASM Rust
+tests, 21 native Rust tests, 187 JavaScript tests, 102 Python tests and 11
+actual-worker integration tests**, plus this baseline bundle-vector runner.
+
+A separate physical public-only comparison passed with a **47,538-byte** current
+compressed bundle: the new native raw read and actual baseline WASM inspection
+matched the independent native reader's **three certificate views and ten
+public-key hashes**. No device/account identifiers or private report contents
+are included here. The signed **0.15.1** update is installed: on-key restore,
+offline unmatched-file review and account persistence after restart passed in
+the UI. Saved inventory, trust and vault enrollment were preserved, and those
+public-only checks left the key and PIN/touch-policy snapshot unchanged.
+
+A subsequent **two-way offline test of installed 0.15.1** exercised actual
+hardware signing in slots `9c`/`84` and decryption in `9d`/`85`. Independent
+Sequoia decrypted the IWA export and verified its hybrid signature, protected
+headers, text, HTML and exact 69-byte attachment. The IWA automatically selected
+the saved recipient identity for Sequoia's fresh reply, decrypted it and showed
+**Valid hybrid / Trusted**. Its downloaded 66-byte attachment matched exactly,
+and both plain-text and formatted-HTML views passed. All 24 slot records, ten
+existing keys and PIN/touch policies were unchanged; no email was sent. See the
+[complete test scope](../README.md#two-way-offline-iwa-and-sequoia-hardware-test-2026-11-23).
+
+The companion [0.15.1 account/startup change](../README.md#iwa-owned-account-configuration-and-startup)
+stores only a reviewed public account email in the IWA and removes automatic
+native discovery at startup. Google OAuth tokens remain memory-only and still
+require authorization after restart. Existing encrypted vault enrollment is
+unchanged; this public parser does not import or migrate vault secrets.
+
+## Selected identity and decryption boundary (0.14)
 
 `inspect_identity` binds each usable Level 3 v6 certificate to its full canonical
 SHA-256, primary fingerprint, certified emails and current signing/encryption

@@ -38,6 +38,7 @@ export function createTransport(session){
   return {attachmentDataRef:Object.fromEntries(['attachmentUploadToken','resourceName'].filter(k=>typeof ref[k]==='string').map(k=>[k,ref[k]]))};
  }
  async function perform(op,d,native,context){
+  const assertAccount=()=>context.assertAccount?.();assertAccount();
   // Preparation is entirely local: the selected restored identity binds the sender,
   // IWA trust binds the recipient, and the vault gates the private operation.
   // Requiring OAuth here would prevent explicit offline encrypted-file export.
@@ -49,14 +50,17 @@ export function createTransport(session){
    // its live signed card bundle and derives supported slots itself.
    const contact=await context.certificateStore.trustedContact(d.contact);
    const identity=await context.identitySelection.get(d.identity,context.account);
+   assertAccount();
    const own=await native('chat-selected-signing-material',{identity:context.identitySelection.nativeBinding(identity)});
    await context.identitySelection.validateMaterial(own,identity,'signing');
+   assertAccount();
    return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space,identity});
   }
   // Every network operation still checks the authenticated Google account
   // before reading data or consuming a send review. Offline preparation does
   // not authorize an upload, restore a token, or bypass this send-time check.
   await session.profile(context.account);
+  assertAccount();
   if(op==='chat-mail-connect')return {account:context.account};
   if(op==='chat-mail-list'){
    if(d.query.length>1024||d.page.length>4096)throw Error('Search/page limit');
@@ -97,15 +101,19 @@ export function createTransport(session){
   if(op==='chat-mail-send'||op==='chat-send'){
    if(d.confirmed!==true)throw Error('Explicit send confirmation required');
    const outgoing=await context.composeReviews.take(d.review,op==='chat-mail-send'?'Gmail':'Chat',d.confirmed,context.account);
+   // A settings event may be queued behind a fulfilled promise. Read the IWA
+   // account revision again immediately before each irreversible network stage;
+   // consuming an old review must never authorize a send under a new account.
+   assertAccount();
    if(op==='chat-mail-send'){const r=await session.request(GMAIL,'/gmail/v1/users/me/messages/send',{method:'POST',body:JSON.stringify({raw:outgoing.raw.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')})});return {sent:r.id};}
    const space=resource(outgoing.space,'space');
    // The consumed review remains consumed even if the browser cannot read an
    // upload response. Google may already have stored that attachment; a failed
    // fetch is not evidence that the server rejected or never received a POST.
    const uploadOutcome='The upload may have reached Google; no Chat message creation was attempted.';
-   const bundle=await chatSendStage('encrypted-bundle upload',uploadOutcome,()=>upload(space,'message.pgp',outgoing.cipher));
-   const certificate=await chatSendStage('public-certificate upload',uploadOutcome,()=>upload(space,'pq-mail-sender-key.pgp',outgoing.certificate));
-   const send=body=>session.request(CHAT,'/v1/'+space+'/messages?requestId='+crypto.randomUUID(),{method:'POST',body:JSON.stringify(body)});
+   const bundle=await chatSendStage('encrypted-bundle upload',uploadOutcome,()=>{assertAccount();return upload(space,'message.pgp',outgoing.cipher);});
+   const certificate=await chatSendStage('public-certificate upload',uploadOutcome,()=>{assertAccount();return upload(space,'pq-mail-sender-key.pgp',outgoing.certificate);});
+   const send=body=>{assertAccount();return session.request(CHAT,'/v1/'+space+'/messages?requestId='+crypto.randomUUID(),{method:'POST',body:JSON.stringify(body)});};
    const certName=await chatSendStage('public-certificate message creation',
     'Certificate delivery is uncertain; encrypted-bundle message creation was not attempted. Inspect the conversation before another send.',async()=>{
      const first=await send({text:'PQ Mail public OpenPGP certificate. Verify its fingerprint independently.',attachment:[certificate]});

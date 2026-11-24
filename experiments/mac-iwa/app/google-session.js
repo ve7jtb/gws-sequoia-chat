@@ -1,5 +1,6 @@
 // Access tokens live only in this closure. No refresh token, storage, native
 // callback, arbitrary URL or retry path is available to the transport layer.
+import {accountEmail} from './account-settings.js';
 export const SCOPES=['gmail.readonly','gmail.send','chat.spaces.readonly','chat.messages.readonly','chat.messages.create'].map(s=>'https://www.googleapis.com/auth/'+s);
 export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked?.(),connect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-services'}),mediaConnect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-chat-media'}),clock=()=>Date.now(),mediaTimeoutMs=45000}={}){
  let token=null,expires=0,epoch=0,port=null,timer=null,account='',pending=false;
@@ -96,8 +97,11 @@ export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked
    return binary?bytes:JSON.parse(new TextDecoder().decode(bytes));
   }finally{clearTimeout(timeout);controllers.delete(c);}
  }
- async function profile(expected){const r=await request('https://gmail.googleapis.com','/gmail/v1/users/me/profile');if(typeof r.emailAddress!=='string'||r.emailAddress.toLowerCase()!==expected.toLowerCase()){clear();throw Error('Google account does not match the selected signing identity.');}account=r.emailAddress;return {account};}
+ async function profile(expected){const configured=accountEmail(expected),r=await request('https://gmail.googleapis.com','/gmail/v1/users/me/profile');if(typeof r.emailAddress!=='string'||r.emailAddress.toLowerCase()!==configured){clear();throw Error('Google account does not match the account configured in this IWA.');}account=r.emailAddress;return {account};}
  async function login(expected){
+  // Missing/corrupt local configuration must fail before opening OAuth. The
+  // Google response proves account ownership; entering an email alone does not.
+  expected=accountEmail(expected);
   if(!unlocked())throw Error('Unlock the credential vault first.');if(pending)throw Error('Google sign-in already running.');clear();pending=true;
   const current=epoch;
   try{await new Promise((resolve,reject)=>{

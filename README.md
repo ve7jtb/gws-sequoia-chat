@@ -4,6 +4,28 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.15.1 moves public bundle inspection and account startup into the IWA.**
+The browser WASM worker parses and authenticates compressed certificate bundles;
+native discovery returns bounded public card bytes and slot-key hashes. Bundle
+files can be reviewed and saved offline, but remain unavailable for private
+operations until an explicit live-key match is reviewed and saved. The native
+signing/decryption path still independently authenticates the current signed
+bundle and selected hardware identity before PIN entry. Account email is now an
+explicitly reviewed IWA setting, with optional user-triggered migration and no
+automatic native startup read. Existing vault enrollment remains unchanged;
+Google tokens remain memory-only, so restart still requires Google authorization.
+Local validation passes **187 JavaScript, 102 Python, 21 native Rust, 20 WASM Rust
+and 11 actual-worker tests**, plus actual baseline WASM bundle vectors. A physical
+public-only comparison also matched three certificate views and ten public-key
+hashes between the new browser path and the native reader. **The signed 0.15.1
+update passed account restart, on-key restore and offline bundle-review UI checks,
+followed by a fresh two-way offline exchange with independent Sequoia.** Sequoia
+decrypted and verified the IWA's hybrid signature; the IWA automatically matched
+the reply to its saved YubiKey identity and displayed **Valid hybrid / Trusted**.
+Text, HTML and exact attachment bytes passed, with all 24 PIV slot records,
+ten existing keys and PIN/touch policies unchanged. No email was sent. See
+[the current implementation, parser limitation and validation scope](experiments/mac-iwa/README.md#browser-owned-bundle-inspection-and-account-startup-0151).
+
 **IWA 0.14.0 connects restored identities to message operations.** Compose now
 selects a saved Level 3 v6 identity matching the account, with its certificate,
 algorithms and YubiKey serial visible. Incoming ciphertext is matched in WASM to

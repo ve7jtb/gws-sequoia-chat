@@ -17,7 +17,7 @@ function app(){
   }}}};
  context.window.googleTransport={handles:op=>op==='chat-mail-prepare',async call(op,data,send,identity){google.push({op,data,identity});return send('chat-signing-material',{});}};
  vm.createContext(context);vm.runInContext(source.slice(0,source.indexOf('function event(')),context);
- vm.runInContext("ownEmail='test@example.invalid';contacts=[];",context);
+ vm.runInContext("ownEmail='test@example.invalid';accountSnapshot={email:ownEmail,revision:'synthetic'};accountSettings={assert:s=>s.email};contacts=[];",context);
  return {context,native,google,buttons,lock:()=>{unlocked=false;}};
 }
 test('UI prepare uses browser transport followed by metadata-only native prepare',async()=>{

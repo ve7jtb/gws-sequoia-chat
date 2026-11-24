@@ -15,6 +15,7 @@ use zeroize::Zeroizing;
 mod digest_sign;
 mod component_decap;
 mod identity_restore;
+mod public_snapshot;
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
@@ -224,6 +225,10 @@ fn execute()->Result<()> {
  if field(&v,"op")?=="identity-restore" {
   // Public-only route: no PIN extraction or private-operation config exists.
   println!("{}",identity_restore::preview(&v)?);return Ok(());
+ }
+ if matches!(field(&v,"op")?,"identity-bundle-read"|"identity-key-snapshot") {
+  // Raw public transport only: no bundle/certificate decoder or PIN access.
+  println!("{}",public_snapshot::snapshot(&v)?);return Ok(());
  }
  if field(&v,"op")?=="decryption-material" {
   let own=public(field(&v,"own")?)?;let key=selected(&own,false)?;

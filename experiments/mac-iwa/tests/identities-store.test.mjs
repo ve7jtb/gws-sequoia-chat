@@ -35,6 +35,35 @@ test('saved identity survives restart but does not select a native backend',asyn
  const {store,storage,inspect}=setup();await store.save(await store.previewBundle(snapshot()),true);
  const reopened=createIdentityStore({inspect,storage});assert.deepEqual(await reopened.list(),await store.list());assert.equal(typeof reopened.select,'undefined');assert.equal(typeof reopened.sign,'undefined');assert.equal(typeof reopened.trust,'undefined');
 });
+test('offline authenticated bundles persist without claiming live hardware and can later be matched',async()=>{
+ const {store,storage,inspect}=setup();
+ const offline=snapshot({source:'file',generation:0,liveKeysMatched:false});
+ await store.save(await store.previewBundle(offline),true);
+ const reopened=createIdentityStore({inspect,storage});
+ assert.equal((await reopened.list()).identities[0].liveKeysMatched,false);
+ const slots=['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))];
+ const live={format:'sequoia-iwa-public-snapshot',version:1,serial:'123456',slots:slots.map(slot=>({slot,publicKeySha256:offline.slots.find(s=>s.slot===slot)?.publicKeySha256||null})),warnings:[]};
+ const wrong=structuredClone(live);wrong.slots.find(s=>s.slot==='84').publicKeySha256='f'.repeat(64);
+ await assert.rejects(reopened.previewLiveMatch('yubikey:123456',wrong),/does not match/);
+ const review=await reopened.previewLiveMatch('yubikey:123456',live);
+ assert.equal((await reopened.list()).identities[0].liveKeysMatched,false);
+ await reopened.save(review,true);
+ assert.equal((await reopened.list()).identities[0].liveKeysMatched,true);
+ assert.equal((await reopened.list()).identities[0].generation,0);
+ assert.equal((await reopened.list()).identities[0].source,'file');
+});
+test('an identity removed during live-match inspection cannot be resurrected under a new revision',async()=>{
+ const {store,storage,inspect}=setup(),offline=snapshot({source:'file',generation:0,liveKeysMatched:false});
+ await store.save(await store.previewBundle(offline),true);
+ let release,started;const waiting=new Promise(r=>started=r),pause=new Promise(r=>release=r);let first=true;
+ const delayed=createIdentityStore({storage,inspect:async raw=>{if(first){first=false;started();await pause;}return inspect(raw);}});
+ const slots=['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))];
+ const live={format:'sequoia-iwa-public-snapshot',version:1,serial:'123456',slots:slots.map(slot=>({slot,publicKeySha256:offline.slots.find(s=>s.slot===slot)?.publicKeySha256||null})),warnings:[]};
+ const pending=delayed.previewLiveMatch('yubikey:123456',live);await waiting;
+ await store.remove('yubikey:123456',true,1);release();
+ await assert.rejects(pending,/changed during hardware matching/);
+ assert.deepEqual((await store.list()).identities,[]);
+});
 test('canonical public imports are idempotent and remain unmapped',async()=>{
  const {store,infos}=setup();infos.set(encoded(4),infos.get(encoded(1)));
  await store.save(await store.previewCertificate(encoded(4)),true);const r=await store.previewCertificate(encoded(1));assert.equal(r.replacesExisting,true);assert.equal(r.unchanged,true);

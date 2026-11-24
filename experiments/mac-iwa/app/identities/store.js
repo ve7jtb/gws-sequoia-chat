@@ -2,6 +2,7 @@
 // This separate IndexedDB record cannot select a device, choose an executable,
 // grant contact trust, or turn an imported certificate into a private key.
 import {createIndexedDbStorage} from '../certificates/store.js';
+import {matchBundlePublicKeys} from './bundle.js';
 
 const FORMAT='sequoia-iwa-identities',VERSION=1,MAX_IDENTITIES=16,MAX_CERT_BYTES=262144,MAX_TOTAL_BYTES=1048576;
 const SNAPSHOT='sequoia-iwa-identity-preview',REVIEW_TTL=10*60*1000;
@@ -29,20 +30,21 @@ function email(value){
  return value.toLowerCase();
 }
 // Stable hashes detect accidental/stale metadata substitutions. They do not
-// authenticate an imported bundle: the fixed native parser does that before
-// producing a bundle snapshot, and WASM independently inspects public packets.
+// authenticate an imported bundle: the bundled WASM parser does that before
+// producing a snapshot. Live hardware matching and private-operation native
+// authorization remain separate from this public inventory.
 function sorted(value){return Array.isArray(value)?value.map(sorted):object(value)?Object.fromEntries(Object.keys(value).sort().map(k=>[k,sorted(value[k])])):value;}
 const hash=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',value))].map(b=>b.toString(16).padStart(2,'0')).join('');
 const sourceHash=async value=>hash(encoder.encode(JSON.stringify(sorted(value))));
 function empty(){return {format:FORMAT,version:VERSION,revision:0,records:[]};}
 
-/** Bound the public bundle review at the native/browser boundary.
+/** Bound the public bundle review at the WASM/storage boundary.
  * Slot strings are display metadata only. Nothing in this module passes them
  * to a signer, decapsulator, command line, or hardware selection API.
  */
 function bundle(value){
  keys(value,['format','version','source','serial','bundleHash','generation','certificates','slots','bundleSignatureVerified','liveKeysMatched','warnings']);
- if(value.format!==SNAPSHOT||value.version!==1||!['yubikey','file'].includes(value.source)||typeof value.serial!=='string'||! /^[1-9][0-9]{0,9}$/.test(value.serial)||Number(value.serial)>0xffffffff||!Number.isSafeInteger(value.generation)||(value.source==='yubikey'?value.generation<1:value.generation!==0)||value.bundleSignatureVerified!==true||value.liveKeysMatched!==true)fail('Unsupported verified identity snapshot');
+ if(value.format!==SNAPSHOT||value.version!==1||!['yubikey','file'].includes(value.source)||typeof value.serial!=='string'||! /^[1-9][0-9]{0,9}$/.test(value.serial)||Number(value.serial)>0xffffffff||!Number.isSafeInteger(value.generation)||(value.source==='yubikey'?value.generation<1:value.generation!==0)||value.bundleSignatureVerified!==true||typeof value.liveKeysMatched!=='boolean'||(value.source==='yubikey'&&!value.liveKeysMatched))fail('Unsupported verified identity snapshot');
  digest(value.bundleHash);
  if(!Array.isArray(value.certificates)||!value.certificates.length||value.certificates.length>8||!Array.isArray(value.slots)||!value.slots.length||value.slots.length>24||!Array.isArray(value.warnings)||value.warnings.length>16)fail('Identity snapshot limit exceeded');
  const labels=new Set();let size=0;
@@ -101,7 +103,7 @@ export function createIdentityStore({inspect,storage=createIndexedDbStorage({nam
   // or ambiguous import and are rejected instead of inventing another role.
   if(new Set(certificates.map(c=>c.certificateHash)).size!==certificates.length)fail('Duplicate public certificate in identity');
   const hardware=value.format===SNAPSHOT;
-  return {id:hardware?'yubikey:'+value.serial:'certificate:'+certificates[0].certificateHash,source:hardware?value.source:'certificate-file',serial:hardware?value.serial:null,generation:hardware?value.generation:null,bundleHash:hardware?value.bundleHash:null,certificates,slots:hardware?clone(value.slots):[],bundleSignatureVerified:hardware,liveKeysMatched:hardware,warnings:hardware?clone(value.warnings):[]};
+  return {id:hardware?'yubikey:'+value.serial:'certificate:'+certificates[0].certificateHash,source:hardware?value.source:'certificate-file',serial:hardware?value.serial:null,generation:hardware?value.generation:null,bundleHash:hardware?value.bundleHash:null,certificates,slots:hardware?clone(value.slots):[],bundleSignatureVerified:hardware,liveKeysMatched:hardware&&value.liveKeysMatched,warnings:hardware?clone(value.warnings):[]};
  }
  async function inventory(state){
   const identities=[];
@@ -111,8 +113,13 @@ export function createIdentityStore({inspect,storage=createIndexedDbStorage({nam
   }
   return {identities,revision:state.revision};
  }
- async function preview(raw){
-  const state=await load(),value=source(raw),identity=await inspectSource(value),digest=await sourceHash(value),previous=state.records.find(r=>r.id===identity.id);
+ async function preview(raw,expectedRevision){
+  const state=await load();
+  // A hardware-match review starts from a particular saved record. Never
+  // attach that old record to a newer revision after asynchronous inspection;
+  // otherwise a removed/replaced identity could be resurrected by this review.
+  if(expectedRevision!==undefined&&state.revision!==expectedRevision)fail('Own identities changed during hardware matching; review again');
+  const value=source(raw),identity=await inspectSource(value),digest=await sourceHash(value),previous=state.records.find(r=>r.id===identity.id);
   // Canonicalize a standalone OpenPGP import so armor/line-ending variants do
   // not create duplicate identities. The verified bundle itself remains intact.
   if(value.format!==SNAPSHOT)value.certificate=identity.certificates[0].certificate;
@@ -124,6 +131,15 @@ export function createIdentityStore({inspect,storage=createIndexedDbStorage({nam
  return {
   async previewCertificate(raw){return preview({format:'sequoia-iwa-public-identity',version:1,certificate:raw});},
   async previewBundle(raw){return preview(bundle(raw));},
+  async previewLiveMatch(id,snapshot){
+   // An offline file import can later gain public hardware evidence. Read and
+   // integrity-check the stored record first; never accept a UI-supplied slot
+   // map as the object whose hashes will be matched or persisted.
+   const state=await load();await inventory(state);
+   const record=state.records.find(r=>r.id===id);
+   if(!record||record.source.format!==SNAPSHOT)fail('Select a signed certificate bundle first');
+   return preview(matchBundlePublicKeys(record.source,snapshot),state.revision);
+  },
   async list(){return inventory(await load());},
   cancel(review){if(typeof review?.token==='string')reviews.delete(review.token);},
   async save(review,confirmed){

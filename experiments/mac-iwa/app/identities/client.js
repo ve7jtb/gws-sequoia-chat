@@ -28,6 +28,12 @@ function request(op,value,{signal}={}){
  */
 export function inspectIdentity(certificate,options){return request('inspect',{certificate},options);}
 
+/** Authenticate a compressed public bundle without contacting any hardware.
+ * The result deliberately claims no live-key match. Hardware evidence is joined
+ * separately, and native private-operation authorization remains independent.
+ */
+export function inspectBundle(bundle,options){return request('bundle',{bundle},options);}
+
 /** Return every exact saved-certificate match, never an arbitrary first match.
  * A message's recipient packet is not yet authenticated plaintext. The caller
  * must bind the chosen identity/cipher hash again before requesting private ops.

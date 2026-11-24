@@ -15,7 +15,7 @@ function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve
 function application(){
  const nodes=new Map(),events=new Map(),native=[],storage=[],displays=[],decryptions=[],matches=[];
  const matchedShown=deferred();
- let revision=1,identityRevision=1,unlocked=true,worker=async()=>verified();
+ let revision=1,identityRevision=1,accountChanged=false,unlocked=true,worker=async()=>verified();
  const ownIdentity=()=>({id:'saved-identity',revision:identityRevision,serial:'12345678',
   email:'recipient@example.invalid',fingerprint:'B'.repeat(64),recipientKey:'C'.repeat(64),
   certificateHash:'d'.repeat(64),bundleHash:'e'.repeat(64)});
@@ -57,7 +57,7 @@ function application(){
    return {disconnect(){},onMessage:{addListener:fn=>listeners.push(fn)},onDisconnect:{addListener(){}},
     postMessage(request){native.push(request);queueMicrotask(()=>listeners.forEach(fn=>fn({type:'result',data:{ok:true}})));}};
   }}},
-  storeArg:store,identitySelectionArg:selections,workerArg:(...args)=>worker(...args),displayArg:(result,message)=>{displays.push({result,message});node('reader').hidden=false;},
+  accountSettingsArg:{assert:s=>{if(accountChanged)throw Error('Account settings changed');return s.email;}},storeArg:store,identitySelectionArg:selections,workerArg:(...args)=>worker(...args),displayArg:(result,message)=>{displays.push({result,message});node('reader').hidden=false;},
   // Keep the real app's trust/reader checks around its new WASM coordinator.
   // The coordinator's component/native boundary is tested separately; this
   // narrow fake proves the UI never sends the complete ciphertext to native.
@@ -70,11 +70,11 @@ function application(){
  // exactly those shipped by the app, rather than reimplemented test copies.
  assert.equal(source.split('bootstrap().catch(e=>say(e.message,true));').length,2);
  vm.runInContext(source.replace('bootstrap().catch(e=>say(e.message,true));',''),context);
- vm.runInContext("certificateStore=storeArg;identitySelection=identitySelectionArg;composeReviews={clear(){}};ownEmail='recipient@example.invalid';contacts=[{id:'contact',email:'sender@example.invalid'}];runMessageWorker=(...args)=>workerArg(...args);processMessage=(...args)=>workerArg(...args);showOrdinary=(...args)=>displayArg(...args);",context);
+ vm.runInContext("certificateStore=storeArg;identitySelection=identitySelectionArg;composeReviews={clear(){}};ownEmail='recipient@example.invalid';accountSnapshot={email:ownEmail,revision:'synthetic'};accountSettings=accountSettingsArg;contacts=[{id:'contact',email:'sender@example.invalid'}];runMessageWorker=(...args)=>workerArg(...args);processMessage=(...args)=>workerArg(...args);showOrdinary=(...args)=>displayArg(...args);",context);
  node('signer').value='contact';
  return {context,native,storage,displays,decryptions,matches,node,matchedShown:matchedShown.promise,
   async chooseMatched(){await matchedShown.promise;await node('matched-identity-continue').listeners.get('click')();},
-  reviseIdentity:()=>identityRevision++,
+  reviseIdentity:()=>identityRevision++,reviseAccount:()=>accountChanged=true,
   setWorker:fn=>worker=fn,
   revise:()=>revision++,
   evidence(){context.evidenceArg={message:'message-id',packet:{...packet}};vm.runInContext('readerEvidence=evidenceArg;',context);},
@@ -242,11 +242,11 @@ test('matched identity dialog shows the recipient key and requires explicit cont
  assert.equal(typeof a.decryptions[0].validateMaterial,'function');
 });
 test('stale matched identity or cancelled view never reaches decryption',async()=>{
- for(const change of ['identity','lock','view']){
+ for(const change of ['identity','account','lock','view']){
   const a=application();a.setWorker(async()=>localCipher);await a.context.readLocalFile(localFile());
   const opening=a.context.decryptSelected(),rejected=assert.rejects(opening,/changed|cancelled|locked/);
   await a.matchedShown;
-  if(change==='identity'){a.reviseIdentity();await a.chooseMatched();}
+  if(change==='identity'||change==='account'){change==='identity'?a.reviseIdentity():a.reviseAccount();await a.chooseMatched();}
   else if(change==='lock')a.lock();else a.invalidate();
   await rejected;assert.equal(a.decryptions.length,0);assert.equal(a.native.length,0);
   assert.equal(a.node('reader').hidden,true);assert.equal(a.node('matched-identity').open,false);

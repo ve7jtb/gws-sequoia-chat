@@ -43,8 +43,8 @@ FIELDS={
     'chat-state':set(),
     'chat-certificate-migration':set(),
     'chat-identity-current':set(),
-    'chat-identity-restore':set(),
-    'chat-identity-import':{'bundle'},
+    'chat-identity-bundle-read':set(),
+    'chat-identity-key-snapshot':set(),
     'chat-signing-material':set(),
     'chat-selected-signing-material':{'identity'},
     'chat-sign-digest':{'review','requestId','signingFingerprint','digest','hashAlgorithm'},
@@ -69,9 +69,6 @@ def validate(request):
         elif k=='confirmed':
             if v is not True:raise ValueError('Confirmation required')
         elif not isinstance(v,str) or len(v)>400000:raise ValueError('Invalid text')
-    if op=='chat-identity-import':
-        from identities import bundle_bytes
-        bundle_bytes(request['bundle'])
     if op=='chat-decryption-material' and request['service'] not in ('Chat','Gmail','Vault'):
         raise ValueError('Unknown service')
     if op=='chat-selected-decryption-material' and request['service'] not in ('Chat','Gmail'):
@@ -260,10 +257,15 @@ class ChatBridge:
         op=validate(request)
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            if op in ('chat-identity-current','chat-identity-restore','chat-identity-import'):
-                # Inventory discovery never changes the fixed operational key.
-                from identities import current,preview
-                return current(self) if op=='chat-identity-current' else preview(self,request.get('bundle'))
+            if op=='chat-identity-current':
+                from identities import current
+                return current(self)
+            if op in ('chat-identity-bundle-read','chat-identity-key-snapshot'):
+                # Browser inspection owns bundle parsing; native is a bounded
+                # read-only transport. Full native restore remains internal to
+                # selected() before a private-operation grant is constructed.
+                from identities import public_snapshot
+                return public_snapshot(self,op=='chat-identity-bundle-read')
             if op=='chat-certificate-migration':
                 from certificate_migration import snapshot
                 return snapshot(self)

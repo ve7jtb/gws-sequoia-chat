@@ -3,7 +3,9 @@
 const $=id=>document.getElementById(id);
 const isMail=()=>$("transport").value==="mail";
 const service=()=>isMail()?"Gmail":"Chat";
+const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
 let ownEmail="";
+let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount,legacyAccountEmail;
 let certificateReview=null,managementReview=null;
 let identityUi,ownIdentityStore,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
 let sendIdentities=[],decryptionChoice=null;
@@ -42,6 +44,11 @@ function nativeRequest(op,data={},options={}) {
 }
 // Certificate bytes and trust decisions stay within the signed IWA origin.
 // Legacy operation names below are UI aliases, not native capabilities.
+function assertAccount(snapshot=accountSnapshot){
+ if(!accountSettings||!snapshot)throw Error('Configure your Google account in Account first.');
+ if(snapshot.email!==ownEmail)throw Error('Account settings changed; review the account and sign in again.');
+ return accountSettings.assert(snapshot);
+}
 function dispatchRequest(op,data={}) {
  if(op==='chat-cert-list')return certificateStore.list();
  if(op==='chat-verification-material')return certificateStore.material();
@@ -51,7 +58,16 @@ function dispatchRequest(op,data={}) {
  if(op==='chat-cert-untrust')return certificateStore.untrust(data.fingerprint,data.email,data.confirmed);
  if(op==='chat-cert-delete')return certificateStore.remove(data.fingerprint,data.confirmed);
  if(op==='chat-mail-cert-save'||op==='chat-mail-cert-trust')return persistVerifiedSigner(op,data);
- if(window.googleTransport?.handles(op))return window.googleTransport.call(op,data,nativeRequest,{account:ownEmail,contacts,certificateStore,composeReviews,identitySelection});
+ if(browserGoogleOperations.has(op)){
+  // A failed/not-yet-loaded browser module must not silently turn an ordinary
+  // Google request into native messaging. There is no legacy transport fallback.
+  if(!window.googleTransport?.handles(op))throw Error('Browser Google transport is not ready. Reload this IWA.');
+  const snapshot=accountSnapshot;assertAccount(snapshot);
+  // Carry a revision-bound account through asynchronous Google and identity
+  // work. A second window changing settings invalidates it even before the
+  // storage event arrives; no native configuration is a fallback authority.
+  return window.googleTransport.call(op,data,nativeRequest,{account:snapshot.email,contacts,certificateStore,composeReviews,identitySelection,assertAccount:()=>assertAccount(snapshot)}).then(result=>{assertAccount(snapshot);return result;});
+ }
  return nativeRequest(op,data);
 }
 function call(op,data={}) {
@@ -69,8 +85,11 @@ function renderContacts(){for(const id of ['recipient','signer'])options(id,cont
 async function refreshCertificates(){const r=await call('chat-cert-list');contacts=r.contacts;renderContacts();renderSavedCertificates(r.certificates);}
 function identityLabel(c){return c.email+' · v6 ML-DSA-65 + Ed25519 · YubiKey '+c.serial+' · '+c.fingerprint.slice(-12);}
 async function refreshSendIdentities(){
- if(!identitySelection||!ownEmail)return;
- sendIdentities=(await identitySelection.list(ownEmail)).choices;
+ if(!identitySelection||!ownEmail){sendIdentities=[];options('send-identity',[],c=>c.id,identityLabel);$('send-identity-help').textContent='Configure your Google account in Account, then restore its supported public identity in Identities.';return;}
+ const account=ownEmail,snapshot=accountSnapshot;
+ const listed=await identitySelection.list(account);
+ if(account!==ownEmail||snapshot!==accountSnapshot)return;
+ sendIdentities=listed.choices;
  const before=$('send-identity').value;options('send-identity',sendIdentities,c=>c.id,identityLabel);
  // This preference contains only a public inventory identifier. It never
  // selects a native executable, slot or grant, and is revalidated on every use.
@@ -181,22 +200,71 @@ function serviceLabels(){
 }
 function tab(name){if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));if(b.dataset.tab==='identities')identityUi?.refresh().catch(e=>say(e.message,true));}));
+function clearAccountSession(){
+ // Public configuration can change while the vault remains enrolled/unlocked.
+ // Drop only account-bound transient work: Google tokens, pending signatures,
+ // decrypted readers and one-use send/export reviews. Never rewrite the vault.
+ window.googleTransport?.clear();signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();
+ accountReview=null;$('account-review-dialog').close();
+ $('messages').replaceChildren();spaces=[];spaceNext='';options('space',[],s=>s.name,s=>s.title);
+ pages=[''];page=0;next='';$('more-spaces').hidden=true;
+}
+async function refreshAccount(){
+ ownEmail='';accountSnapshot=null;
+ try{accountSnapshot=accountSettings.read();ownEmail=accountSnapshot?.email||'';}
+ finally{
+  $('account').textContent=ownEmail?'Google account: '+ownEmail+' · saved in this IWA':'No Google account configured. Open Account to set it up.';
+  $('account-email').value=ownEmail;
+  $('account-current').textContent=ownEmail?'Configured account: '+ownEmail:'No public account setting saved.';
+  await refreshSendIdentities();
+ }
+}
+function reviewAccount(email,source){
+ if(!accountSettings)throw Error('Account settings are still loading.');
+ accountReview={email:normalizeAccount(email),expected:accountSettings.read()};
+ $('account-review-details').textContent='Google account: '+accountReview.email+'\nSource: '+source;
+ $('account-review-confirmed').checked=false;$('account-review-dialog').showModal();
+}
+event('account-review',()=>reviewAccount($('account-email').value,'Entered in this IWA'));
+event('account-migrate',async()=>{
+ // This is an optional, user-triggered public read. It is deliberately absent
+ // from startup, contacts, identity inventory refresh and Google sign-in.
+ const legacy=await call('chat-state');reviewAccount(legacyAccountEmail(legacy),'Existing helper configuration (email only)');
+});
+event('account-review-cancel',()=>{accountReview=null;$('account-review-dialog').close();});
+$('account-review-dialog').addEventListener('cancel',()=>{accountReview=null;});
+event('account-save',async()=>{
+ if(busy)throw Error('Finish the current operation first.');
+ if(!accountReview||!$('account-review-confirmed').checked)throw Error('Review and confirm the account email first.');
+ const selected=accountReview;accountSettings.save(selected.email,selected.expected,true);
+ clearAccountSession();await refreshAccount();say('Account saved in this IWA. Unlock the vault and sign in to Google.');
+});
+event('account-forget',async()=>{
+ if(busy)throw Error('Finish the current operation first.');
+ if(!window.confirm('Forget this IWA’s public account email and clear its Google session? Your saved vault, identities and contacts remain available.'))return;
+ accountSettings.clear(true);clearAccountSession();await refreshAccount();say('Public account setting removed. Configure an account before signing in.');
+});
+window.addEventListener('storage',event=>{
+ if(!accountSettings||(event.key!==accountSettingsKey&&event.key!==null))return;
+ clearAccountSession();refreshAccount().then(()=>say('Account settings changed in another window. Sign in again.')).catch(error=>say(error.message,true));
+});
 async function bootstrap(){
- const [{createCertificateStore,createIndexedDbStorage},{inspectCertificate},{createComposeReviews},{createIdentityStore},{createIdentitySelection},{inspectIdentity,matchRecipients}]=await Promise.all([
-  import('./certificates/store.js'),import('./certificates/client.js'),import('./compose-review.js'),import('./identities/store.js'),import('./identities/selection.js'),import('./identities/client.js')]);
+ const [{createCertificateStore,createIndexedDbStorage},{inspectCertificate},{createComposeReviews},{createIdentityStore},{createIdentitySelection},{inspectIdentity,matchRecipients},accountModule]=await Promise.all([
+  import('./certificates/store.js'),import('./certificates/client.js'),import('./compose-review.js'),import('./identities/store.js'),import('./identities/selection.js'),import('./identities/client.js'),import('./account-settings.js')]);
+ accountSettings=accountModule.createAccountSettings();accountSettingsKey=accountModule.ACCOUNT_SETTINGS_KEY;
+ normalizeAccount=accountModule.accountEmail;legacyAccountEmail=accountModule.legacyAccount;
  certificateStore=createCertificateStore({inspect:inspectCertificate,storage:createIndexedDbStorage()});
  ownIdentityStore=createIdentityStore({inspect:inspectCertificate});
  identitySelection=createIdentitySelection({store:ownIdentityStore,inspect:inspectIdentity,match:matchRecipients});
- composeReviews=createComposeReviews({certificateStore,identitySelection,gate:()=>window.vaultGate?.()});
+ composeReviews=createComposeReviews({certificateStore,identitySelection,gate:()=>{window.vaultGate?.();assertAccount();}});
  // Public inventory and file import must work even when the native helper is
- // unavailable. Initialize their handlers before requesting hardware metadata.
+ // unavailable. Startup loads only IWA public stores; hardware metadata is read
+ // only when the user explicitly invokes a hardware control or migration.
  const {initializeIdentities}=await import('./identities/ui.js');
  identityUi=await initializeIdentities({request:nativeRequest,say,isBusy:()=>busy,setBusy:operationBusy,identityStore:ownIdentityStore});
  await refreshCertificates();
- const r=await call('chat-state');ownEmail=r.account;
- $('account').textContent='Mail account: '+r.account+' · default vault key '+r.serial;
- await refreshSendIdentities();
- say(contacts.length?'Ready. Certificates and trust belong to this IWA; sign in to Google.':'Ready. In Contacts, review migration from the native store or import a public certificate.');tab('inbox');
+ await refreshAccount();
+ say(ownEmail?'Ready. Local certificates and account settings are available; unlock the vault and sign in to Google.':'Ready. Configure your Google account in Account. Contacts, saved identities and the existing vault are available.');tab(ownEmail?'inbox':'account-settings');
 }
 async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
 async function messages(token=''){const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openRemoteMessage(m.name);});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}
@@ -261,7 +329,11 @@ function showOrdinary(r,message){
  renderFiles(r.attachments);if(message)renderCertificateActions(message,r.certificateActions);else $('read-certificates').replaceChildren();$('reader').hidden=false;
  say('Gmail message opened — not encrypted; signature: '+r.signatureStatus+'; certificate trust: '+r.certificateTrust+'.');
 }
-event('login',async()=>{await window.googleTransport.login(ownEmail);say('Google connected directly. Access lasts until expiry or vault lock.');await loadSpaces();});
+event('login',async()=>{
+ const snapshot=accountSnapshot;assertAccount(snapshot);
+ await window.googleTransport.login(snapshot.email);assertAccount(snapshot);
+ say('Google connected directly. Access lasts until expiry or vault lock.');await loadSpaces();
+});
 event('connect',()=>loadSpaces());event('more-spaces',()=>loadSpaces(spaceNext));
 event('status',async()=>{const r=await call('status');say(r.connected?'Expected YubiKey '+r.serial+' is connected.':'Connect key '+r.serial+'.');});
 event('load',async()=>{pages=[''];page=0;await messages();});
@@ -281,7 +353,8 @@ event('prepare',async()=>{
  try {
   const selected=await certificateStore.trustedContact(recipient.id);
   const sender=await identitySelection.get(senderChoice,ownEmail);
-  const assertSender=async()=>{await identitySelection.assert(sender);if($('send-identity').value!==senderChoice)throw Error('Sending identity changed; prepare again.');};
+  const snapshot=accountSnapshot;
+  const assertSender=async()=>{assertAccount(snapshot);await identitySelection.assert(sender);assertAccount(snapshot);if($('send-identity').value!==senderChoice)throw Error('Sending identity changed; prepare again.');};
   await assertSender();
   compose.attachments=await attachmentData();
   // This metadata-only route does not receive MIME or prompt for a PIN.
@@ -314,7 +387,7 @@ event('save-encrypted',async()=>{
   const saved=await composeReviews.exportEmail(rid,ownEmail,true);
   // The final UI continuation must also observe any lock/trust invalidation
   // that occurred while the export authorization promise was resolving.
-  assertReading(generation);window.vaultGate?.();
+  assertReading(generation);window.vaultGate?.();assertAccount();
   const bytes=Uint8Array.from(atob(saved.raw),c=>c.charCodeAt(0));
   const url=URL.createObjectURL(new Blob([bytes],{type:saved.type})),a=document.createElement('a');
   a.href=url;a.download=saved.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -327,10 +400,10 @@ function cancelDecryptionChoice(){
  const pending=decryptionChoice;decryptionChoice=null;$('matched-identity').close();
  pending?.reject(Error('Decryption identity selection cancelled; no private operation performed.'));
 }
-function reviewMatchedIdentity(matched,generation){
+function reviewMatchedIdentity(matched,generation,account){
  if(decryptionChoice)cancelDecryptionChoice();
  return new Promise((resolve,reject)=>{
-  decryptionChoice={matched,generation,resolve,reject};
+  decryptionChoice={matched,generation,account,resolve,reject};
   options('decrypt-identity',matched.choices,c=>c.id,c=>c.email+' · YubiKey '+c.serial+' · '+c.fingerprint.slice(-12));
   $('matched-identity-help').textContent=matched.choices.length===1?'The encrypted recipient packet matches this saved identity. Connect the indicated YubiKey; Continue checks its signed bundle before requesting your PIN.':'More than one saved device matches this recipient key. Select the YubiKey to use; no private operation has started.';
   showMatchedIdentity();$('matched-identity').showModal();
@@ -348,13 +421,14 @@ event('matched-identity-continue',async()=>{
  const selected=pending.matched.choices.find(c=>c.id===$('decrypt-identity').value);
  try{
   if(!selected)throw Error('Select the matching YubiKey.');
-  await identitySelection.assert(selected);assertReading(pending.generation);window.vaultGate?.();
+  await identitySelection.assert(selected);assertReading(pending.generation);assertAccount(pending.account);window.vaultGate?.();
   if(decryptionChoice!==pending)throw Error('Recipient selection changed.');
   decryptionChoice=null;$('matched-identity').close();pending.resolve(selected);
  }catch(error){decryptionChoice=null;$('matched-identity').close();pending.reject(error);}
 });
 async function decryptSelected(){
  if(busy)throw Error('An operation is already running.');
+ const account=accountSnapshot;assertAccount(account);
  // Capture a local envelope before clearing the pending dialog. A late lock,
  // tab change or trust update still changes readerGeneration and blocks both
  // PIN submission and display; no fallback to a remote message ID is allowed.
@@ -373,15 +447,15 @@ async function decryptSelected(){
  await certificateStore.assertContact(selected);
  assertReading(generation);window.vaultGate?.();
  operationBusy(true);let matched;
- try{matched=await identitySelection.match(envelope.cipher,ownEmail);}finally{operationBusy(false);}
- await certificateStore.assertContact(selected);assertReading(generation);window.vaultGate?.();
- const recipient=await reviewMatchedIdentity(matched,generation);
+ try{matched=await identitySelection.match(envelope.cipher,account.email);}finally{operationBusy(false);}
+ await certificateStore.assertContact(selected);assertReading(generation);assertAccount(account);window.vaultGate?.();
+ const recipient=await reviewMatchedIdentity(matched,generation,account);
  const r=await decryptInIwa({cipher:envelope.cipher,service:selectedService,identity:identitySelection.nativeBinding(recipient),recipientKey:recipient.recipientKey,
   validateMaterial:material=>identitySelection.validateMaterial(material,recipient,'decryption'),
   verification:{material:await certificateStore.material(),expectedEmail:selected.email,
    expectedFingerprint:selected.fingerprint,recipient:recipient.email},
-  gate:async()=>{await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);window.vaultGate?.();}});
- await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);window.vaultGate?.();
+  gate:async()=>{await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);assertAccount(account);window.vaultGate?.();}});
+ await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);assertAccount(account);window.vaultGate?.();
  if(!r.verified)throw Error('Signature verification failed.');
  $('read-subject').textContent=r.subject;$('verified').classList.remove('error');
  $('verified').textContent='Encryption: Encrypted (decrypted) with YubiKey '+recipient.serial+' · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint;

@@ -47,8 +47,36 @@ def fixture_preview(binary,source='yubikey'):
   return json.loads(result.stdout)
 
 
+def fixture_snapshot(binary,include_bundle=True):
+ """Read exactly the same public fixture through the decoder-free UI path."""
+ with tempfile.TemporaryDirectory() as tmp:
+  helper=Path(tmp)/'public-object-helper'
+  helper.write_text(HELPER.format(fixture=repr(str(FIXTURE.resolve()))));helper.chmod(0o700)
+  request={'op':'identity-bundle-read' if include_bundle else 'identity-key-snapshot',
+   'objectHelper':str(helper),'serial':'123456'}
+  result=subprocess.run([str(binary)],input=json.dumps(request).encode(),stdout=subprocess.PIPE,
+   stderr=subprocess.PIPE,timeout=30,check=True)
+  return json.loads(result.stdout)
+
+
 @unittest.skipUnless(os.environ.get('IWA_CRYPTO_TEST_BIN'),'Set IWA_CRYPTO_TEST_BIN to the new native helper')
 class IdentityFixture(unittest.TestCase):
+ def test_ui_transport_returns_exact_bytes_and_actual_public_slot_hashes_without_identity_claims(self):
+  source=json.loads(FIXTURE.read_text())
+  bundle=fixture_snapshot(os.environ['IWA_CRYPTO_TEST_BIN'])
+  keys=fixture_snapshot(os.environ['IWA_CRYPTO_TEST_BIN'],False)
+  self.assertEqual(set(bundle),{'format','version','serial','bundle','generation','slots','warnings'})
+  self.assertEqual(set(keys),{'format','version','serial','slots','warnings'})
+  self.assertEqual(bundle['bundle'],source['hybrid']);self.assertEqual(bundle['generation'],17)
+  self.assertEqual(bundle['format'],'sequoia-iwa-public-snapshot');self.assertEqual(bundle['version'],1)
+  self.assertEqual(bundle['serial'],'123456');self.assertEqual(bundle['warnings'],[])
+  self.assertEqual(bundle['slots'],keys['slots']);self.assertEqual(len(bundle['slots']),24)
+  self.assertEqual({item['slot'] for item in bundle['slots']},
+   {'9a','9c','9d','9e'}|{f'{slot:02x}' for slot in range(0x82,0x96)})
+  for item in bundle['slots']:
+   raw=source['keys'].get(item['slot'])
+   self.assertEqual(item['publicKeySha256'],hashlib.sha256(base64.b64decode(raw)).hexdigest() if raw else None)
+  self.assertEqual(sum(item['publicKeySha256'] is not None for item in bundle['slots']),10)
  def test_on_key_and_file_restore_have_identical_verified_material(self):
   card=fixture_preview(os.environ['IWA_CRYPTO_TEST_BIN'])
   file=fixture_preview(os.environ['IWA_CRYPTO_TEST_BIN'],'file')

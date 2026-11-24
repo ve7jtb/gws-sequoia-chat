@@ -14,6 +14,8 @@ mod decryption;
 pub use decryption::{prepare_decryption, finalize_decryption, cancel_decryption, match_recipients};
 mod certificates;
 pub use certificates::{inspect_public, inspect_identity};
+mod bundle;
+pub use bundle::inspect_bundle;
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
