@@ -308,7 +308,17 @@ export async function runLoopbackPkceOAuth({
     signal: signal || undefined,
   });
   if (!resp.ok) {
-    throw Error('Google token exchange failed (HTTP ' + resp.status + ').');
+    let detail = '';
+    try {
+      const errJson = await resp.json();
+      const codeStr = typeof errJson?.error === 'string' && /^[a-z0-9_]{1,40}$/i.test(errJson.error) ? errJson.error : '';
+      const descStr = typeof errJson?.error_description === 'string'
+        ? errJson.error_description.replace(/[^\x20-\x7e]/g, ' ').trim().slice(0, 120)
+        : '';
+      if (codeStr && descStr) detail = `: ${codeStr} (${descStr})`;
+      else if (codeStr) detail = `: ${codeStr}`;
+    } catch (_) {}
+    throw Error(`Google token exchange failed (HTTP ${resp.status}${detail}).`);
   }
   const data = await resp.json();
   const token = data?.access_token;
