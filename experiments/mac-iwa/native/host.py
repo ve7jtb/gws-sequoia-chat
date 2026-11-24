@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -154,11 +155,24 @@ def operation_error(op, error=None):
             return 'The native PIN dialog timed out before submission. No PIN was sent to the YubiKey. Start the operation again and look for the YubiKey PIN dialog or pin-prompt in the Dock or Command-Tab.'
         if str(error)=='PIN cancelled or invalid':
             return 'PIN entry was cancelled or its format was rejected locally. No PIN was sent to the YubiKey. No automatic retry was performed.'
+        # Only a strictly numeric serial from our pre-PIN presence check may
+        # enter this guidance. Never surface arbitrary backend exception text.
+        missing=re.fullmatch(r'Connect YubiKey ([1-9][0-9]{0,9})',str(error))
+        if missing and int(missing.group(1))<=2147483647:
+            return 'Connect YubiKey '+missing.group(1)+'. No PIN was submitted. Retry only after connecting that key.'
+    if op in ('chat-selected-signing-material','chat-selected-decryption-material'):
+        return 'Selected identity review stopped. Connect the selected Level 3 YubiKey and restore its current bundle if certificates changed. The signed bundle, exact public certificate and live keys must match. No PIN was submitted and no card data was changed.'
+    if op in ('chat-identity-restore','chat-identity-import'):
+        return 'Public certificate-bundle review stopped. Connect the configured Level 3 YubiKey and use its current compressed public bundle. The bundle signature and all mapped public keys must verify. No PIN was submitted and no card or identity data was changed.'
+    if op=='chat-identity-current':
+        return 'The configured public identity could not be read. No YubiKey operation was attempted.'
     if op=='chat-certificate-migration':
         return 'Legacy public-certificate export stopped. Check the old store for conflicting, malformed or oversized records. No certificates or trust were changed. No YubiKey operation was attempted.'
     if op=='chat-signing-material':
         return 'The configured public signing identity could not be read. No YubiKey operation was attempted.'
-    if op in ('chat-sign-digest','chat-decap'):
+    if op=='chat-decryption-material':
+        return 'The configured public decryption identity could not be read. No YubiKey operation was attempted.'
+    if op in ('chat-sign-digest','chat-decapsulate-components'):
         return 'YubiKey operation stopped. Check the configured key and native PIN dialog. No automatic private-operation retry was performed.'
     if op in ('chat-mail-login','chat-mail-connect','chat-mail-list','chat-mail-read'):
         return 'Gmail connection failed. Complete Google sign-in with Gmail read and send permissions, then reconnect Gmail. No YubiKey operation was attempted.'

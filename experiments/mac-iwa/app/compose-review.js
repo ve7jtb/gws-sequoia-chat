@@ -37,7 +37,7 @@ export function gmailEnvelope(account,recipient,cipher){
  return b64(raw);
 }
 
-export function createComposeReviews({certificateStore,now=()=>Date.now(),gate=()=>{}}){
+export function createComposeReviews({certificateStore,identitySelection,now=()=>Date.now(),gate=()=>{}}){
  const pending=new Map();let epoch=0;
  const current=()=>{gate();return epoch;};
  const unchanged=generation=>{gate();if(epoch!==generation)throw Error('Compose review was cleared');};
@@ -54,11 +54,12 @@ export function createComposeReviews({certificateStore,now=()=>Date.now(),gate=(
   pending.delete(id);
   if(confirmed!==true||service!==item.material.service||account!==item.account)throw Error('Send confirmation or destination changed');
   await certificateStore.assertContact(item.contact);unchanged(generation);
+  if(identitySelection){await identitySelection.assert(item.identity);unchanged(generation);}
   if(now()-item.created<0||now()-item.created>TTL)throw Error('Compose review expired');
   return structuredClone(item.outgoing);
  }
  return {
-  async prepare(nativeMaterial,contact,{account,subject,service,space}){
+  async prepare(nativeMaterial,contact,{account,subject,service,space,identity}){
    const generation=current();mailbox(account);mailbox(contact?.email);destination(service,space);
    if(typeof subject!=='string'||!subject||subject.length>500||/[\x00-\x1f\x7f]/.test(subject))throw Error('Invalid subject');
    if(!nativeMaterial||! /^[a-f0-9]{48}$/.test(nativeMaterial.review)||!fingerprint(nativeMaterial.signingFingerprint)||nativeMaterial.senderEmail!==account)throw Error('Configured signing identity mismatch');
@@ -68,12 +69,15 @@ export function createComposeReviews({certificateStore,now=()=>Date.now(),gate=(
    // concurrent removal or certificate update must stop before PIN submission.
    const snapshot=structuredClone(contact);
    await certificateStore.assertContact(snapshot);unchanged(generation);
+   // An identity review binds the full certificate and inventory revision,
+   // not just a primary fingerprint that can survive subkey replacement.
+   if(identitySelection){await identitySelection.validateMaterial(nativeMaterial,identity,'signing');unchanged(generation);}
    for(const [id,item] of pending)if(now()-item.created>TTL)pending.delete(id);
    if(pending.has(nativeMaterial.review)||pending.size>=4)throw Error('Compose review already exists or limit reached');
    const material={review:nativeMaterial.review,senderCertificate:nativeMaterial.senderCertificate,senderEmail:account,
     signingFingerprint:nativeMaterial.signingFingerprint,recipientCertificate:snapshot.certificate,
     recipientEmail:snapshot.email,recipientFingerprint:snapshot.fingerprint,subject,service};
-   pending.set(material.review,{created:now(),stage:'prepared',material:structuredClone(material),contact:snapshot,space,account});
+   pending.set(material.review,{created:now(),stage:'prepared',material:structuredClone(material),contact:snapshot,space,account,identity:identity?structuredClone(identity):null});
    return material;
   },
   async complete(id,cipher){
@@ -81,13 +85,15 @@ export function createComposeReviews({certificateStore,now=()=>Date.now(),gate=(
    try{
     encoded(cipher,LIMIT,'encrypted message');
     await certificateStore.assertContact(item.contact);unchanged(generation);
+    if(identitySelection){await identitySelection.assert(item.identity);unchanged(generation);}
     // Ciphertext comes only from the fixed signing worker after its independent
     // signature verification and encryption. This layer validates framing and
     // current trust; it cannot prove plaintext equality without recipient keys.
     const outgoing=item.material.service==='Gmail'?{raw:gmailEnvelope(item.account,item.contact.email,cipher)}:
      {space:item.space,cipher,certificate:item.material.senderCertificate};
     unchanged(generation);item.outgoing=outgoing;item.stage='ready';
-    return {review:id,subject:item.material.subject,recipient:item.contact.email,fingerprint:item.contact.fingerprint,space:item.space,service:item.material.service};
+    return {review:id,subject:item.material.subject,recipient:item.contact.email,fingerprint:item.contact.fingerprint,space:item.space,service:item.material.service,
+     ...(item.identity?{sender:item.identity.email,serial:item.identity.serial,senderFingerprint:item.identity.fingerprint}:{})};
    }catch(error){pending.delete(id);throw error;}
   },
   async take(id,service,confirmed,account){

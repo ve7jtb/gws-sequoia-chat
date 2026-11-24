@@ -1640,10 +1640,12 @@ dependencies = [
  "anyhow",
  "base64",
  "getrandom 0.4.3",
+ "ml-kem",
  "sequoia-openpgp",
  "serde_json",
  "sha2",
  "wasm-bindgen",
+ "x25519-dalek",
 ]
 
 [[package]]

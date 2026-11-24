@@ -18,8 +18,13 @@ function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lo
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);}finally{active=false;render();}}
 async function pivSecret(w){
  if(w.binding.kind==='ecdh')return classicalOpen(w.binding,call);
- const r=await call('chat-vault-decapsulate',{payload:w.binding.cipher,recipientKey:w.binding.recipientKey});
- try{const v=await wasm('unwrap',{...r,cipher:w.binding.cipher,vaultId:record?.id||w.vaultId,wrapperId:w.id});return bytes(v.secret);}finally{delete r.sessionKey;}
+ // Reuse the message component boundary, but authenticate a distinct unsigned
+ // vault purpose inside WASM. The native helper never sees the vault envelope.
+ const started=epoch;
+ const v=await decryptInIwa({cipher:w.binding.cipher,recipientKey:w.binding.recipientKey,
+  service:'Vault',purpose:'vault',vault:{vaultId:record?.id||w.vaultId,wrapperId:w.id},
+  gate:async()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
+ try{return bytes(v.secret);}finally{delete v.secret;}
 }
 async function prf(w){const r=await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
 async function enroll(type,check){

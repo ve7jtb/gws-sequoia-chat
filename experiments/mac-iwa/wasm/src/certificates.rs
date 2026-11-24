@@ -10,6 +10,7 @@ use sequoia_openpgp as pgp;
 use pgp::{cert::CertParser, parse::Parse, policy::StandardPolicy,
           serialize::SerializeInto, types::PublicKeyAlgorithm as A};
 use wasm_bindgen::prelude::*;
+use sha2::{Digest, Sha256};
 
 fn inspect(input: &str) -> Result<String> {
     ensure!(input.len() <= 360000, "Certificate request limit");
@@ -65,6 +66,51 @@ fn inspect(input: &str) -> Result<String> {
 #[wasm_bindgen]
 pub fn inspect_public(input: &str) -> Result<String, JsValue> {
     inspect(input).map_err(|_| JsValue::from_str("Public certificate inspection rejected"))
+}
+
+/// Describe an own public identity without granting hardware authority.
+///
+/// This intentionally remains separate from inspect_public's stable contact
+/// schema. The caller may use these fingerprints to offer a supported identity,
+/// but the native helper must independently authenticate its signed card bundle
+/// and match its live keys before a PIN or private operation is allowed.
+pub(super) fn inspect_identity_value(certificate: &str) -> Result<serde_json::Value> {
+    // Reuse the single-public-certificate parser, including secret-packet,
+    // multiple-certificate and self-certified-mailbox checks. Reparse only its
+    // canonical output so armor and line-ending variants cannot alter the hash.
+    let input = serde_json::json!({"certificate":certificate}).to_string();
+    let mut info: serde_json::Value = serde_json::from_str(&inspect(&input)?)?;
+    let raw = B64.decode(info["certificate"].as_str().context("Canonical public certificate required")?)?;
+    let cert = pgp::Cert::from_bytes(&raw)?;
+    let policy = StandardPolicy::new();
+    let signing: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
+        .for_signing().filter(|ka| ka.key().version() == 6 && ka.key().pk_algo() == A::MLDSA65_Ed25519)
+        .map(|ka| ka.key().fingerprint().to_hex()).collect();
+    let encryption: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
+        .for_transport_encryption().filter(|ka| ka.key().version() == 6 && ka.key().pk_algo() == A::MLKEM768_X25519)
+        .map(|ka| ka.key().fingerprint().to_hex()).collect();
+    let supported = info["hybridContact"] == true && signing.len() == 1 && encryption.len() == 1;
+    info["certificateHash"] = serde_json::json!(format!("{:x}", Sha256::digest(&raw)));
+    info["supported"] = serde_json::json!(supported);
+    // Unsupported, expired or ambiguous identities stay inspectable but cannot
+    // provide an actionable subkey selection. Never silently choose the first
+    // of several signing or encryption subkeys from a certificate.
+    info["signingFingerprint"] = if supported {serde_json::json!(signing[0])} else {serde_json::Value::Null};
+    info["recipientKey"] = if supported {serde_json::json!(encryption[0])} else {serde_json::Value::Null};
+    Ok(info)
+}
+
+/// Return current Level 3 operation capabilities and the full canonical hash.
+#[wasm_bindgen]
+pub fn inspect_identity(input: &str) -> Result<String, JsValue> {
+    let run = || -> Result<String> {
+        ensure!(input.len() <= 360000, "Identity request limit");
+        let value: serde_json::Value = serde_json::from_str(input)?;
+        let object = value.as_object().context("Object required")?;
+        ensure!(object.len() == 1 && object.contains_key("certificate"), "Unexpected fields");
+        Ok(serde_json::to_string(&inspect_identity_value(value["certificate"].as_str().context("Public certificate required")?)?)?)
+    };
+    run().map_err(|_| JsValue::from_str("Public identity inspection rejected"))
 }
 
 #[cfg(test)]
@@ -127,9 +173,68 @@ mod tests {
     fn classical_public_certificates_are_verification_only() {
         let (cert,_)=CertBuilder::new().add_userid("classical@example.invalid")
             .add_signing_subkey().add_transport_encryption_subkey().generate().unwrap();
-        let value=inspect_bytes(&cert.strip_secret_key_material().to_vec().unwrap()).unwrap();
+        let value=inspect_bytes(&cert.clone().strip_secret_key_material().to_vec().unwrap()).unwrap();
         assert_eq!(value["version"],4);
         assert_eq!(value["emails"],serde_json::json!(["classical@example.invalid"]));
         assert_eq!(value["hybridContact"],false);
+        let identity=inspect_identity_value(&B64.encode(cert.strip_secret_key_material().to_vec().unwrap())).unwrap();
+        assert_eq!(identity["supported"],false);
+        assert_eq!(identity["signingFingerprint"],serde_json::Value::Null);
+        assert_eq!(identity["recipientKey"],serde_json::Value::Null);
+    }
+
+    #[test]
+    fn own_identity_selection_binds_canonical_packets_and_exact_subkeys() {
+        let (cert, _) = identity();
+        let public=cert.clone().strip_secret_key_material().to_vec().unwrap();
+        let info=inspect_identity_value(&B64.encode(&public)).unwrap();
+        assert_eq!(info["supported"],true);
+        assert_eq!(info["fingerprint"],cert.fingerprint().to_hex());
+        assert_eq!(info["certificateHash"],format!("{:x}",Sha256::digest(&public)));
+        let policy=StandardPolicy::new();
+        assert_eq!(info["signingFingerprint"],cert.keys().with_policy(&policy,None).for_signing().next().unwrap().key().fingerprint().to_hex());
+        assert_eq!(info["recipientKey"],cert.keys().with_policy(&policy,None).for_transport_encryption().next().unwrap().key().fingerprint().to_hex());
+        assert!(inspect_identity_value(&B64.encode(cert.as_tsk().to_vec().unwrap())).is_err());
+        let (ambiguous, _)=CertBuilder::new().set_profile(pgp::Profile::RFC9580).unwrap()
+            .set_cipher_suite(CipherSuite::MLDSA65_Ed25519).add_userid("alice@example.invalid")
+            .add_signing_subkey().add_signing_subkey().add_transport_encryption_subkey().generate().unwrap();
+        let ambiguous=inspect_identity_value(&B64.encode(ambiguous.strip_secret_key_material().to_vec().unwrap())).unwrap();
+        assert_eq!(ambiguous["supported"],false);
+        assert_eq!(ambiguous["signingFingerprint"],serde_json::Value::Null);
+    }
+
+    #[test]
+    fn own_identity_requires_current_operation_flags_not_algorithm_names() {
+        // A hardware inventory may contain all the expected algorithms while
+        // its certificate grants different roles. Only currently bound signing
+        // and transport-encryption usages may become actionable in Compose or
+        // recipient matching; storage-only, certification-only and expired
+        // subkeys must not be promoted based on their public algorithm IDs.
+        use pgp::types::KeyFlags;
+        let builder=|| CertBuilder::new().set_profile(pgp::Profile::RFC9580).unwrap()
+            .set_cipher_suite(CipherSuite::MLDSA65_Ed25519)
+            .add_userid("alice@example.invalid");
+        let certificates=[
+            builder().add_signing_subkey().add_storage_encryption_subkey().generate().unwrap().0,
+            builder().add_certification_subkey().add_transport_encryption_subkey().generate().unwrap().0,
+            builder().set_creation_time(SystemTime::now()-Duration::from_secs(7200))
+                .add_signing_subkey()
+                .add_subkey(KeyFlags::empty().set_transport_encryption(),
+                    Some(Duration::from_secs(60)), None).generate().unwrap().0,
+        ];
+        for certificate in certificates {
+            let info=inspect_identity_value(&B64.encode(certificate.strip_secret_key_material().to_vec().unwrap())).unwrap();
+            assert_eq!(info["emails"],serde_json::json!(["alice@example.invalid"]));
+            assert_eq!(info["supported"],false);
+            assert_eq!(info["signingFingerprint"],serde_json::Value::Null);
+            assert_eq!(info["recipientKey"],serde_json::Value::Null);
+        }
+        // Whole-certificate revocation must override otherwise current
+        // operation keys and their valid self-certified mailbox bindings.
+        let (certificate, revocation)=identity();
+        let revoked=certificate.strip_secret_key_material().insert_packets(Some(revocation)).unwrap().0;
+        let info=inspect_identity_value(&B64.encode(revoked.to_vec().unwrap())).unwrap();
+        assert_eq!(info["supported"],false);
+        assert_eq!(info["emails"],serde_json::json!([]));
     }
 }

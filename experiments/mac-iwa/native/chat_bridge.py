@@ -42,11 +42,16 @@ LIMIT=262144
 FIELDS={
     'chat-state':set(),
     'chat-certificate-migration':set(),
+    'chat-identity-current':set(),
+    'chat-identity-restore':set(),
+    'chat-identity-import':{'bundle'},
     'chat-signing-material':set(),
+    'chat-selected-signing-material':{'identity'},
     'chat-sign-digest':{'review','requestId','signingFingerprint','digest','hashAlgorithm'},
-    'chat-decap':{'payload','service'},
+    'chat-decryption-material':{'service'},
+    'chat-selected-decryption-material':{'service','identity'},
+    'chat-decapsulate-components':{'review','service','requestId','cipherHash','recipientKey','mlkemCiphertext','x25519Ephemeral'},
     'chat-vault-material':set(),
-    'chat-vault-decapsulate':{'payload','recipientKey'},
     'chat-vault-ecdh':{'peer','fingerprint'},
 }
 
@@ -54,13 +59,26 @@ def validate(request):
     op=request.get('op')
     if op not in FIELDS or set(request)!=(FIELDS[op]|{'op'}):raise ValueError('Unsupported fields')
     for k,v in request.items():
-        if k=='attachments':
+        if k=='identity':
+            from identities import selection
+            selection(v)
+        elif k=='attachments':
             validate_attachments(v)
         elif k=='hashAlgorithm':
             if type(v) is not int or v!=10:raise ValueError('SHA-512 required')
         elif k=='confirmed':
             if v is not True:raise ValueError('Confirmation required')
         elif not isinstance(v,str) or len(v)>400000:raise ValueError('Invalid text')
+    if op=='chat-identity-import':
+        from identities import bundle_bytes
+        bundle_bytes(request['bundle'])
+    if op=='chat-decryption-material' and request['service'] not in ('Chat','Gmail','Vault'):
+        raise ValueError('Unknown service')
+    if op=='chat-selected-decryption-material' and request['service'] not in ('Chat','Gmail'):
+        raise ValueError('Selected identity is for messages only')
+    if op=='chat-decapsulate-components':
+        from decryption import validate_components
+        validate_components(request)
     if 'page' in request and len(request['page'])>4096:raise ValueError('Page token too long')
     return op
 
@@ -102,10 +120,12 @@ def browser_mime(request,sender,recipient):
 
 def crypto_prompt(op,service):
     """Fixed labels selected by the native route, never arbitrary browser text."""
-    if service=='Vault' and op=='decapsulate-browser':return 'Unlock IWA credential vault — ML-KEM-768 + X25519'
+    if service=='Vault' and op in ('decapsulate-browser','decapsulate-components'):return 'Unlock IWA credential vault — ML-KEM-768 + X25519'
     if service=='Message' and op=='sign-digest':return 'Sign message — ML-DSA-65 + Ed25519'
-    if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','sign-digest','decapsulate-browser','open'):
+    if service not in ('Chat','Gmail') or op not in ('seal','sign-browser','sign-digest','decapsulate-browser','decapsulate-components','open'):
         raise ValueError('Unsupported cryptographic prompt')
+    if op=='decapsulate-components':
+        return 'Unlock decryption key for '+service+(' email' if service=='Gmail' else ' bundle')+' — ML-KEM-768 + X25519'
     action='Unlock decryption key for' if op=='decapsulate-browser' else ('Sign' if op in ('sign-browser','sign-digest') else ('Sign and encrypt' if op=='seal' else 'Decrypt and verify'))
     return action+' '+service+(' email' if service=='Gmail' else ' bundle')
 
@@ -135,16 +155,31 @@ class ChatBridge:
                 json.dump(history[-20:],out,indent=2)
             os.replace(temporary,path)
         except (OSError,ValueError):pass # Logging must not trigger a crypto retry.
-    def crypto(self,op,peer,payload,service="Chat",signing=None):
+    def crypto(self,op,peer,payload,service="Chat",signing=None,components=None,identity=None):
+        if op=='decapsulate-components':
+            from decryption import validate_components
+            validate_components(components)
         if len(payload)>LIMIT:raise ValueError('Message too large')
+        # Selected authority comes only from a consumed native grant created
+        # after signed-bundle and live-public-key verification. Never mutate
+        # self.cfg: existing vault enrollments and simultaneous app windows
+        # must retain the configured default identity.
+        chosen_serial=self.cfg['serial']
+        own=None
+        if identity is not None:
+            if op not in ('sign-digest','decapsulate-components') or service=='Vault':
+                raise ValueError('Selected identity is for message operations only')
+            from identities import operation_context
+            identity=operation_context(identity)
+            chosen_serial=identity['serial'];own=identity['certificate']
         serials=subprocess.check_output([self.cfg['ykman'],'list','--serials'],stderr=subprocess.DEVNULL,timeout=25).decode().split()
-        if self.cfg['serial'] not in serials:raise ValueError('Expected YubiKey not connected')
+        if chosen_serial not in serials:raise ValueError('Connect YubiKey '+chosen_serial)
         prompt=crypto_prompt('open' if op=='open-browser' else op,service)
         self.emit({'type':'progress','message':prompt+' — use the native PIN dialog, then touch if requested.'})
         # The PIN never reaches Chrome. Supply only a bounded anonymous pipe to
         # the one-shot worker; both components share this operation's PIN.
         try:
-            ui=subprocess.run([str(self.root/'build/pin-prompt'),prompt,self.cfg['serial']],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=180)
+            ui=subprocess.run([str(self.root/'build/pin-prompt'),prompt,chosen_serial],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=180)
         except subprocess.TimeoutExpired:
             # subprocess.run has killed/reaped the dialog. No crypto worker
             # has started, so this fixed label cannot mean a token PIN failure.
@@ -153,15 +188,23 @@ class ChatBridge:
         pin=bytearray(ui.stdout)
         try:
             if ui.returncode or not 6<=len(pin)<=8 or any(c<32 or c>126 for c in pin):raise ValueError('PIN cancelled or invalid')
+            if own is None:own=base64.b64encode(Path(self.cfg['cert']).read_bytes()).decode()
             app=Path(self.cfg['app'])
-            request={'op':op,'pin':pin.decode('ascii'),'own':base64.b64encode(Path(self.cfg['cert']).read_bytes()).decode(),'peer':base64.b64encode(peer.read_bytes()).decode(),'payload':base64.b64encode(payload).decode(),
-              'config':{'python':'/usr/bin/python3','adapters':str(app/'adapters'),'openssl':str(app/'native/bin/openssl'),'provider':str(app/'native/lib/pkcs11.dylib'),'module':str(app/'native/lib/libykcs11.dylib'),'serial':self.cfg['serial']}}
+            request={'op':op,'pin':pin.decode('ascii'),'own':own,'peer':base64.b64encode(peer.read_bytes()).decode() if peer is not None else '', 'payload':base64.b64encode(payload).decode(),
+              'config':{'python':'/usr/bin/python3','adapters':str(app/'adapters'),'openssl':str(app/'native/bin/openssl'),'provider':str(app/'native/lib/pkcs11.dylib'),'module':str(app/'native/lib/libykcs11.dylib'),'serial':chosen_serial}}
             if op=='sign-digest':
                 # Only these bounded digest fields cross the private-operation
                 # boundary. No message, supplied certificate, slot or PIN comes
                 # from the browser; the own certificate/config are local.
                 request.pop('payload');request.pop('peer')
                 request.update({k:signing[k] for k in ('requestId','signingFingerprint','hashAlgorithm','digest')})
+            if op=='decapsulate-components':
+                # The whole OpenPGP envelope and wrapped session key never
+                # reach native code. Only bounded component inputs and opaque
+                # bindings are allowed; expected keys remain locally configured.
+                from decryption import BINDINGS
+                request.pop('payload');request.pop('peer')
+                request.update({k:components[k] for k in BINDINGS})
             wire=json.dumps(request).encode();request.pop('pin');del ui
             # PIV_UNLOCK_DIAGNOSTICS: timer is only for the optional history.
             started=time.monotonic()
@@ -186,6 +229,16 @@ class ChatBridge:
                 if len(base64.b64decode(packet['ed25519'],validate=True))!=64 or len(base64.b64decode(packet['mldsa65'],validate=True))!=3309:
                     raise ValueError('Signature component size mismatch')
                 return packet
+            if op=='decapsulate-components':
+                from decryption import BINDINGS,canonical_bytes
+                if set(packet)!=set(BINDINGS)|{'mlkemSecret','x25519Secret'} or any(packet[k]!=components[k] for k in BINDINGS):
+                    raise ValueError('Decapsulation response binding mismatch')
+                canonical_bytes(packet['mlkemSecret'],32)
+                if not any(canonical_bytes(packet['x25519Secret'],32)):
+                    raise ValueError('Invalid X25519 shared secret')
+                # These per-operation shares exist only in this pipe response;
+                # the IWA worker combines them and never persists either one.
+                return packet
             result=base64.b64decode(packet['data'],validate=True)
             if len(result)>LIMIT:raise ValueError('Oversize cryptographic result')
             if op=='decapsulate-browser':
@@ -207,24 +260,31 @@ class ChatBridge:
         op=validate(request)
         with (self.data/'operation.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if op in ('chat-identity-current','chat-identity-restore','chat-identity-import'):
+                # Inventory discovery never changes the fixed operational key.
+                from identities import current,preview
+                return current(self) if op=='chat-identity-current' else preview(self,request.get('bundle'))
             if op=='chat-certificate-migration':
                 from certificate_migration import snapshot
                 return snapshot(self)
             if op=='chat-signing-material':
                 from signing import prepare
                 return prepare(self)
+            if op=='chat-selected-signing-material':
+                from signing import prepare
+                return prepare(self,request['identity'])
             if op=='chat-sign-digest':
                 from signing import sign
                 return sign(self,request)
-            if op=='chat-decap':
-                if request['service'] not in ('Gmail','Chat'):raise ValueError('Unknown service')
-                cipher=base64.b64decode(request['payload'],validate=True)
-                if not 1<=len(cipher)<=LIMIT:raise ValueError('Ciphertext limit')
-                # Recipient selection and hardware slots come only from local
-                # configuration. The browser verifies sender/trust after AEAD.
-                result=self.crypto('decapsulate-browser',Path(self.cfg['cert']),cipher,
-                                   service=request['service'])
-                return {**result,'cipher':request['payload']}
+            if op=='chat-decryption-material':
+                from decryption import prepare
+                return prepare(self,request['service'])
+            if op=='chat-selected-decryption-material':
+                from decryption import prepare
+                return prepare(self,request['service'],request['identity'])
+            if op=='chat-decapsulate-components':
+                from decryption import components
+                return components(self,request)
             if op=='chat-vault-ecdh':
                 from vault_piv import recover
                 return recover(self,request)
@@ -233,13 +293,6 @@ class ChatBridge:
                 if len(raw)>65536:raise ValueError('Certificate limit')
                 from vault_piv import configured
                 return {'certificate':base64.b64encode(raw).decode(),'serial':self.cfg['serial'],'algorithm':'ML-KEM-768 + X25519','classical':configured(self)}
-            if op=='chat-vault-decapsulate':
-                if not re.fullmatch('[A-F0-9]{64}',request['recipientKey']):raise ValueError('Invalid recipient')
-                cipher=base64.b64decode(request['payload'],validate=True)
-                if not 1<=len(cipher)<=16384:raise ValueError('Vault envelope limit')
-                result=self.crypto('decapsulate-browser',Path(self.cfg['cert']),cipher,service='Vault')
-                if result['recipientKey']!=request['recipientKey']:raise ValueError('Wrong PIV key')
-                return result
             if op=='chat-state':
                 # The configured sender certificate is hardware-binding metadata,
                 # not a recipient trust decision. Never return native contacts.

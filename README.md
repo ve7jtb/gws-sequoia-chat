@@ -4,6 +4,17 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.14.0 connects restored identities to message operations.** Compose now
+selects a saved Level 3 v6 identity matching the account, with its certificate,
+algorithms and YubiKey serial visible. Incoming ciphertext is matched in WASM to
+saved recipient subkeys, then reviewed before the selected key's PIN prompt.
+Native code re-authenticates the live signed bundle and exact certificate binding;
+it never falls back to the default vault identity. Vault enrollment and recipient
+trust remain separate. The installed preview passed offline signing/encryption
+to independent Sequoia and automatic recipient matching/decryption of its reply,
+with valid hybrid signatures, exact attachments and unchanged keys/touch policies.
+See [selection and recipient matching](experiments/mac-iwa/README.md#selected-sending-identities-and-recipient-matching-0140-preview).
+
 The separate [signed Mac IWA experiment](experiments/mac-iwa/README.md) now also
 constructs Level 3 v6 OpenPGP signatures in a browser WASM worker. Its native
 PKCS#11 bridge receives only the signing digest and returns hybrid signature
@@ -50,6 +61,29 @@ with a temporary Dock entry and specific pre-submission timeout/cancel errors.
 **65 Python tests pass**, including four regressions ensuring those failures
 never start private cryptography. See the [0.11.3 test and PIN fix](experiments/mac-iwa/README.md#binary-gmail-reception-and-native-pin-dialog-0113)
 and [MIME investigation](docs/gmail-mime-rewriting.md#captured-binary-delivery-in-installed-iwa-0113).
+
+**IWA 0.13.0 adds an Identities screen** for own public certificates, algorithms,
+YubiKey serial and slot mappings. Restore from the configured Level 3 YubiKey or
+import a public certificate/bundle from file, review it, then save in the IWA.
+Bundle authentication and live public-key matching are read-only; no PIN or card
+write is needed. Own identities remain separate from recipient trust and do not
+change the helper’s active identity. The installed preview passed physical
+YubiKey restore of all three OpenPGP certificate views and ten slot mappings,
+including persistence after a full restart. All 24 slot records and PIN/touch
+policies were unchanged, with PIN retries at 3/3 and no PIN operation or card
+write. See [identity restore and its scope](experiments/mac-iwa/README.md#own-identities-and-reviewed-public-restore-0130-preview).
+
+**IWA 0.12.0 moves recipient-packet parsing, the hybrid combiner and session-key
+recovery into WASM**, including existing PIV vault unlocks. The native helper
+performs only the fixed ML-KEM-768/X25519 private operations for this flow; full
+encrypted messages and recovered session keys stay in the IWA. One-use grants,
+response bindings and cancellation checks replace the retired native envelope
+routes. Software validation passes 136 JavaScript tests, five actual-worker
+integration tests, 74 Python tests and 21 Rust tests. The installed update passed
+physical YubiKey vault unlock and local reception of the prior binary Gmail test:
+**Valid hybrid / Trusted**, exact 48-byte attachment, unchanged keys/policies and
+PIN retries **3/3**. No new message was sent. See the
+[new decryption boundary](experiments/mac-iwa/README.md#browser-owned-recipient-parsing-and-hybrid-recovery-0120-preview).
 
 **Installed IWA 0.11.4 passed signed-and-encrypted Google Chat in both directions
 on 2026-11-23.** Sequoia decrypted and verified the IWA's delivered hybrid message;

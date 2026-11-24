@@ -12,6 +12,12 @@ sha2 = "0.10"
 serde_json = "1"
 wasm-bindgen = "=0.2.130"
 sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d", default-features = false, features = ["crypto-rust", "compression-deflate", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+[dev-dependencies]
+# Tests emulate the two card operations with disposable software keys. These
+# algorithms already occur in Sequoia's locked dependency graph; no hardware
+# library or provisioning command participates in the regression tests.
+ml-kem = { version = "=0.3.4", default-features = false, features = ["zeroize"] }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 [profile.release]

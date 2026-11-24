@@ -10,8 +10,10 @@ use pgp::cert::amalgamation::ValidAmalgamation;
 use wasm_bindgen::prelude::*;
 mod signing;
 pub use signing::{prepare_signing, finalize_signing, cancel_signing};
+mod decryption;
+pub use decryption::{prepare_decryption, finalize_decryption, cancel_decryption, match_recipients};
 mod certificates;
-pub use certificates::inspect_public;
+pub use certificates::{inspect_public, inspect_identity};
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}

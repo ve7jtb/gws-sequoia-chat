@@ -81,23 +81,49 @@ test('Chat media path rejects injected origins and traversal',()=>{for(const bad
 test('Chat rejects certificate links outside conversation before download',async()=>{
  const t=createTransport({profile:async()=>{},request:async()=>({text:'Certificate message: spaces/other/messages/a'})});await assert.rejects(t.call('chat-open',{message:'spaces/test/messages/b',contact:'a'},()=>assert.fail('no native call'),{account:'test@example.org',contacts:[]}),/leaves conversation/);
 });
-test('signing preparation resolves browser trust before native key discovery and carries no recipient to native',async()=>{
+// The transport must carry only the selected public authority tuple to native
+// discovery. Recipient trust, MIME and Google access remain in the IWA.
+function selectedIdentity(account='test@example.org'){return {id:'selected-id',revision:2,
+ serial:'12345678',bundleHash:'b'.repeat(64),fingerprint:'C'.repeat(64),
+ certificateHash:'d'.repeat(64),email:account};}
+function binding(identity){const {serial,bundleHash,fingerprint,certificateHash,email}=identity;
+ return {serial,bundleHash,fingerprint,certificateHash,email};}
+function identitySelection(identity,calls=[]){return {
+ get:async(id,account)=>{assert.equal(id,identity.id);assert.equal(account,identity.email);calls.push({op:'local-identity'});return identity;},
+ nativeBinding:binding,
+ validateMaterial:async(own,selected,kind)=>{assert.equal(kind,'signing');assert.equal(selected,identity);
+  assert.deepEqual(own.identity,binding(identity));calls.push({op:'material-validated'});}
+};}
+test('signing preparation resolves trust and selected identity before public-only native discovery',async()=>{
  const calls=[];let accounts=0;
  const transport=createTransport({profile:async()=>{accounts++;},request:()=>assert.fail('No Google message upload during preparation')});
- const contact={id:'trusted-id',email:'recipient@example.invalid',fingerprint:'A'.repeat(64)};
- const context={account:'test@example.org',certificateStore:{trustedContact:async id=>{assert.equal(id,contact.id);calls.push({op:'local-trust'});return contact;}},composeReviews:{prepare:async(own,peer,metadata)=>({own,peer,metadata})}};
+ const contact={id:'trusted-id',email:'recipient@example.invalid',fingerprint:'A'.repeat(64)},identity=selectedIdentity();
+ const context={account:identity.email,identitySelection:identitySelection(identity,calls),
+  certificateStore:{trustedContact:async id=>{assert.equal(id,contact.id);calls.push({op:'local-trust'});return contact;}},
+  composeReviews:{prepare:async(own,peer,metadata)=>({own,peer,metadata})}};
  for(const service of ['Gmail','Chat']){
-  const input={contact:'trusted-id',subject:'Synthetic signing test',...(service==='Chat'?{space:'spaces/test'}:{})};
+  const input={contact:'trusted-id',identity:identity.id,subject:'Synthetic signing test',...(service==='Chat'?{space:'spaces/test'}:{})};
   const output=await transport.call(service==='Gmail'?'chat-mail-prepare':'chat-prepare',input,async(op,data)=>{
-   calls.push({op,data});return {review:'prepared'};
+   calls.push({op,data});return {review:'prepared',identity:binding(identity)};
   },context);
-  assert.equal(output.peer,contact);assert.equal(output.metadata.service,service);
-  assert.equal(calls.at(-2).op,'local-trust');assert.equal(calls.at(-1).op,'chat-signing-material');
-  assert.deepEqual(calls.at(-1).data,{});
+  assert.equal(output.peer,contact);assert.equal(output.metadata.service,service);assert.equal(output.metadata.identity,identity);
+  assert.deepEqual(calls.slice(-4).map(c=>c.op),['local-trust','local-identity','chat-selected-signing-material','material-validated']);
+  assert.deepEqual(calls.at(-2).data,{identity:binding(identity)});
  }
  assert.equal(accounts,0);
  context.certificateStore.trustedContact=async()=>{throw Error('Trust removed');};
- await assert.rejects(transport.call('chat-mail-prepare',{contact:'trusted-id',subject:'Test'},()=>assert.fail('Untrusted recipient must not reach native'),context),/Trust removed/);
+ await assert.rejects(transport.call('chat-mail-prepare',{contact:'trusted-id',identity:identity.id,subject:'Test'},()=>assert.fail('Untrusted recipient must not reach native'),context),/Trust removed/);
+});
+test('missing selection or mismatched native identity cannot create a signing review',async()=>{
+ const identity=selectedIdentity(),transport=createTransport({profile:()=>assert.fail('No OAuth preparation')}),calls=[];
+ const context={account:identity.email,identitySelection:identitySelection(identity),
+  certificateStore:{trustedContact:async()=>({email:'peer@example.invalid'})},
+  composeReviews:{prepare:()=>assert.fail('Invalid selected identity cannot reach review')}};
+ await assert.rejects(transport.call('chat-mail-prepare',{contact:'trusted',subject:'Missing identity'},
+  ()=>assert.fail('Missing identity cannot reach native'),context));
+ await assert.rejects(transport.call('chat-mail-prepare',{contact:'trusted',identity:identity.id,subject:'Wrong serial'},
+  async(op,data)=>{calls.push(op);return {identity:{...data.identity,serial:'87654321'}};},context));
+ assert.deepEqual(calls,['chat-selected-signing-material']);
 });
 test('certificate save/trust routes are no longer Google or native transport operations',()=>{
  const t=createTransport({});for(const op of ['chat-mail-cert-save','chat-mail-cert-trust'])assert.equal(t.handles(op),false);
@@ -127,8 +153,9 @@ test('Chat public certificate matching uses WASM-backed browser store and rechec
 test('offline preparation needs no OAuth but send still rejects an absent account session',async()=>{
  let uploads=0,consumed=0,signing=0;
  const transport=createTransport({profile:async()=>{throw Error('Sign in required');},request:async()=>{uploads++;}});
- const context={account:'sender@example.invalid',certificateStore:{trustedContact:async()=>({email:'recipient@example.invalid'})},composeReviews:{prepare:async()=>({review:'ready'}),take:async()=>{consumed++;}}};
- const result=await transport.call('chat-mail-prepare',{contact:'saved',subject:'Offline test'},async op=>{assert.equal(op,'chat-signing-material');signing++;return {};},context);
+ const identity=selectedIdentity('sender@example.invalid');
+ const context={account:identity.email,identitySelection:identitySelection(identity),certificateStore:{trustedContact:async()=>({email:'recipient@example.invalid'})},composeReviews:{prepare:async()=>({review:'ready'}),take:async()=>{consumed++;}}};
+ const result=await transport.call('chat-mail-prepare',{contact:'saved',identity:identity.id,subject:'Offline test'},async op=>{assert.equal(op,'chat-selected-signing-material');signing++;return {identity:binding(identity)};},context);
  assert.equal(result.review,'ready');assert.equal(signing,1);
  await assert.rejects(transport.call('chat-mail-send',{review:'ready',confirmed:true},()=>assert.fail('No private operation during send'),context),/Sign in required/);
  assert.equal(consumed,0);assert.equal(uploads,0);

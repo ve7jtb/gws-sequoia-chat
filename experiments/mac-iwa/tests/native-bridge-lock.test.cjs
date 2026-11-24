@@ -133,6 +133,9 @@ test('certificate mutation and draft routes never reach Native Messaging', () =>
   const s = setup();
   for (const op of ['chat-preview','chat-trust','chat-cert-list','chat-cert-untrust',
     'chat-cert-delete','chat-verification-material','chat-decrypt',
+    // A stale IWA cannot fall back to full native OpenPGP parsing or request an
+    // exported session key after the component-only boundary is installed.
+    'chat-decap','chat-vault-decapsulate',
     'chat-browser-prepare','chat-browser-export','chat-browser-cert-save',
     'chat-browser-cert-trust','chat-encryption-complete']) {
     const client = s.client(); client.onMessage.emit({op});
@@ -141,6 +144,19 @@ test('certificate mutation and draft routes never reach Native Messaging', () =>
   assert.equal(s.connections.length, 0);
   const migration = s.client(); migration.onMessage.emit({op:'chat-certificate-migration'});
   assert.equal(s.connections.length, 1);
+});
+
+test('split decryption grants and component calls retain the native ownership lock', () => {
+  const s=setup(),prepare=s.client();
+  prepare.onMessage.emit({op:'chat-decryption-material',service:'Gmail'});
+  assert.equal(s.connections.length,1);
+  s.connections[0].onMessage.emit({type:'result',data:{review:'synthetic grant'}});
+  const components=s.client();components.onMessage.emit({op:'chat-decapsulate-components'});
+  assert.equal(s.connections.length,2);
+  const other=s.client();other.onMessage.emit({op:'status'});
+  assert.equal(s.connections.length,2);assert.equal(other.messages.at(-1).type,'error');
+  s.connections[1].onMessage.emit({type:'result',data:{componentResult:'synthetic'}});
+  other.onMessage.emit({op:'status'});assert.equal(s.connections.length,3);
 });
 
 test('only exact IWA top-level ports can delegate Chat attachments, never to native', () => {
@@ -161,4 +177,20 @@ test('only exact IWA top-level ports can delegate Chat attachments, never to nat
   const busy=s.client();busy.onMessage.emit({op:'google-chat-upload'});
   assert.equal(s.delegated.length,2);
   assert.equal(busy.messages.at(-1).type,'error');
+});
+
+// Public restore uses the same exact-origin/root-frame relay as private hardware
+// calls. This test only covers relay authorization; native schema tests reject
+// caller-selected paths/slots, and bundle tests authenticate public contents.
+test('own identity metadata and bundle reads use the scoped native relay', () => {
+  for (const request of [{op:'chat-identity-current'}, {op:'chat-identity-restore'},
+    {op:'chat-identity-import',bundle:'synthetic-public-fixture'}]) {
+    const s=setup(),client=s.client();client.onMessage.emit(request);
+    assert.equal(s.connections.length,1);
+    assert.deepEqual(s.connections[0].messages,[request]);
+    s.connections[0].onMessage.emit({type:'result',data:{public:true}});
+    assert.deepEqual(client.messages,[{type:'result',data:{public:true}}]);
+    const foreign=s.client({origin:'https://wrong.invalid',url:origin+'/',frameId:0});
+    foreign.onMessage.emit(request);assert.equal(s.connections.length,1);
+  }
 });

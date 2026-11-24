@@ -7,7 +7,215 @@ YubiKey operations and the Google/passkey authorization UI. The repository's
 main loopback Mail/Chat application remains separate. There is no listening HTTP
 server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
-in the 0.11 section below. This change does not move the main loopback app's store.
+in the latest sections below. This change does not move the main loopback app's store.
+
+## Selected sending identities and recipient matching (0.14.0 preview)
+
+Compose **Send as** lists saved, bundle-authenticated Level 3 v6 identities whose
+currently certified email matches the mail account. Each choice shows the
+certificate fingerprint, hybrid algorithms and YubiKey serial. Public certificates
+without a verified hardware mapping and the saved v4 views are not outgoing
+identities in this preview. Software identities and other hardware profiles remain
+outside this selection flow.
+
+Before decryption, a public-only WASM worker matches the named recipient subkey
+to the IWA's saved own certificates. The review shows the matching certificate,
+serial and decryption slots; if several saved devices match, the user
+chooses explicitly. No match stops before PIN entry. Connecting the wrong key
+produces an instruction to insert the selected serial, without submitting a PIN.
+
+For both operations the native helper re-reads and authenticates that device's
+signed on-key bundle, checks the full canonical certificate hash, primary
+fingerprint and certified mailbox, and derives the supported slot mapping itself.
+Browser data cannot choose an executable, arbitrary slot or private-operation
+backend. A one-use grant binds the selected public context and installed backend;
+PKCS#11 still checks the live public keys before its private operation. There is
+no silent fallback to the default key. Removing or replacing an own identity,
+changing contact trust, locking the vault or cancelling invalidates pending work.
+The worker's ciphertext hash is checked independently before requesting hardware
+shares, as well as during WASM finalization.
+
+The existing default vault identity and its enrollment are unchanged. The IWA
+inventory contains only public material; private keys and PIN entry remain native.
+Selected message operations do not rewrite helper configuration, device keys,
+card certificates or touch policies.
+
+Validation passes **166 JavaScript tests, 98 Python tests, 14 WASM Rust tests
+and 15 native Rust tests**, plus actual-worker interoperability checks. Coverage
+includes exact certificate/subkey matching, expiry/revocation and usage flags,
+multiple-device selection, changed inventory and trust, wrong ciphertext bindings,
+one-use grants, wrong-card rejection before PIN, and preservation of vault routing.
+The installed 0.14.0 bundle is signature-verified and byte-identical to the tested
+build. Physical public-only preparation passed for signing and decryption.
+
+**Installed 0.14.0 offline interoperability passed in both directions on
+2026-11-23.** Compose selected the restored Level 3 v6 identity, signed with its
+existing YubiKey components and exported encrypted PGP/MIME. Independent Sequoia
+decrypted it and verified the hybrid signature, expected protected headers and
+plain text, HTML content and all 66 attachment bytes. Sequoia's fresh encrypted
+reply automatically matched the saved identity and displayed its serial,
+certificate fingerprint, recipient subkey and slots 9d/85 before PIN entry. The
+IWA then displayed **Encrypted (decrypted) / Valid hybrid / Trusted**, the expected
+subject and text/HTML; all 63 downloaded attachment bytes matched. An earlier
+reply attempt timed out before PIN submission; the successful run was explicitly
+restarted by the user. No email was sent and no keys or policies were changed.
+The final snapshot matched all 24 PIV slot records, ten occupied keys, PIN/touch
+policies and eleven protected configuration/backend files against the original
+pre-update baseline. PIN retries remained **3/3**.
+
+### Reproduce the current regression tests
+
+Run from the repository root with the native build prerequisites below, Node 24,
+Rust 1.88 and `wasm-bindgen-cli` 0.2.130 installed. The commands generate disposable
+software fixtures and use a synthetic public-only card transport. They do not
+connect a YubiKey, request credentials or access mail. Generated fixture files
+stay outside the repository; the split fixture contains disposable component
+shares and must never be replaced with captured real-operation secrets.
+
+```sh
+npm ci --ignore-scripts --prefix experiments/mac-iwa
+mkdir -p experiments/mac-iwa/app/vendor/postal-mime
+cp experiments/mac-iwa/node_modules/postal-mime/dist/esm/*.js \
+  experiments/mac-iwa/app/vendor/postal-mime/
+mkdir -p /tmp/iwa-public-fixtures
+export IWA_PUBLIC_TEST_FIXTURES=/tmp/iwa-public-fixtures
+export CARGO_TARGET_DIR=/tmp/iwa-native-test-target
+cargo test --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+cargo build --release --locked --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+export IWA_CRYPTO_TEST_BIN="$CARGO_TARGET_DIR/release/sequoia-iwa-crypto"
+python3 -m unittest discover -s experiments/mac-iwa/tests -p 'test_*.py'
+export IWA_SPLIT_DECAP_FIXTURE=/tmp/iwa-split-decap-fixture.json
+CARGO_TARGET_DIR=/tmp/iwa-wasm-host-test-target cargo +1.88.0 test --locked \
+  --manifest-path experiments/mac-iwa/wasm/Cargo.toml
+# The build script owns separate baseline/wide target directories.
+env -u CARGO_TARGET_DIR sh experiments/mac-iwa/wasm/build.sh
+node --test experiments/mac-iwa/tests/*.test.mjs experiments/mac-iwa/tests/*.test.cjs
+node --test experiments/mac-iwa/tests/identity-worker-interop.mjs \
+  experiments/mac-iwa/tests/decryption-worker-interop.mjs
+node experiments/mac-iwa/wasm/tests/split-decryption.mjs "$IWA_SPLIT_DECAP_FIXTURE"
+```
+
+The Python integrations use `IWA_CRYPTO_TEST_BIN`; without it they are skipped.
+The public signature/verification integrations additionally need
+`IWA_PUBLIC_TEST_FIXTURES`, populated by the native Rust tests above. The actual
+worker tests require freshly built WASM and the generated split fixture. Passing
+these software regressions does not substitute for the separately reported
+physical-key and installed-UI tests.
+
+## Own identities and reviewed public restore (0.13.0 preview)
+
+**Identities** separates your own public certificates from recipient **Contacts**
+and email/fingerprint trust. It displays the helper’s configured certificate,
+algorithms, YubiKey serial and PIV roles/slots, plus an independent inventory in
+`sequoia-iwa-identities` IndexedDB. No private key, PIN, OAuth credential or `.p12`
+password is stored in this inventory.
+
+- **Restore certificate bundle from YubiKey…** reads the signed public bundle
+  from the configured Level 3 key, verifies its envelope and OpenPGP bindings,
+  and matches every mapped public key against the connected device. It needs no
+  PIN and performs no key generation, object writes or touch-policy changes.
+- **Import identity from file** accepts one public OpenPGP certificate or a signed
+  PQ Mail compressed `.pqmzip`/`.pqkey` bundle. Historical uncompressed bundles
+  are rejected. Bundle files require the configured key
+  connected for the same serial/public-key checks. Individual `.asc`/`.pgp`/`.gpg`
+  certificates are parsed in WASM and carry no verified hardware mapping.
+- Both paths show a review before **Save reviewed identity**. Saving does not
+  grant contact trust or change vault enrollment. In 0.14.0, a supported saved
+  identity becomes available in Compose and recipient matching; private-operation
+  authority is rebuilt from its live signed bundle as described above.
+- **Forget local identity** removes only its IWA inventory entry. The device,
+  recipient contacts/trust and installed helper configuration remain unchanged.
+
+Imported bundle checks describe evidence **at import**, not proof that the key
+is currently connected. File imports do not establish the card generation or
+freshness; that limitation appears in the review. The inventory survives app restarts but is removed by
+clearing the IWA’s browser data. Review tokens are single-use and expire; revision
+checks reject concurrent or stale save/removal confirmations. Secret-key packets,
+oversized data and tampered bundles are rejected. File data never chooses a native
+executable, device or private-operation slot. Bundle authentication reuses the
+published Sequoia PIV adapter reader; the native dependency is pinned to commit
+`6b99afc20984e16180e5bbfbabb51d8685d247e1`.
+
+The 0.13.0 milestone added public identity management; active selection arrived
+in 0.14.0 above. Software `.p12` signing remains unsupported. S/MIME, other
+hardware profiles and companion private keys are not imported as usable identities by this IWA preview.
+
+Validation for this update: **153 JavaScript tests, 82 Python tests and 14
+native Rust tests passed**, plus actual shipped WASM integration for all three
+public certificate views and ten slot mappings. The signed installed 0.13.0
+preview displayed its configured metadata, reviewed/imported the configured
+public certificate, and retained that inventory after a full app restart. The
+two existing contact trust bindings remained unchanged. The bundle reader passed
+synthetic signed-bundle, tamper and every-component mismatch tests.
+
+**Physical on-key restore passed in installed 0.13.0 on 2026-11-23.** The signed
+bundle verified against the connected Level 3 YubiKey, with all ten mapped public
+keys matching. The UI reviewed and saved the v6, v4 hybrid and v4 classical
+certificate views; all three and their slot mappings persisted after a full app
+restart. Independent WASM inspection confirmed that the restored v6 canonical
+certificate bytes match the configured identity, while the two v4 views share
+their primary fingerprint but retain distinct certified subkey packets. All 24
+PIV slot records, public-key hashes, PIN/touch policies and eleven protected
+configuration/backend files were unchanged; PIN retries remained **3/3**. No
+PIN, private-key operation, card write or message send occurred.
+
+## Browser-owned recipient parsing and hybrid recovery (0.12.0 preview)
+
+The IWA now retains the entire encrypted OpenPGP message in a disposable WASM
+worker. WASM selects and validates the named Level 3 v6 recipient packet, checks
+the SEIPDv2 AES envelope, combines the ML-KEM-768 and X25519 shared secrets using
+the RFC 9980 SHA3-256 combiner, authenticates the AES key unwrap, and recovers the
+session key. Full AEAD authentication, decompression, MIME reading, signature
+verification and current contact trust checks also run in the IWA. Neither the
+full encrypted message nor its recovered session key crosses Native Messaging.
+
+The helper exposes two new operations: `chat-decryption-material` supplies the
+fixed public recipient and a short-lived grant; `chat-decapsulate-components`
+consumes that grant before PIN entry and performs only the two existing PKCS#11
+private operations. Requests cannot choose a device, slot, path or backend. The
+helper checks its configured identity and live public keys and returns no partial
+result if either component fails. Both shares are bound to the operation ID,
+recipient fingerprint, ciphertext hash and exact component inputs. The ciphertext
+hash is an opaque binding to the helper; WASM checks it against its retained bytes.
+
+The same split flow unlocks existing hybrid PIV vault wrappers. WASM checks a
+separate unsigned vault purpose and the exact vault/wrapper identifiers, so a
+vault envelope cannot be accepted as a signed message. Stored wrapper formats,
+hardware keys and touch policies do not change. The optional classical PIV ECDH
+vault operation remains available. Both old browser routes, `chat-decap` and
+`chat-vault-decapsulate`, are rejected by the extension and native schema gate.
+Legacy native crypto functions used by standalone diagnostic tests are not an
+IWA fallback.
+
+Cancellation, timeout, vault lock and changed reader/trust state destroy the
+worker and discard late results; no private operation is automatically retried.
+WASM consumes pending state before processing a final reply, including a malformed
+one. Component shares remain in memory only for the operation; managed-runtime
+and IPC copies cannot be guaranteed erased. Native PIN entry and the installed
+PKCS#11 backend remain unchanged.
+
+Validation passes **136 JavaScript tests**, **five actual-worker interoperability
+tests**, **74 Python tests**, **10 WASM Rust tests**, **11 native Rust tests**, the
+WASM export lifecycle checks and formatting checks. Independent Sequoia-generated
+software fixtures cover message and vault round trips, wrong recipients, changed
+component shares and bindings, final AEAD-tag tampering, replay, cancellation,
+timeouts and trust changes. Baseline and wide WASM builds are both generated; the
+message path uses baseline WASM.
+
+**Installed 0.12.0 hardware validation passed on 2026-11-23.** The signed bundle
+and extension were updated without changing their identities, permissions or
+stored vault. The existing Level 3 YubiKey unlocked its existing PIV vault wrapper
+through the new component-only route. Opening a local copy of the previously
+Gmail-delivered binary PGP/MIME test then displayed **Encrypted (decrypted)**,
+**Valid hybrid** and **Trusted**. Protected subject, plain text and HTML matched;
+the downloaded 48-byte attachment matched every byte and SHA-256. This was local
+reception of an existing delivery, not a new Gmail or Chat send.
+
+Before/after snapshots matched all 24 public PIV slot records, ten occupied keys,
+PIN/touch policies and eleven protected configuration/certificate/backend files.
+PIN retries remained **3/3**. No keys, card certificates, policies or trust bindings
+were changed. Private hardware reports, message copies and account/device
+identifiers remain outside the repository.
 
 ## Chat attachment transport correction (0.11.4 preview)
 

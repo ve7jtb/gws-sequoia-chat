@@ -13,6 +13,8 @@ use sequoia_pqmail_piv::{PublicKey,Level3Signer,Level3Decryptor,process::{Config
 use std::{io::{self,Read,Write},path::PathBuf};
 use zeroize::Zeroizing;
 mod digest_sign;
+mod component_decap;
+mod identity_restore;
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
@@ -180,9 +182,53 @@ fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
  ensure!(!results.is_empty() && results.len()<=16,"No supported signatures");
  Ok(serde_json::json!({"signatures":results}))
 }
+/// Canonical public identity material used only after authenticated restore.
+/// Reject keyrings and secret packets explicitly; the reviewed hash binds the
+/// whole certification/subkey view, not merely its primary fingerprint.
+fn canonical_identity(encoded:&str)->Result<serde_json::Value> {
+ ensure!(encoded.len()<=174764,"Encoded certificate limit");
+ let raw=B64.decode(encoded)?;ensure!(!raw.is_empty()&&raw.len()<=131072,"Certificate limit");
+ let armor=String::from_utf8_lossy(&raw);ensure!(armor.matches("-----BEGIN PGP").count()<=1,"One certificate required");
+ let mut parser=pgp::cert::CertParser::from_bytes(&raw)?;
+ let cert=parser.next().context("One certificate required")??;
+ ensure!(parser.next().is_none()&&!cert.is_tsk(),"One public certificate required");
+ ensure!(cert.primary_key().key().version()==6,"v6 certificate required");
+ let sign=selected(&cert,true)?;let recipient=selected(&cert,false)?;
+ let emails=current_emails(&cert);ensure!(!emails.is_empty(),"Current certified email required");
+ let bytes=cert.to_vec()?;ensure!(bytes.len()<=65536,"Certificate limit");
+ use sha2::{Digest,Sha256};
+ Ok(serde_json::json!({"certificate":B64.encode(&bytes),
+  "certificateHash":Sha256::digest(&bytes).iter().map(|b|format!("{b:02x}")).collect::<String>(),
+  "fingerprint":cert.fingerprint().to_hex(),"emails":emails,
+  "signingFingerprint":sign.fingerprint().to_hex(),"recipientKey":recipient.fingerprint().to_hex()}))
+}
+
 fn execute()->Result<()> {
  let mut input=Zeroizing::new(Vec::new());io::stdin().take((LIMIT*4+1) as u64).read_to_end(&mut input)?;ensure!(input.len()<=LIMIT*4,"Input too large");
  let mut v:serde_json::Value=serde_json::from_slice(&input)?;input.clear();
+ if field(&v,"op")?=="identity-current" {
+  // This display route proves the configured public certificate is supported,
+  // without pretending that a physical key is present or selecting new slots.
+  let encoded=field(&v,"certificate")?;let cert=public(encoded)?;
+  selected(&cert,true)?;selected(&cert,false)?;
+  println!("{}",serde_json::json!({"certificate":encoded,"fingerprint":cert.fingerprint().to_hex(),"slots":[
+   {"role":"OpenPGP signing","slot":"9c","algorithm":"ML-DSA-65"},
+   {"role":"OpenPGP signing","slot":"84","algorithm":"Ed25519"},
+   {"role":"OpenPGP decryption","slot":"9d","algorithm":"ML-KEM-768"},
+   {"role":"OpenPGP decryption","slot":"85","algorithm":"X25519"}]}));return Ok(());
+ }
+ if field(&v,"op")?=="identity-canonical" {
+  // Public-only selection binding, evaluated before PIN/private configuration.
+  println!("{}",canonical_identity(field(&v,"certificate")?)?);return Ok(());
+ }
+ if field(&v,"op")?=="identity-restore" {
+  // Public-only route: no PIN extraction or private-operation config exists.
+  println!("{}",identity_restore::preview(&v)?);return Ok(());
+ }
+ if field(&v,"op")?=="decryption-material" {
+  let own=public(field(&v,"own")?)?;let key=selected(&own,false)?;
+  println!("{}",serde_json::json!({"recipientKey":key.fingerprint().to_hex()}));return Ok(());
+ }
  if field(&v,"op")?=="signing-material" {
   let own=public(field(&v,"own")?)?;let key=selected(&own,true)?;
   println!("{}",serde_json::json!({"signingFingerprint":key.fingerprint().to_hex()}));return Ok(());
@@ -205,6 +251,13 @@ fn execute()->Result<()> {
  let cfg=&v["config"];let path=|n|->Result<PathBuf>{Ok(PathBuf::from(field(cfg,n)?))};
  let config=Config{python:path("python")?,adapters:path("adapters")?,openssl:path("openssl")?,provider:path("provider")?,module:path("module")?,serial:field(cfg,"serial")?.into()};
  let own=public(field(&v,"own")?)?;
+ if field(&v,"op")?=="decapsulate-components" {
+  // Only fixed-key component inputs cross this boundary. Recipient packet
+  // parsing, hybrid combining and session-key unwrap now belong to WASM.
+  let key=selected(&own,false)?;component_decap::validate_request(&v,&key)?;
+  let result=component_decap::decapsulate(&key,Pkcs11Operation::new(config,pin)?,&v)?;
+  println!("{}",result);return Ok(());
+ }
  if field(&v,"op")?=="sign-digest" {
   // Validate the digest and fixed public key before the operation-scoped PIN is
   // passed to PKCS#11. No MIME, arbitrary slot, or supplied key is accepted.
@@ -294,6 +347,21 @@ mod tests {
  // Fixtures used by the browser trust tests must self-certify that mailbox too.
  fn identity_for(email:&str)->Cert {CertBuilder::new().set_profile(pgp::Profile::RFC9580).unwrap().set_cipher_suite(CipherSuite::MLDSA65_Ed25519).add_userid(email).add_signing_subkey().add_transport_encryption_subkey().generate().unwrap().0}
  fn identity()->Cert {identity_for("test@example.invalid")}
+ #[test]
+ fn selected_identity_is_canonical_public_only_and_one_certificate() {
+  let secret=identity();let public=secret.clone().strip_secret_key_material();
+  let bytes=public.to_vec().unwrap();let info=canonical_identity(&B64.encode(&bytes)).unwrap();
+  assert_eq!(info["certificate"],B64.encode(&bytes));
+  assert_eq!(info["fingerprint"],public.fingerprint().to_hex());
+  assert_eq!(info["emails"],serde_json::json!(["test@example.invalid"]));
+  assert_eq!(info["signingFingerprint"],selected(&public,true).unwrap().fingerprint().to_hex());
+  assert_eq!(info["recipientKey"],selected(&public,false).unwrap().fingerprint().to_hex());
+  assert!(canonical_identity(&B64.encode(secret.as_tsk().to_vec().unwrap())).is_err());
+  let mut ring=bytes.clone();ring.extend(identity().strip_secret_key_material().to_vec().unwrap());
+  assert!(canonical_identity(&B64.encode(ring)).is_err());
+  assert!(canonical_identity("").is_err());
+ }
+
  fn key(cert:&Cert,sign:bool)->pgp::crypto::KeyPair {let wanted=selected(cert,sign).unwrap().fingerprint();cert.keys().secret().find(|k|k.key().fingerprint()==wanted).unwrap().key().clone().role_into_unspecified().into_keypair().unwrap()}
  fn decrypt(own:&Cert,peer:&Cert,blob:&[u8])->Result<Vec<u8>> {
   let helper=Open{verify:Verify{cert:peer.clone(),expected:selected(peer,true)?.fingerprint(),encryption_required:true},own:own.clone(),key:key(own,false)};

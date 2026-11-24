@@ -150,7 +150,7 @@ dependencies = [
 [[package]]
 name = "buffered-reader"
 version = "1.4.1"
-source = "git+https://github.com/ve7jtb/sequoia.git?rev=65979cf360ec0908c793d8801dd4491da2b8398d#65979cf360ec0908c793d8801dd4491da2b8398d"
+source = "git+https://github.com/ve7jtb/sequoia.git?rev=6b99afc20984e16180e5bbfbabb51d8685d247e1#6b99afc20984e16180e5bbfbabb51d8685d247e1"
 dependencies = [
  "flate2",
  "libc",
@@ -332,6 +332,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "errno"
+version = "0.3.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -359,6 +375,21 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "foreign-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
+dependencies = [
+ "foreign-types-shared",
+]
+
+[[package]]
+name = "foreign-types-shared"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "futures-core"
@@ -415,6 +446,17 @@ dependencies = [
  "libc",
  "wasi",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "getrandom"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
 ]
 
 [[package]]
@@ -697,6 +739,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e57c38c1e860fd37c604281cdfb1dd2216977fd76a50f85ba2f388ef3219616"
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -768,6 +816,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "openssl"
+version = "0.10.82"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4de8111e94a56adca7ebfe6c365b6d42f99deb69b74b6becacd4204e2f193aa2"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "foreign-types",
+ "libc",
+ "openssl-macros",
+ "openssl-sys",
+]
+
+[[package]]
+name = "openssl-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -906,6 +985,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,6 +1062,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
+name = "rustix"
+version = "1.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
+dependencies = [
+ "bitflags",
+ "errno",
+ "libc",
+ "linux-raw-sys",
+ "windows-sys",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1007,13 +1105,14 @@ dependencies = [
  "sequoia-pqmail-piv",
  "serde_json",
  "sha2",
+ "tempfile",
  "zeroize",
 ]
 
 [[package]]
 name = "sequoia-openpgp"
 version = "2.4.2"
-source = "git+https://github.com/ve7jtb/sequoia.git?rev=65979cf360ec0908c793d8801dd4491da2b8398d#65979cf360ec0908c793d8801dd4491da2b8398d"
+source = "git+https://github.com/ve7jtb/sequoia.git?rev=6b99afc20984e16180e5bbfbabb51d8685d247e1#6b99afc20984e16180e5bbfbabb51d8685d247e1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1023,7 +1122,7 @@ dependencies = [
  "ctor",
  "dyn-clone",
  "flate2",
- "getrandom",
+ "getrandom 0.2.17",
  "idna",
  "lalrpop",
  "lalrpop-util",
@@ -1041,12 +1140,18 @@ dependencies = [
 [[package]]
 name = "sequoia-pqmail-piv"
 version = "0.1.0"
-source = "git+https://github.com/ve7jtb/sequoia.git?rev=65979cf360ec0908c793d8801dd4491da2b8398d#65979cf360ec0908c793d8801dd4491da2b8398d"
+source = "git+https://github.com/ve7jtb/sequoia.git?rev=6b99afc20984e16180e5bbfbabb51d8685d247e1#6b99afc20984e16180e5bbfbabb51d8685d247e1"
 dependencies = [
  "anyhow",
  "base64",
+ "flate2",
+ "libc",
+ "openssl",
+ "ossl",
  "rpassword",
  "sequoia-openpgp",
+ "serde_json",
+ "sha2",
  "sha3 0.10.9",
  "zeroize",
 ]
@@ -1232,6 +1337,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys",
 ]
 
 [[package]]

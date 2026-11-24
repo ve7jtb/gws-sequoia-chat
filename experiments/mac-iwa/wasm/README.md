@@ -1,10 +1,11 @@
 # Experimental Sequoia WASM verifier
 
 The baseline module implements public-certificate inspection, signature verification/encryption,
-authenticated session-key decryption, vault wrapping and split-phase OpenPGP
-signing-packet construction. It never receives a PIN or long-term signing secret.
-A dedicated signing worker prepares the v6 digest, waits for the fixed native
-hardware signer, and finalizes/verifies the returned composite signature before
+recipient matching, hybrid combining and session-key recovery, vault wrapping and
+split-phase OpenPGP signing-packet construction. It never receives a PIN or
+long-term signing secret. A dedicated signing worker prepares the v6 digest,
+waits for the selected native hardware signer, and finalizes/verifies the returned
+composite signature before
 encryption. The worker has no extension/native connection of its own; the main
 page relays only its bounded digest request and signature response.
 
@@ -15,6 +16,34 @@ by that backend. Long-term private-key signing operations remain native; this is
 not approval to add software signing secrets to that backend. Saved certificate
 trust remains a separate decision. Earlier preview sections below describe the
 successive verification/encryption/decryption milestones.
+
+## Current identity and decryption boundary (0.14)
+
+`inspect_identity` binds each usable Level 3 v6 certificate to its full canonical
+SHA-256, primary fingerprint, certified emails and current signing/encryption
+subkeys. `match_recipients` parses the named v6 recipient packet and returns all
+matching saved public certificates, without hardware access or an arbitrary
+first-match choice. The IWA reviews the matching serial and certificate before
+the native helper authenticates that card's signed bundle and requests a PIN.
+Stored browser labels never authorize arbitrary slots or backend paths.
+
+`prepare_decryption` retains the ciphertext in a disposable worker and returns
+only the bounded ML-KEM/X25519 encapsulation inputs. The native helper returns
+component shares bound to the operation, recipient and ciphertext; WASM performs
+the RFC 9980 combiner, session-key unwrap, AEAD authentication and signed-MIME
+recovery. The session key and complete encrypted message do not cross Native
+Messaging. Existing PIV vault wrappers use the same split recovery, retaining
+their fixed enrollment. The older session-key-return flow described below is
+historical and is not an IWA fallback.
+
+On 2026-11-23, installed 0.14.0 passed an offline two-way exchange with independent
+Sequoia using a restored Level 3 identity. The exported IWA signature verified;
+the reply matched the saved YubiKey identity and decrypted with a valid trusted
+hybrid signature. Text/HTML and exact attachments matched, and all public key
+and PIN/touch-policy records were unchanged. See the
+[full result](../README.md#selected-sending-identities-and-recipient-matching-0140-preview)
+and [current regression commands](../README.md#reproduce-the-current-regression-tests).
+The older milestone sections below document the sequence of earlier boundaries.
 
 ## Public-certificate inspection and browser trust (0.11)
 

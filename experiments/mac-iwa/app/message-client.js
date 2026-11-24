@@ -3,6 +3,17 @@
 // supplied by a message, certificate, native response or user setting.
 const signingWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-signing-worker',{createScriptURL:url=>{if(url!=='/signing-worker.js')throw Error('Unexpected signing worker');return url;}});
 function signingWorkerURL(){return signingWorkerPolicy?signingWorkerPolicy.createScriptURL('/signing-worker.js'):'/signing-worker.js';}
+const decryptionWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-decryption-worker',{
+ createScriptURL:url=>{if(url!=='/decryption-worker.js')throw Error('Unexpected worker');return url;}});
+async function decryptInIwa(options){
+ if(busy)throw Error('An operation is already running.');
+ operationBusy(true);decryptionAbort=new AbortController();
+ try{
+  const {decryptWithHardware}=await import('./decryption-session.js');
+  return await decryptWithHardware({...options,native:nativeRequest,signal:decryptionAbort.signal,
+   createWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'})});
+ }finally{decryptionAbort=null;operationBusy(false);}
+}
 // A fresh worker per message bounds lifetime and drops decrypted content on
 // completion. A timeout never retries hardware or falls back to native verify.
 const messageWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-message-worker',{createScriptURL:url=>{if(url!=='/message-worker.js')throw Error('Unexpected worker');return url;}});

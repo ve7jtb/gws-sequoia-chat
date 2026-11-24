@@ -38,17 +38,20 @@ export function createTransport(session){
   return {attachmentDataRef:Object.fromEntries(['attachmentUploadToken','resourceName'].filter(k=>typeof ref[k]==='string').map(k=>[k,ref[k]]))};
  }
  async function perform(op,d,native,context){
-  // Preparation is entirely local: the fixed native identity binds the sender,
+  // Preparation is entirely local: the selected restored identity binds the sender,
   // IWA trust binds the recipient, and the vault gates the private operation.
   // Requiring OAuth here would prevent explicit offline encrypted-file export.
   if(op==='chat-mail-prepare'||op==='chat-prepare'){
    const service=op==='chat-mail-prepare'?'Gmail':'Chat';
    const space=service==='Gmail'?'Gmail':resource(d.space,'space');
-   // Trust is resolved from current IWA storage, never from a UI label or a
-   // legacy native contact. The native helper selects only its configured key.
+   // Resolve current recipient trust and own-identity revision independently.
+   // The browser supplies a public identity binding; native preparation checks
+   // its live signed card bundle and derives supported slots itself.
    const contact=await context.certificateStore.trustedContact(d.contact);
-   const own=await native('chat-signing-material',{});
-   return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space});
+   const identity=await context.identitySelection.get(d.identity,context.account);
+   const own=await native('chat-selected-signing-material',{identity:context.identitySelection.nativeBinding(identity)});
+   await context.identitySelection.validateMaterial(own,identity,'signing');
+   return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space,identity});
   }
   // Every network operation still checks the authenticated Google account
   // before reading data or consuming a send review. Offline preparation does

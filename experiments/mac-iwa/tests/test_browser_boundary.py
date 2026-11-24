@@ -15,22 +15,12 @@ class BrowserBoundary(unittest.TestCase):
              'chat-browser-cert-trust','chat-encryption-complete','chat-prepare',
              'chat-mail-prepare','chat-send','chat-mail-send'):
    with self.assertRaises(ValueError):validate({'op':op})
- def test_decapsulation_accepts_ciphertext_and_service_only(self):
-  request={'op':'chat-decap','payload':'YQ==','service':'Gmail'}
-  self.assertEqual(validate(request),'chat-decap')
-  for key in ('pin','module','slot','serial','path','contact','recipient','peer','certificate'):
-   with self.assertRaises(ValueError):validate({**request,key:'unexpected'})
- def test_decapsulation_uses_only_installed_identity_and_returns_no_trust(self):
-  with tempfile.TemporaryDirectory() as tmp:
-   b=ChatBridge.__new__(ChatBridge);b.data=Path(tmp);own=Path(tmp)/'configured-own'
-   b.cfg={'cert':str(own),'chat_email':'me@example.invalid'};b.chat=Mock()
-   b.crypto=Mock(return_value={'sessionKey':'test-only','algorithm':9,'cipherHash':'0'*64,'recipientKey':'A'*64})
-   r=b.action({'op':'chat-decap','payload':'YQ==','service':'Gmail'})
-   b.crypto.assert_called_once_with('decapsulate-browser',own,b'a',service='Gmail')
-   self.assertEqual(set(r),{'sessionKey','algorithm','cipherHash','recipientKey','cipher'})
-   for payload,service in [('','Gmail'),('!','Gmail'),(base64.b64encode(bytes(262145)).decode(),'Gmail'),('YQ==','untrusted')]:
-    with self.assertRaises(ValueError):b.action({'op':'chat-decap','payload':payload,'service':service})
-   self.assertEqual(b.crypto.call_count,1)
+ def test_legacy_envelope_decapsulation_routes_are_disabled(self):
+  # All untrusted recipient packets now go to WASM. A stale IWA must not use
+  # the former native parser/session-key path after the component migration.
+  for request in ({'op':'chat-decap','payload':'YQ==','service':'Gmail'},
+                  {'op':'chat-vault-decapsulate','payload':'YQ==','recipientKey':'A'*64}):
+   with self.assertRaises(ValueError):validate(request)
  def test_state_never_loads_or_infers_native_contact_trust(self):
   with tempfile.TemporaryDirectory() as tmp:
    b=ChatBridge.__new__(ChatBridge);b.data=Path(tmp)

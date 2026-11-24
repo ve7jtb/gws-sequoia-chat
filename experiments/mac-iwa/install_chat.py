@@ -17,7 +17,7 @@ def main():
  for name in ('chat.py','mail_transport.py'):shutil.copy2(a.transport_root/name,target/name)
  for source,name in ((a.sq_bin,'sq'),(a.transport_root/'bin/chat-software-identity','chat-software-identity')):shutil.copy2(source,target/'bin'/name)
  shutil.copy2(a.crypto_bin,dest/'runtime/sequoia-iwa-crypto')
- for name in ('host.py','chat_bridge.py','certificate_migration.py','signing.py','vault_piv.py'):shutil.copy2(ROOT/'native'/name,dest/'native'/name)
+ for name in ('host.py','chat_bridge.py','certificate_migration.py','identities.py','signing.py','decryption.py','vault_piv.py'):shutil.copy2(ROOT/'native'/name,dest/'native'/name)
  subprocess.run(['/usr/bin/swiftc',str(ROOT/'native/PinPrompt.swift'),'-o',str(dest/'build/pin-prompt')],check=True)
  cfg['chat_email']=a.email;(dest/'private/config.json').write_text(json.dumps(cfg,indent=2))
  print('Chat helper installed. Authorize Google through the browser extension; gws is not required.')

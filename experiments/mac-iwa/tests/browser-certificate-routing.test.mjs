@@ -13,11 +13,28 @@ const verified=()=>({signatureStatus:'valid',certificateTrust:'untrusted',encryp
  certificateActions:[{fingerprint:fp,email:mail,canTrust:true,certificate}],signatures:[{status:'valid',fingerprint:fp}]});
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 function application(){
- const nodes=new Map(),events=new Map(),native=[],storage=[],displays=[];
- let revision=1,unlocked=true,worker=async()=>verified();
+ const nodes=new Map(),events=new Map(),native=[],storage=[],displays=[],decryptions=[],matches=[];
+ const matchedShown=deferred();
+ let revision=1,identityRevision=1,unlocked=true,worker=async()=>verified();
+ const ownIdentity=()=>({id:'saved-identity',revision:identityRevision,serial:'12345678',
+  email:'recipient@example.invalid',fingerprint:'B'.repeat(64),recipientKey:'C'.repeat(64),
+  certificateHash:'d'.repeat(64),bundleHash:'e'.repeat(64)});
+ const nativeBinding=identity=>{const {serial,email,fingerprint,certificateHash,bundleHash}=identity;
+  return {serial,email,fingerprint,certificateHash,bundleHash};};
+ // WASM matching and the own-identity store have independent integration
+ // suites. This fake preserves their public snapshot/revision contract while
+ // exercising the shipped dialog and pre-PIN orchestration unchanged.
+ const selections={
+  async match(cipher,account){matches.push({cipher,account});return {choices:[ownIdentity()],recipientKey:'C'.repeat(64)};},
+  async assert(identity){if(identity.revision!==identityRevision)throw Error('Own identity changed');},
+  nativeBinding,async validateMaterial(){throw Error('The coordinator is mocked in this UI test');}
+ };
  function element(){return {hidden:true,value:'',checked:false,textContent:'',files:[],options:[],selectedOptions:[],listeners:new Map(),
-  classList:{toggle(){},remove(){}},addEventListener(name,fn){this.listeners.set(name,fn);},replaceChildren(){},append(){},close(){this.open=false;},showModal(){this.open=true;}};}
- const node=id=>{if(!nodes.has(id)){const e=element();if(id==='transport')e.value='mail';nodes.set(id,e);}return nodes.get(id);};
+  classList:{toggle(){},remove(){}},addEventListener(name,fn){this.listeners.set(name,fn);},
+  replaceChildren(){this.options=[];this.value='';},append(item){this.options.push(item);if(this.options.length===1)this.value=item.value;},
+  close(){this.open=false;},showModal(){this.open=true;}};}
+ const node=id=>{if(!nodes.has(id)){const e=element();if(id==='transport')e.value='mail';
+  if(id==='matched-identity')e.showModal=function(){this.open=true;matchedShown.resolve();};nodes.set(id,e);}return nodes.get(id);};
  const inventory={certificates:[],contacts:[]};
  const store={
   async list(){storage.push(['list']);return inventory;},
@@ -40,7 +57,11 @@ function application(){
    return {disconnect(){},onMessage:{addListener:fn=>listeners.push(fn)},onDisconnect:{addListener(){}},
     postMessage(request){native.push(request);queueMicrotask(()=>listeners.forEach(fn=>fn({type:'result',data:{ok:true}})));}};
   }}},
-  storeArg:store,workerArg:(...args)=>worker(...args),displayArg:(result,message)=>{displays.push({result,message});node('reader').hidden=false;},
+  storeArg:store,identitySelectionArg:selections,workerArg:(...args)=>worker(...args),displayArg:(result,message)=>{displays.push({result,message});node('reader').hidden=false;},
+  // Keep the real app's trust/reader checks around its new WASM coordinator.
+  // The coordinator's component/native boundary is tested separately; this
+  // narrow fake proves the UI never sends the complete ciphertext to native.
+  decryptInIwa:async request=>{decryptions.push(request);await request.gate();const result=await worker({cipher:request.cipher,...request.verification});await request.gate();return result;},
   mailSecuritySummary:()=>'',renderSafeHtml:()=>{},formatMessage:value=>value
  };
  vm.createContext(context);
@@ -49,9 +70,11 @@ function application(){
  // exactly those shipped by the app, rather than reimplemented test copies.
  assert.equal(source.split('bootstrap().catch(e=>say(e.message,true));').length,2);
  vm.runInContext(source.replace('bootstrap().catch(e=>say(e.message,true));',''),context);
- vm.runInContext("certificateStore=storeArg;composeReviews={clear(){}};ownEmail='recipient@example.invalid';contacts=[{id:'contact',email:'sender@example.invalid'}];runMessageWorker=(...args)=>workerArg(...args);processMessage=(...args)=>workerArg(...args);showOrdinary=(...args)=>displayArg(...args);",context);
+ vm.runInContext("certificateStore=storeArg;identitySelection=identitySelectionArg;composeReviews={clear(){}};ownEmail='recipient@example.invalid';contacts=[{id:'contact',email:'sender@example.invalid'}];runMessageWorker=(...args)=>workerArg(...args);processMessage=(...args)=>workerArg(...args);showOrdinary=(...args)=>displayArg(...args);",context);
  node('signer').value='contact';
- return {context,native,storage,displays,node,
+ return {context,native,storage,displays,decryptions,matches,node,matchedShown:matchedShown.promise,
+  async chooseMatched(){await matchedShown.promise;await node('matched-identity-continue').listeners.get('click')();},
+  reviseIdentity:()=>identityRevision++,
   setWorker:fn=>worker=fn,
   revise:()=>revision++,
   evidence(){context.evidenceArg={message:'message-id',packet:{...packet}};vm.runInContext('readerEvidence=evidenceArg;',context);},
@@ -73,10 +96,10 @@ test('all public certificate and trust UI aliases stay in IWA storage',async()=>
  ])await a.context.call(op,data);
  assert.deepEqual(a.storage.map(call=>call[0]),['list','material','preview','save','trust','untrust','remove']);
  assert.equal(a.native.length,0);
- // The certificate migration does not broaden hardware access: the fixed
- // private operation still crosses the native bridge, with no certificate data.
- await a.context.nativeRequest('chat-decap',{payload:'YQ==',service:'Gmail'});
- assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-decap');
+ // Message discovery now carries the selected public authority tuple, but
+ // does not send MIME or permit the browser to select native executable paths.
+ await a.context.nativeRequest('chat-selected-decryption-material',{service:'Gmail',identity:{serial:'12345678'}});
+ assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-selected-decryption-material');
 });
 
 test('attached-certificate save re-verifies captured bytes and never grants trust',async()=>{
@@ -137,7 +160,7 @@ test('late attached-key verification cannot save or re-trust after lock or trust
 
 function localFile(){const bytes=new TextEncoder().encode('Synthetic encrypted MIME');return {size:bytes.length,arrayBuffer:async()=>bytes.buffer};}
 const localCipher={encrypted:true,cipher:'c3ludGhldGljIGNpcGhlcg=='};
-test('local encrypted mail uses IWA trusted contact and only native decapsulation, without account transport',async()=>{
+test('local encrypted mail sends full ciphertext only to WASM with current IWA trust, without account transport',async()=>{
  const a=application();let calls=0;
  a.setWorker(async request=>{
   if(calls++===0)return localCipher;
@@ -145,9 +168,9 @@ test('local encrypted mail uses IWA trusted contact and only native decapsulatio
   return {verified:true,subject:'Signed subject',sender:mail,text:'Signed body',html:'',attachments:[],signatures:[{fingerprint:fp}]};
  });
  await a.context.readLocalFile(localFile());assert.equal(a.node('open').open,true);assert.equal(a.native.length,0);
- await a.context.decryptSelected();
- assert.deepEqual(a.native.map(r=>r.op),['chat-decap']);
- assert.equal(a.native[0].payload,localCipher.cipher);assert.equal(a.native[0].service,'Gmail');
+ const opening=a.context.decryptSelected();await a.chooseMatched();await opening;
+ assert.equal(a.native.length,0);
+ assert.equal(a.decryptions.length,1);assert.equal(a.decryptions[0].cipher,localCipher.cipher);assert.equal(a.decryptions[0].service,'Gmail');
  assert.equal(a.pendingLocal(),null);assert.equal(a.node('reader').hidden,false);
  assert.match(a.node('verified').textContent,/Trusted sender@example.invalid/);
  assert.ok(a.storage.filter(c=>c[0]==='assertContact').length>=3);
@@ -177,11 +200,11 @@ test('late local decryption verification cannot display plaintext after lock or 
  for(const change of ['lock','revision']){
   const a=application(),started=deferred(),pending=deferred();let calls=0;
   a.setWorker(()=>{if(calls++===0)return localCipher;started.resolve();return pending.promise;});
-  await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected();await started.promise;
+  await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected();await a.chooseMatched();await started.promise;
   if(change==='lock')a.lock();else a.revise();
   pending.resolve({verified:true,subject:'Signed subject',sender:mail,text:'Signed body',html:'',attachments:[],signatures:[{fingerprint:fp}]});
   await assert.rejects(opening,/changed|locked/);assert.equal(a.node('reader').hidden,true);
-  assert.equal(a.node('read-body').textContent,'');assert.deepEqual(a.native.map(r=>r.op),['chat-decap']);
+  assert.equal(a.node('read-body').textContent,'');assert.equal(a.native.length,0);assert.equal(a.decryptions.length,1);
  }
 });
 
@@ -197,8 +220,35 @@ test('Escape and a new provider selection cannot reuse a local encrypted envelop
   // triggered through some other UI path, and restore provider-specific labels.
   a.context.openRemoteMessage('remote-message-id');assert.equal(a.pendingLocal(),null);
   assert.equal(a.node('open-title').textContent,'Decrypt and verify Gmail email');
-  await a.context.decryptSelected();
+  const opening=a.context.decryptSelected();await a.chooseMatched();await opening;
   assert.deepEqual(requested,[['chat-mail-open','remote-message-id']]);
-  assert.deepEqual(a.native.map(r=>r.op),['chat-decap']);assert.equal(a.native[0].payload,remoteCipher);
+  assert.equal(a.native.length,0);assert.equal(a.decryptions.length,1);assert.equal(a.decryptions[0].cipher,remoteCipher);
+ }
+});
+
+// Matching is public-only; the selection dialog cannot retain authority after
+// its inventory changes or the user locks/navigates away. Both failures must
+// occur before the coordinator could ask native code for a PIN or card share.
+test('matched identity dialog shows the recipient key and requires explicit continuation',async()=>{
+ const a=application();let calls=0;
+ a.setWorker(async()=>calls++===0?localCipher:{verified:true,subject:'Signed subject',sender:mail,text:'Signed body',html:'',attachments:[],signatures:[{fingerprint:fp}]});
+ await a.context.readLocalFile(localFile());const opening=a.context.decryptSelected();await a.matchedShown;
+ assert.equal(a.node('matched-identity').open,true);assert.equal(a.decryptions.length,0);
+ assert.match(a.node('matched-identity-details').textContent,/YubiKey: 12345678/);
+ assert.match(a.node('matched-identity-details').textContent,/Recipient subkey: C{64}/);
+ assert.equal(a.matches.length,1);assert.equal(a.matches[0].cipher,localCipher.cipher);
+ await a.chooseMatched();await opening;
+ assert.equal(a.decryptions[0].identity.serial,'12345678');assert.equal(a.decryptions[0].recipientKey,'C'.repeat(64));
+ assert.equal(typeof a.decryptions[0].validateMaterial,'function');
+});
+test('stale matched identity or cancelled view never reaches decryption',async()=>{
+ for(const change of ['identity','lock','view']){
+  const a=application();a.setWorker(async()=>localCipher);await a.context.readLocalFile(localFile());
+  const opening=a.context.decryptSelected(),rejected=assert.rejects(opening,/changed|cancelled|locked/);
+  await a.matchedShown;
+  if(change==='identity'){a.reviseIdentity();await a.chooseMatched();}
+  else if(change==='lock')a.lock();else a.invalidate();
+  await rejected;assert.equal(a.decryptions.length,0);assert.equal(a.native.length,0);
+  assert.equal(a.node('reader').hidden,true);assert.equal(a.node('matched-identity').open,false);
  }
 });

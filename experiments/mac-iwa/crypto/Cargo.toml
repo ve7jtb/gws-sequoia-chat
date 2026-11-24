@@ -11,5 +11,6 @@ base64 = "0.22"
 sha2 = "0.10"
 serde_json = "1"
 zeroize = "1"
-sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
-sequoia-pqmail-piv = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d" }
+sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
+sequoia-pqmail-piv = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1" }
+tempfile = "3"

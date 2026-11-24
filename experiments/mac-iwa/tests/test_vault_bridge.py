@@ -18,11 +18,13 @@ class VaultBridge(unittest.TestCase):
   for k,v in [('slot','9a'),('serial','*'),('algorithm','RSA'),('public','!')]:
    b.cfg={'vault_piv':{**good,k:v}}
    with self.assertRaises(ValueError):vault_piv.configured(b)
- def test_hybrid_decapsulation_route_rejects_mismatched_public_key(self):
+ def test_old_vault_packet_route_rejected_before_private_operation(self):
+  # The new one-use component route is shared by vault and message operations;
+  # it cannot silently fall back to native OpenPGP packet/session-key recovery.
   with tempfile.TemporaryDirectory() as t:
-   b=chat_bridge.ChatBridge.__new__(chat_bridge.ChatBridge);b.data=Path(t);b.cfg={'cert':str(Path(t)/'public')};b.chat=Mock();b.crypto=Mock(return_value={'recipientKey':'B'*64})
+   b=chat_bridge.ChatBridge.__new__(chat_bridge.ChatBridge);b.data=Path(t);b.crypto=Mock()
    with self.assertRaises(ValueError):b.action({'op':'chat-vault-decapsulate','payload':'YQ==','recipientKey':'A'*64})
-   self.assertEqual(b.crypto.call_args.kwargs['service'],'Vault')
+   b.crypto.assert_not_called()
 
 class VaultDiagnostics(unittest.TestCase):
  def test_closed_status_codes(self):
