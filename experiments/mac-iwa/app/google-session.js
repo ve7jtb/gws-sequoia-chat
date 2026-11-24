@@ -1,6 +1,7 @@
 // Access tokens live only in this closure. No refresh token, storage, native
 // callback, arbitrary URL or retry path is available to the transport layer.
 import {accountEmail} from './account-settings.js';
+import {getOAuthMode,getLoopbackClientId,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
 export const SCOPES=['gmail.readonly','gmail.send','chat.spaces.readonly','chat.messages.readonly','chat.messages.create'].map(s=>'https://www.googleapis.com/auth/'+s);
 export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked?.(),connect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-services'}),mediaConnect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-chat-media'}),clock=()=>Date.now(),mediaTimeoutMs=45000}={}){
  let token=null,expires=0,epoch=0,port=null,timer=null,account='',pending=false;
@@ -104,19 +105,31 @@ export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked
   expected=accountEmail(expected);
   if(!unlocked())throw Error('Unlock the credential vault first.');if(pending)throw Error('Google sign-in already running.');clear();pending=true;
   const current=epoch;
-  try{await new Promise((resolve,reject)=>{
-   let done=false;const p=connect();port=p;
-   const finish=e=>{if(done)return;done=true;clearTimeout(wait);e?reject(e):resolve();};
-   const wait=setTimeout(()=>finish(Error('Google sign-in expired.')),600000);
-   p.onDisconnect.addListener(()=>{void globalThis.chrome?.runtime?.lastError;finish(Error('Google sign-in closed.'));});
-   p.onMessage.addListener(d=>{
-    if(done)return;
-    if(current!==epoch||!unlocked())return finish(Error('Vault locked; authorization discarded.'));
-    if(d?.type!=='google-token')return finish(Error('Google authorization stopped.'));
-    if(typeof d.token!=='string'||d.token.length<20||d.token.length>8192||!Number.isFinite(d.expiresIn)||d.expiresIn<=30||d.expiresIn>86400||typeof d.scope!=='string'||!SCOPES.every(s=>d.scope.split(' ').includes(s)))return finish(Error('Required Gmail/Chat permissions were not granted.'));
-    token=d.token;expires=clock()+(d.expiresIn-30)*1000;timer=setTimeout(clear,(d.expiresIn-30)*1000);finish();
-   });p.postMessage({op:'google-oauth-services'});
-  });port?.disconnect();port=null;return await profile(expected);
+  try{
+   if(getOAuthMode()==='loopback-pkce'){
+    const clientId=getLoopbackClientId()||globalThis.document?.getElementById?.('google-loopback-client')?.value?.trim()||'';
+    const clientSecret=globalThis.document?.getElementById?.('google-loopback-secret')?.value?.trim()||'';
+    const c=new AbortController();controllers.add(c);
+    try{
+     const d=await runLoopbackPkceOAuth({clientId,clientSecret,scopes:SCOPES,fetcher,signal:c.signal});
+     if(current!==epoch||!unlocked())throw Error('Vault locked; authorization discarded.');
+     token=d.token;expires=clock()+(d.expiresIn-30)*1000;timer=setTimeout(clear,(d.expiresIn-30)*1000);
+    }finally{controllers.delete(c);}
+    return await profile(expected);
+   }
+   await new Promise((resolve,reject)=>{
+    let done=false;const p=connect();port=p;
+    const finish=e=>{if(done)return;done=true;clearTimeout(wait);e?reject(e):resolve();};
+    const wait=setTimeout(()=>finish(Error('Google sign-in expired.')),600000);
+    p.onDisconnect.addListener(()=>{void globalThis.chrome?.runtime?.lastError;finish(Error('Google sign-in closed.'));});
+    p.onMessage.addListener(d=>{
+     if(done)return;
+     if(current!==epoch||!unlocked())return finish(Error('Vault locked; authorization discarded.'));
+     if(d?.type!=='google-token')return finish(Error('Google authorization stopped.'));
+     if(typeof d.token!=='string'||d.token.length<20||d.token.length>8192||!Number.isFinite(d.expiresIn)||d.expiresIn<=30||d.expiresIn>86400||typeof d.scope!=='string'||!SCOPES.every(s=>d.scope.split(' ').includes(s)))return finish(Error('Required Gmail/Chat permissions were not granted.'));
+     token=d.token;expires=clock()+(d.expiresIn-30)*1000;timer=setTimeout(clear,(d.expiresIn-30)*1000);finish();
+    });p.postMessage({op:'google-oauth-services'});
+   });port?.disconnect();port=null;return await profile(expected);
   }catch(e){clear();throw e;}finally{pending=false;}
  }
  return {clear,login,profile,request,media,gate};
