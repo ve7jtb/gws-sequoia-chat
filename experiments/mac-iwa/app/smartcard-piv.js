@@ -34,6 +34,7 @@ const SPKI_P384_PREFIX = new Uint8Array([
 const ALGO_NAMES = {
   0x06:'RSA-1024', 0x07:'RSA-2048', 0x05:'RSA-3072', 0x16:'RSA-4096',
   0x11:'ECCP256', 0x14:'ECCP384', 0xE0:'Ed25519', 0xE1:'X25519',
+  0xE3:'ML-DSA-65', 0xE6:'ML-KEM-768',
 };
 const PIN_POLICY = {1:'never', 2:'once', 3:'always', 4:'match-once', 5:'match-always'};
 const TOUCH_POLICY = {1:'never', 2:'always', 3:'cached'};
@@ -306,6 +307,7 @@ async function withPivSession(expectedSerial, fn){
   let lastError = null;
   for(const reader of ordered){
     let conn = null;
+    let pivSelected = false;
     try{
       const opened = await ctx.connect(reader, 'shared', {preferredProtocols:['t1','t0']});
       conn = opened.connection;
@@ -315,6 +317,7 @@ async function withPivSession(expectedSerial, fn){
       await conn.startTransaction(async()=>{
         const sel = await transmitChained(conn, buildSelectPivApdu());
         if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
+        pivSelected = true;
         const ver = await transmitChained(conn, new Uint8Array([0x00,0xFD,0x00,0x00]));
         const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
         const ser = await transmitChained(conn, new Uint8Array([0x00,0xF8,0x00,0x00]));
@@ -329,7 +332,7 @@ async function withPivSession(expectedSerial, fn){
       if(matched) return result;
     }catch(e){
       lastError = e;
-      if(!expectedSerial) throw e;
+      if(pivSelected && !expectedSerial) throw e;
     }finally{
       if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
     }
