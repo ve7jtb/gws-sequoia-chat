@@ -25,6 +25,10 @@ const { createHardwareTransport } = ctx;
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
     async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemShare: 'CC==', x25519Share: 'DD==' }; },
+    async readVaultMaterialViaSmartCard() {
+      pivCalls.push('vault-material');
+      return { serial: '41088108', classical: { serial: '41088108', slot: '9d', algorithm: 'ECDH-P256', public: 'SPKI==', fingerprint: 'fp1' }, classicalSlots: [] };
+    },
     async ecdhViaSmartCard(req) { pivCalls.push('ecdh'); return { secret: 'EE==', fingerprint: req.fingerprint }; },
   };
 
@@ -67,7 +71,11 @@ const { createHardwareTransport } = ctx;
   const shares = await t.dispatch('chat-decapsulate-components', { review: dmat.review, requestId: '2'.repeat(64) }, {}, nativeRequest);
   assert.equal(shares.mlkemShare, 'CC==');
 
-  // Vault classical ECDH via smartcard
+  // Vault material + classical ECDH via smartcard
+  const vmat = await t.dispatch('chat-vault-material', {}, {}, nativeRequest);
+  assert.equal(vmat.serial, '41088108');
+  assert.equal(vmat.classical.slot, '9d');
+  assert.equal(vmat.classical.algorithm, 'ECDH-P256');
   const ecdh = await t.dispatch('chat-vault-ecdh', { peer: 'AA==', fingerprint: 'fp1' }, {}, nativeRequest);
   assert.equal(ecdh.secret, 'EE==');
 

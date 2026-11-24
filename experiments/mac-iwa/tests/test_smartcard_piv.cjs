@@ -90,5 +90,21 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
   assert.equal(res.sw, 0x9000);
   assert.deepEqual(Array.from(res.data), [0xDE, 0xAD, 0xBE, 0xEF]);
   assert.equal(sent[sent.length - 1][1], 0xC0);
+
+  // PIV GET METADATA EC public key (0x86 TLV & 0x7F49-wrapped) -> SPKI -> WebCrypto importKey round-trip
+  for (const [curve, algId] of [['P-256', 0x11], ['P-384', 0x14]]) {
+    const kp = await webcrypto.subtle.generateKey({ name: 'ECDH', namedCurve: curve }, true, ['deriveBits']);
+    const spkiExpected = new Uint8Array(await webcrypto.subtle.exportKey('spki', kp.publicKey));
+    const point = piv.extractEcUncompressedPointFromSpki(spkiExpected);
+    const tlvDirect = piv.encodeBerTlv(0x86, point);
+    const tlvWrapped = piv.encodeBerTlv(0x7F49, tlvDirect);
+    assert.deepEqual(Array.from(piv.extractEcPointFromPivMetadataPub(tlvDirect)), Array.from(point));
+    assert.deepEqual(Array.from(piv.extractEcPointFromPivMetadataPub(tlvWrapped)), Array.from(point));
+    const spkiBuilt = piv.ecUncompressedPointToSpki(point, algId);
+    assert.deepEqual(Array.from(spkiBuilt), Array.from(spkiExpected));
+    const imported = await webcrypto.subtle.importKey('spki', spkiBuilt, { name: 'ECDH', namedCurve: curve }, false, []);
+    assert.equal(imported.type, 'public');
+  }
+
   console.log('PASS smartcard-piv APDU, TLV, PIN, command chaining, SPKI, and GET RESPONSE tests');
 })();

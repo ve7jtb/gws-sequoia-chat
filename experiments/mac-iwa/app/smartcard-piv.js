@@ -17,6 +17,19 @@ const ALL_24_SLOTS = [
   0x82,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x8A,0x8B,
   0x8C,0x8D,0x8E,0x8F,0x90,0x91,0x92,0x93,0x94,0x95,
 ].map(id=>({id, hex:id.toString(16).padStart(2,'0')}));
+const VAULT_ECDH_SLOTS = [
+  0x9D,
+  0x82,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x8A,0x8B,
+  0x8C,0x8D,0x8E,0x8F,0x90,0x91,0x92,0x93,0x94,0x95,
+].map(id=>({id, hex:id.toString(16).padStart(2,'0')}));
+const SPKI_P256_PREFIX = new Uint8Array([
+  0x30,0x59,0x30,0x13,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,
+  0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07,0x03,0x42,0x00,
+]);
+const SPKI_P384_PREFIX = new Uint8Array([
+  0x30,0x76,0x30,0x10,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,
+  0x06,0x05,0x2B,0x81,0x04,0x00,0x22,0x03,0x62,0x00,
+]);
 
 const ALGO_NAMES = {
   0x06:'RSA-1024', 0x07:'RSA-2048', 0x05:'RSA-3072', 0x16:'RSA-4096',
@@ -241,6 +254,26 @@ function extractEcUncompressedPointFromSpki(spkiBytes){
     throw Error('Unsupported EC point in SPKI');
   }
   return point;
+}
+
+function extractEcPointFromPivMetadataPub(pubBytes){
+  const b = new Uint8Array(pubBytes || 0);
+  if(b.length === 0) throw Error('Empty PIV metadata public key');
+  if(b[0] === 0x04 && (b.length === 65 || b.length === 97)) return b;
+  let tlv = parseBerTlv(b);
+  if(tlv.has(0x7F49)) tlv = parseBerTlv(tlv.get(0x7F49));
+  const point = tlv.get(0x86);
+  if(!point || point[0] !== 0x04 || (point.length !== 65 && point.length !== 97)){
+    throw Error('Unsupported EC public key in PIV metadata');
+  }
+  return point;
+}
+
+function ecUncompressedPointToSpki(point, algId){
+  const p = new Uint8Array(point);
+  if(algId === 0x11 && p.length === 65) return concatBytes(SPKI_P256_PREFIX, p);
+  if(algId === 0x14 && p.length === 97) return concatBytes(SPKI_P384_PREFIX, p);
+  throw Error('Unsupported EC algorithm or point length for SPKI');
 }
 
 function parseVersion(bytes){
@@ -505,15 +538,75 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
   });
 }
 
+async function readClassicalVaultSlots(conn, serial){
+  const found = [];
+  for(const slot of VAULT_ECDH_SLOTS){
+    const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
+    if(meta.sw !== 0x9000) continue;
+    const parsed = parseSlotMetadata(meta.data);
+    if(parsed.algorithmId !== 0x11 && parsed.algorithmId !== 0x14) continue;
+    try{
+      const point = extractEcPointFromPivMetadataPub(parsed.publicKeyBytes);
+      const spki = ecUncompressedPointToSpki(point, parsed.algorithmId);
+      const fingerprint = await sha256Hex(spki);
+      found.push({
+        serial: serial != null ? String(serial) : '',
+        slot: slot.hex,
+        algorithm: parsed.algorithmId === 0x11 ? 'ECDH-P256' : 'ECDH-P384',
+        public: toBase64(spki),
+        fingerprint,
+      });
+    }catch(_){
+      // Skip slots whose metadata public key cannot be parsed as P-256/P-384.
+    }
+  }
+  return found;
+}
+
+async function readVaultMaterialViaSmartCard(options = {}){
+  return withPivSession(options.serial || null, async(conn, info)=>{
+    const classicalSlots = await readClassicalVaultSlots(conn, info.serial);
+    const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
+    const classical = preferredSlot
+      ? (classicalSlots.find(s=>s.slot === preferredSlot) || null)
+      : (classicalSlots[0] || null);
+    return {
+      serial: info.serial != null ? String(info.serial) : '',
+      classical,
+      classicalSlots,
+    };
+  });
+}
+
 async function ecdhViaSmartCard(request, slotHex, serial, promptPin){
-  const slotId = parseInt(slotHex || '9d', 16);
+  let targetSlotHex = slotHex || null;
+  let targetSerial = serial || null;
+  if(!targetSlotHex){
+    // Resolve the exact YubiKey + PIV slot matching request.fingerprint (read-only, no PIN).
+    const devices = await listYubiKeys();
+    const candidates = targetSerial
+      ? devices.filter(d=>String(d.serial) === String(targetSerial))
+      : devices;
+    let matched = null;
+    for(const dev of candidates){
+      const vm = await readVaultMaterialViaSmartCard({serial: dev.serial});
+      const hit = vm.classicalSlots.find(s=>s.fingerprint === request.fingerprint);
+      if(hit){ matched = hit; break; }
+    }
+    if(!matched){
+      throw Error('Required classical PIV vault key not found on connected YubiKey (checked slots 9d and 82–95).');
+    }
+    targetSlotHex = matched.slot;
+    targetSerial = matched.serial;
+  }
+  const slotId = parseInt(targetSlotHex, 16);
   const peerPoint = extractEcUncompressedPointFromSpki(fromBase64(request.peer));
   const algId = peerPoint.length === 65 ? 0x11 : 0x14;
   const pin = await promptPin({
     title: 'PIV PIN — Unlock vault (ECDH)',
-    detail: `YubiKey ${serial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
+    detail: `YubiKey ${targetSerial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
   });
-  return withPivSession(serial, async(conn)=>{
+  return withPivSession(targetSerial, async(conn)=>{
     await verifyPinOnConnection(conn, pin);
     const ga = await transmitCommandChained(conn, 0x87, algId, slotId, buildGeneralAuthenticateData(0x85, peerPoint));
     if(ga.sw !== 0x9000) throw Error('PIV ECDH failed: SW=0x' + ga.sw.toString(16));
@@ -592,12 +685,15 @@ const api = {
   parsePinMetadata,
   parseGeneralAuthenticateResponse,
   extractEcUncompressedPointFromSpki,
+  extractEcPointFromPivMetadataPub,
+  ecUncompressedPointToSpki,
   parseVersion,
   parseSerial,
   listYubiKeys,
   hardwareAuditViaSmartCard,
   signDigestViaSmartCard,
   decapsulateComponentsViaSmartCard,
+  readVaultMaterialViaSmartCard,
   ecdhViaSmartCard,
   inspectPivViaSmartCard,
   formatPivReport,

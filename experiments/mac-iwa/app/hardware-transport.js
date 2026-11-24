@@ -192,8 +192,28 @@ function createHardwareTransport(deps = {}){
       return piv.decapsulateComponentsViaSmartCard(data, t.identity, promptPinInBrowser);
     }
 
+    if(op === 'chat-vault-material'){
+      ctx.say?.('Reading PIV vault key material via Web Smart Card (no PIN required)…');
+      const vm = await piv.readVaultMaterialViaSmartCard();
+      let matchedIdentity = null;
+      if(ctx.identityStore?.list){
+        try{
+          const listed = await ctx.identityStore.list();
+          const rows = Array.isArray(listed) ? listed : (listed?.identities || listed?.choices || []);
+          matchedIdentity = rows.find(r=>r.certificate && (!vm.serial || String(r.serial) === String(vm.serial))) ||
+            rows.find(r=>r.certificate) || null;
+        }catch(_){}
+      }
+      return {
+        certificate: matchedIdentity?.certificate || '',
+        serial: vm.serial || (matchedIdentity?.serial ? String(matchedIdentity.serial) : ''),
+        algorithm: matchedIdentity?.certificate ? 'ML-KEM-768 + X25519' : (vm.classical?.algorithm || ''),
+        classical: vm.classical || null,
+      };
+    }
+
     if(op === 'chat-vault-ecdh'){
-      return piv.ecdhViaSmartCard(data, data.slot || '9d', data.serial || null, promptPinInBrowser);
+      return piv.ecdhViaSmartCard(data, data.slot || null, data.serial || null, promptPinInBrowser);
     }
 
     throw Error(`Operation "${op}" requires the Native helper (PKCS#11). Switch Hardware transport to Native helper to use it.`);
