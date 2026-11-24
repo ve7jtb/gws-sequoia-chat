@@ -1,6 +1,7 @@
-// Read-only Web Smart Card (navigator.smartCard) YubiKey PIV inspector.
-// Runs entirely in the IWA without the extension, native host, or PKCS#11.
-// Strictly read-only: no PIN verification, signing, decryption, or writes.
+// Web Smart Card (navigator.smartCard) YubiKey PIV transport.
+// Supports read-only PIV inspection, 24-slot hardware audit (sequoia-iwa-hardware-audit v1),
+// and explicit PIN-authorized PIV operations (signDigest, decapsulateComponents, classical ECDH)
+// directly over PC/SC without the extension, native host, or PKCS#11.
 (function(global){
 'use strict';
 
@@ -29,15 +30,92 @@ function toHex(bytes){
   return Array.from(new Uint8Array(bytes)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
-function buildSelectPivApdu(){
-  const out = new Uint8Array(5 + PIV_AID.length);
-  out.set([0x00,0xA4,0x04,0x00,PIV_AID.length], 0);
-  out.set(PIV_AID, 5);
+function toBase64(bytes){
+  const b = new Uint8Array(bytes);
+  let s = '';
+  for(let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
+function fromBase64(str){
+  const bin = atob(str);
+  const out = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function encodeBerLength(len){
+  if(len < 0x80) return new Uint8Array([len]);
+  if(len < 0x100) return new Uint8Array([0x81, len]);
+  if(len < 0x10000) return new Uint8Array([0x82, (len >> 8) & 0xFF, len & 0xFF]);
+  return new Uint8Array([0x83, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF]);
+}
+
+function encodeBerTlv(tag, value){
+  const v = new Uint8Array(value);
+  const tagBytes = tag > 0xFF ? new Uint8Array([(tag >> 8) & 0xFF, tag & 0xFF]) : new Uint8Array([tag]);
+  const lenBytes = encodeBerLength(v.length);
+  const out = new Uint8Array(tagBytes.length + lenBytes.length + v.length);
+  out.set(tagBytes, 0);
+  out.set(lenBytes, tagBytes.length);
+  out.set(v, tagBytes.length + lenBytes.length);
+  return out;
+}
+
+function concatBytes(...parts){
+  const total = parts.reduce((n, p)=>n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for(const p of parts){ out.set(p, off); off += p.length; }
+  return out;
+}
+
+function buildSelectPivApdu(){
+  return concatBytes(new Uint8Array([0x00,0xA4,0x04,0x00,PIV_AID.length]), PIV_AID);
 }
 
 function buildGetMetadataApdu(slotId){
   return new Uint8Array([0x00,0xF7,0x00,slotId & 0xFF]);
+}
+
+function buildVerifyPinApdu(pinBytes){
+  if(!pinBytes || pinBytes.length < 6 || pinBytes.length > 8){
+    throw Error('PIV PIN must be 6 to 8 ASCII characters.');
+  }
+  const apdu = new Uint8Array(13);
+  apdu.set([0x00, 0x20, 0x00, 0x80, 0x08], 0);
+  apdu.fill(0xFF, 5);
+  apdu.set(pinBytes, 5);
+  return apdu;
+}
+
+function buildGeneralAuthenticateData(inputTag, inputBytes){
+  // Dynamic Authentication Template: 7C [ 82 00 | <inputTag> <inputBytes> ]
+  const inner = concatBytes(
+    encodeBerTlv(0x82, new Uint8Array(0)),
+    encodeBerTlv(inputTag, inputBytes)
+  );
+  return encodeBerTlv(0x7C, inner);
+}
+
+function buildChainedApdus(ins, p1, p2, data, maxChunk = 255){
+  const payload = new Uint8Array(data || 0);
+  if(payload.length === 0){
+    return [new Uint8Array([0x00, ins, p1, p2, 0x00])];
+  }
+  const apdus = [];
+  for(let off = 0; off < payload.length; off += maxChunk){
+    const end = Math.min(off + maxChunk, payload.length);
+    const isLast = end === payload.length;
+    const chunk = payload.subarray(off, end);
+    const cla = isLast ? 0x00 : 0x10;
+    const apdu = new Uint8Array(5 + chunk.length + (isLast ? 1 : 0));
+    apdu.set([cla, ins, p1, p2, chunk.length], 0);
+    apdu.set(chunk, 5);
+    if(isLast) apdu[5 + chunk.length] = 0x00; // Le=256 (0x00)
+    apdus.push(apdu);
+  }
+  return apdus;
 }
 
 function splitSw(raw){
@@ -55,11 +133,23 @@ async function transmitChained(conn, apdu){
     resp = splitSw(await conn.transmit(new Uint8Array([0x00,0xC0,0x00,0x00,resp.sw2])));
     chunks.push(resp.data);
   }
-  const total = chunks.reduce((n,c)=>n + c.length, 0);
-  const data = new Uint8Array(total);
-  let off = 0;
-  for(const c of chunks){ data.set(c, off); off += c.length; }
-  return {data, sw:(resp.sw1 << 8) | resp.sw2};
+  return {data: concatBytes(...chunks), sw:(resp.sw1 << 8) | resp.sw2};
+}
+
+async function transmitCommandChained(conn, ins, p1, p2, data){
+  const apdus = buildChainedApdus(ins, p1, p2, data);
+  let last = null;
+  for(let i = 0; i < apdus.length; i++){
+    const isLast = i === apdus.length - 1;
+    if(!isLast){
+      const r = splitSw(await conn.transmit(apdus[i]));
+      const sw = (r.sw1 << 8) | r.sw2;
+      if(sw !== 0x9000) return {data: r.data, sw};
+    }else{
+      last = await transmitChained(conn, apdus[i]);
+    }
+  }
+  return last;
 }
 
 function parseBerTlv(bytes){
@@ -106,6 +196,53 @@ function parseSlotMetadata(bytes){
   };
 }
 
+function parsePinMetadata(bytes){
+  const tlv = parseBerTlv(bytes);
+  const retries = tlv.get(0x06);
+  if(!retries || retries.length < 2) throw Error('Invalid PIV PIN metadata');
+  return {maximum: retries[0], remaining: retries[1]};
+}
+
+function parseGeneralAuthenticateResponse(bytes){
+  const outer = parseBerTlv(bytes);
+  const body = outer.get(0x7C);
+  if(!body) throw Error('Missing 0x7C Dynamic Authentication Template');
+  const inner = parseBerTlv(body);
+  const result = inner.get(0x82);
+  if(!result) throw Error('Missing 0x82 response payload');
+  return result;
+}
+
+function extractEcUncompressedPointFromSpki(spkiBytes){
+  // DER SubjectPublicKeyInfo: SEQUENCE { SEQUENCE { alg }, BIT STRING (0x03 <len> 0x00 <0x04 ...>) }
+  const b = new Uint8Array(spkiBytes);
+  const seq = parseBerTlv(b).get(0x30);
+  if(!seq) throw Error('Invalid SPKI SEQUENCE');
+  let i = 0;
+  // Skip AlgorithmIdentifier SEQUENCE (tag 0x30)
+  if(seq[i++] !== 0x30) throw Error('Missing SPKI AlgorithmIdentifier');
+  let algLen = seq[i++];
+  if(algLen & 0x80){
+    const n = algLen & 0x7F;
+    algLen = 0;
+    for(let k = 0; k < n; k++) algLen = (algLen << 8) | seq[i++];
+  }
+  i += algLen;
+  if(seq[i++] !== 0x03) throw Error('Missing SPKI BIT STRING');
+  let bitLen = seq[i++];
+  if(bitLen & 0x80){
+    const n = bitLen & 0x7F;
+    bitLen = 0;
+    for(let k = 0; k < n; k++) bitLen = (bitLen << 8) | seq[i++];
+  }
+  if(bitLen < 2 || seq[i++] !== 0x00) throw Error('Invalid SPKI BIT STRING padding');
+  const point = seq.slice(i, i + bitLen - 1);
+  if(point[0] !== 0x04 || (point.length !== 65 && point.length !== 97)){
+    throw Error('Unsupported EC point in SPKI');
+  }
+  return point;
+}
+
 function parseVersion(bytes){
   const b = new Uint8Array(bytes);
   if(b.length < 3) return null;
@@ -118,78 +255,311 @@ function parseSerial(bytes){
   return (((b[0] << 24) >>> 0) + (b[1] << 16) + (b[2] << 8) + b[3]);
 }
 
-async function sha256Prefix(bytes){
+async function sha256Hex(bytes){
   if(!bytes || bytes.length === 0) return null;
   const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return toHex(digest).slice(0, 16);
+  return toHex(digest);
 }
 
-async function inspectPivViaSmartCard(options = {}){
+async function withPivSession(expectedSerial, fn){
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
   }
-  const all24 = Boolean(options.all24);
   const ctx = await global.navigator.smartCard.establishContext();
   const readers = await ctx.listReaders();
   if(!readers.length) throw Error('No PC/SC smart card readers detected.');
-  const reader = readers.find(r=>/yubikey/i.test(r)) || readers[0];
-  const {connection, activeProtocol} = await ctx.connect(reader, 'shared', {preferredProtocols:['t1','t0']});
-  try{
-    const st = await connection.status();
-    const report = {
-      reader,
-      allReaders: readers,
-      activeProtocol,
-      state: st.state,
-      atr: toHex(st.answerToReset),
-      version: null,
-      serial: null,
-      slots: [],
-    };
-    await connection.startTransaction(async()=>{
-      const sel = await transmitChained(connection, buildSelectPivApdu());
-      if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
-      const ver = await transmitChained(connection, new Uint8Array([0x00,0xFD,0x00,0x00]));
-      if(ver.sw === 0x9000) report.version = parseVersion(ver.data);
-      const ser = await transmitChained(connection, new Uint8Array([0x00,0xF8,0x00,0x00]));
-      if(ser.sw === 0x9000) report.serial = parseSerial(ser.data);
+  const ordered = [...readers.filter(r=>/yubikey/i.test(r)), ...readers.filter(r=>!/yubikey/i.test(r))];
 
-      const list = all24 ? ALL_24_SLOTS : LEVEL3_SLOTS;
-      for(const slot of list){
-        const meta = await transmitChained(connection, buildGetMetadataApdu(slot.id));
-        if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
-          report.slots.push({slot:slot.hex, role:slot.role||'', present:false});
-        }else if(meta.sw === 0x9000){
-          const parsed = parseSlotMetadata(meta.data);
-          const pubHash = await sha256Prefix(parsed.publicKeyBytes);
-          report.slots.push({
-            slot: slot.hex,
-            role: slot.role || '',
-            present: true,
-            algorithm: parsed.algorithm,
-            pinPolicy: parsed.pinPolicy,
-            touchPolicy: parsed.touchPolicy,
-            origin: parsed.origin,
-            publicKeyLen: parsed.publicKeyBytes.length,
-            publicKeySha256: pubHash,
-          });
-        }else{
-          report.slots.push({slot:slot.hex, role:slot.role||'', present:false, status:'SW=0x' + meta.sw.toString(16)});
+  let lastError = null;
+  for(const reader of ordered){
+    let conn = null;
+    try{
+      const opened = await ctx.connect(reader, 'shared', {preferredProtocols:['t1','t0']});
+      conn = opened.connection;
+      const st = await conn.status();
+      let result;
+      let matched = true;
+      await conn.startTransaction(async()=>{
+        const sel = await transmitChained(conn, buildSelectPivApdu());
+        if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
+        const ver = await transmitChained(conn, new Uint8Array([0x00,0xFD,0x00,0x00]));
+        const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
+        const ser = await transmitChained(conn, new Uint8Array([0x00,0xF8,0x00,0x00]));
+        const serial = ser.sw === 0x9000 ? String(parseSerial(ser.data)) : null;
+        if(expectedSerial && serial !== String(expectedSerial)){
+          matched = false;
+          return 'leave';
         }
-      }
-      return 'leave';
-    });
-    return report;
+        result = await fn(conn, {reader, allReaders: readers, activeProtocol: opened.activeProtocol, state: st.state, atr: toHex(st.answerToReset), version, serial});
+        return 'leave';
+      });
+      if(matched) return result;
+    }catch(e){
+      lastError = e;
+      if(!expectedSerial) throw e;
+    }finally{
+      if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
+    }
+  }
+  if(expectedSerial){
+    throw Error('Expected YubiKey ' + expectedSerial + ' is not connected.');
+  }
+  throw lastError || Error('No compatible YubiKey PIV reader found.');
+}
+
+async function listYubiKeys(){
+  if(!global.navigator?.smartCard){
+    throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
+  }
+  const ctx = await global.navigator.smartCard.establishContext();
+  const readers = await ctx.listReaders();
+  const devices = [];
+  for(const reader of readers){
+    let conn = null;
+    try{
+      const opened = await ctx.connect(reader, 'shared', {preferredProtocols:['t1','t0']});
+      conn = opened.connection;
+      await conn.startTransaction(async()=>{
+        const sel = await transmitChained(conn, buildSelectPivApdu());
+        if(sel.sw !== 0x9000) return 'leave';
+        const ver = await transmitChained(conn, new Uint8Array([0x00,0xFD,0x00,0x00]));
+        const ser = await transmitChained(conn, new Uint8Array([0x00,0xF8,0x00,0x00]));
+        if(ser.sw === 0x9000){
+          devices.push({
+            reader,
+            serial: String(parseSerial(ser.data)),
+            version: ver.sw === 0x9000 ? parseVersion(ver.data) : null,
+          });
+        }
+        return 'leave';
+      });
+    }catch(_){
+      // Ignore non-PIV readers when enumerating YubiKeys.
+    }finally{
+      if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
+    }
+  }
+  return devices;
+}
+
+async function readAll24Slots(conn){
+  const slots = [];
+  for(const slot of ALL_24_SLOTS){
+    const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
+    if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
+      slots.push({slot: slot.hex, publicKeySha256: null, algorithm: null, origin: null, pinPolicy: null, touchPolicy: null});
+    }else if(meta.sw === 0x9000){
+      const parsed = parseSlotMetadata(meta.data);
+      const hash = await sha256Hex(parsed.publicKeyBytes);
+      slots.push({
+        slot: slot.hex,
+        publicKeySha256: hash,
+        algorithm: parsed.algorithm,
+        origin: parsed.origin,
+        pinPolicy: parsed.pinPolicy,
+        touchPolicy: parsed.touchPolicy,
+      });
+    }else{
+      throw Error('Incomplete hardware slot audit on ' + slot.hex + ': SW=0x' + meta.sw.toString(16));
+    }
+  }
+  return slots;
+}
+
+async function readPinRetries(conn){
+  const meta = await transmitChained(conn, buildGetMetadataApdu(0x80));
+  if(meta.sw !== 0x9000) throw Error('Failed to read PIV PIN retries: SW=0x' + meta.sw.toString(16));
+  return parsePinMetadata(meta.data);
+}
+
+async function hardwareAuditViaSmartCard(identity){
+  const serial = identity?.serial ? String(identity.serial) : null;
+  if(!serial) throw Error('Audit requires a hardware identity with a YubiKey serial.');
+  return withPivSession(serial, async(conn, info)=>{
+    const beforePin = await readPinRetries(conn);
+    const first = await readAll24Slots(conn);
+    const second = await readAll24Slots(conn);
+    const afterPin = await readPinRetries(conn);
+    if(JSON.stringify(first) !== JSON.stringify(second) ||
+       beforePin.remaining !== afterPin.remaining || beforePin.maximum !== afterPin.maximum){
+      throw Error('Hardware changed during audit');
+    }
+    const backendId = new TextEncoder().encode('web-smartcard-pcsc:' + info.reader + ':' + (info.version || ''));
+    const backendHash = await sha256Hex(backendId);
+    return {
+      format: 'sequoia-iwa-hardware-audit',
+      version: 1,
+      identity: {
+        serial: String(identity.serial),
+        fingerprint: identity.fingerprint,
+        certificateHash: identity.certificateHash,
+        email: identity.email,
+      },
+      slots: first,
+      pinRetries: beforePin,
+      backendHash,
+    };
+  });
+}
+
+async function verifyPinOnConnection(conn, pinStr){
+  const pinBytes = new TextEncoder().encode(pinStr);
+  const apdu = buildVerifyPinApdu(pinBytes);
+  try{
+    const res = splitSw(await conn.transmit(apdu));
+    const sw = (res.sw1 << 8) | res.sw2;
+    if(sw === 0x9000) return;
+    if((sw & 0xFFF0) === 0x63C0){
+      const left = sw & 0x0F;
+      throw Error(`Incorrect PIV PIN (${left} ${left === 1 ? 'retry' : 'retries'} remaining).`);
+    }
+    if(sw === 0x6983) throw Error('PIV PIN is blocked.');
+    throw Error('PIV PIN verification failed: SW=0x' + sw.toString(16));
   }finally{
-    await connection.disconnect('leave');
+    pinBytes.fill(0);
+    apdu.fill(0);
   }
 }
 
+async function signDigestViaSmartCard(request, identity, promptPin){
+  const serial = identity?.serial ? String(identity.serial) : null;
+  const digestBytes = fromBase64(request.digest);
+  if(digestBytes.length !== 64) throw Error('Exactly one 64-byte SHA-512 digest required.');
+  const pin = await promptPin({
+    title: 'PIV PIN — Sign message',
+    detail: `YubiKey ${serial || '(connected)'} · slots 9C (ML-DSA-65) + 84 (Ed25519). Touch if requested.`,
+  });
+  return withPivSession(serial, async(conn)=>{
+    const meta9c = await transmitChained(conn, buildGetMetadataApdu(0x9C));
+    if(meta9c.sw !== 0x9000) throw Error('Signing slot 9c metadata unavailable: SW=0x' + meta9c.sw.toString(16));
+    const alg9c = parseSlotMetadata(meta9c.data).algorithmId;
+    const meta84 = await transmitChained(conn, buildGetMetadataApdu(0x84));
+    if(meta84.sw !== 0x9000) throw Error('Signing slot 84 metadata unavailable: SW=0x' + meta84.sw.toString(16));
+    const alg84 = parseSlotMetadata(meta84.data).algorithmId;
+    if(alg9c == null || alg84 == null) throw Error('Unable to determine PIV signing slot algorithms.');
+
+    await verifyPinOnConnection(conn, pin);
+
+    const ga84 = await transmitCommandChained(conn, 0x87, alg84, 0x84, buildGeneralAuthenticateData(0x81, digestBytes));
+    if(ga84.sw !== 0x9000) throw Error('Ed25519 PIV sign (slot 84) failed: SW=0x' + ga84.sw.toString(16));
+    const ed25519 = parseGeneralAuthenticateResponse(ga84.data);
+
+    const ga9c = await transmitCommandChained(conn, 0x87, alg9c, 0x9C, buildGeneralAuthenticateData(0x81, digestBytes));
+    if(ga9c.sw !== 0x9000) throw Error('ML-DSA-65 PIV sign (slot 9c) failed: SW=0x' + ga9c.sw.toString(16));
+    const mldsa65 = parseGeneralAuthenticateResponse(ga9c.data);
+
+    return {
+      requestId: request.requestId,
+      hashAlgorithm: 10,
+      signingFingerprint: request.signingFingerprint,
+      digest: request.digest,
+      ed25519: toBase64(ed25519),
+      mldsa65: toBase64(mldsa65),
+    };
+  });
+}
+
+async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
+  const serial = identity?.serial ? String(identity.serial) : null;
+  const mlkemCt = fromBase64(request.mlkemCiphertext);
+  const x25519Eph = fromBase64(request.x25519Ephemeral);
+  if(mlkemCt.length !== 1088) throw Error('Invalid ML-KEM-768 ciphertext size.');
+  if(x25519Eph.length !== 32 || !x25519Eph.some(b=>b !== 0)) throw Error('Invalid X25519 ephemeral public key.');
+
+  const pin = await promptPin({
+    title: 'PIV PIN — Decrypt',
+    detail: `YubiKey ${serial || '(connected)'} · slots 9D (ML-KEM-768) + 85 (X25519). Touch if requested.`,
+  });
+  return withPivSession(serial, async(conn)=>{
+    const meta9d = await transmitChained(conn, buildGetMetadataApdu(0x9D));
+    if(meta9d.sw !== 0x9000) throw Error('Decryption slot 9d metadata unavailable: SW=0x' + meta9d.sw.toString(16));
+    const alg9d = parseSlotMetadata(meta9d.data).algorithmId;
+    const meta85 = await transmitChained(conn, buildGetMetadataApdu(0x85));
+    if(meta85.sw !== 0x9000) throw Error('Decryption slot 85 metadata unavailable: SW=0x' + meta85.sw.toString(16));
+    const alg85 = parseSlotMetadata(meta85.data).algorithmId;
+    if(alg9d == null || alg85 == null) throw Error('Unable to determine PIV decryption slot algorithms.');
+
+    await verifyPinOnConnection(conn, pin);
+
+    const ga9d = await transmitCommandChained(conn, 0x87, alg9d, 0x9D, buildGeneralAuthenticateData(0x85, mlkemCt));
+    if(ga9d.sw !== 0x9000) throw Error('ML-KEM-768 PIV decapsulate (slot 9d) failed: SW=0x' + ga9d.sw.toString(16));
+    const mlkemShare = parseGeneralAuthenticateResponse(ga9d.data);
+    if(mlkemShare.length !== 32) throw Error('Incorrect ML-KEM-768 shared secret length.');
+
+    const ga85 = await transmitCommandChained(conn, 0x87, alg85, 0x85, buildGeneralAuthenticateData(0x85, x25519Eph));
+    if(ga85.sw !== 0x9000) throw Error('X25519 PIV ECDH (slot 85) failed: SW=0x' + ga85.sw.toString(16));
+    const x25519Share = parseGeneralAuthenticateResponse(ga85.data);
+    if(x25519Share.length !== 32 || !x25519Share.some(b=>b !== 0)){
+      throw Error('Rejected invalid or all-zero X25519 shared secret.');
+    }
+
+    return {
+      requestId: request.requestId,
+      cipherHash: request.cipherHash,
+      recipientKey: request.recipientKey,
+      mlkemCiphertext: request.mlkemCiphertext,
+      x25519Ephemeral: request.x25519Ephemeral,
+      mlkemShare: toBase64(mlkemShare),
+      x25519Share: toBase64(x25519Share),
+    };
+  });
+}
+
+async function ecdhViaSmartCard(request, slotHex, serial, promptPin){
+  const slotId = parseInt(slotHex || '9d', 16);
+  const peerPoint = extractEcUncompressedPointFromSpki(fromBase64(request.peer));
+  const algId = peerPoint.length === 65 ? 0x11 : 0x14;
+  const pin = await promptPin({
+    title: 'PIV PIN — Unlock vault (ECDH)',
+    detail: `YubiKey ${serial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
+  });
+  return withPivSession(serial, async(conn)=>{
+    await verifyPinOnConnection(conn, pin);
+    const ga = await transmitCommandChained(conn, 0x87, algId, slotId, buildGeneralAuthenticateData(0x85, peerPoint));
+    if(ga.sw !== 0x9000) throw Error('PIV ECDH failed: SW=0x' + ga.sw.toString(16));
+    const secret = parseGeneralAuthenticateResponse(ga.data);
+    return {secret: toBase64(secret), fingerprint: request.fingerprint};
+  });
+}
+
+async function inspectPivViaSmartCard(options = {}){
+  const all24 = Boolean(options.all24);
+  return withPivSession(options.serial || null, async(conn, info)=>{
+    const report = {...info, pinRetries: null, slots: []};
+    try{ report.pinRetries = await readPinRetries(conn); }catch(_){}
+    const list = all24 ? ALL_24_SLOTS : LEVEL3_SLOTS;
+    for(const slot of list){
+      const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
+      if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
+        report.slots.push({slot:slot.hex, role:slot.role||'', present:false});
+      }else if(meta.sw === 0x9000){
+        const parsed = parseSlotMetadata(meta.data);
+        const fullHash = await sha256Hex(parsed.publicKeyBytes);
+        report.slots.push({
+          slot: slot.hex,
+          role: slot.role || '',
+          present: true,
+          algorithm: parsed.algorithm,
+          pinPolicy: parsed.pinPolicy,
+          touchPolicy: parsed.touchPolicy,
+          origin: parsed.origin,
+          publicKeyLen: parsed.publicKeyBytes.length,
+          publicKeySha256: fullHash ? fullHash.slice(0, 16) : null,
+        });
+      }else{
+        report.slots.push({slot:slot.hex, role:slot.role||'', present:false, status:'SW=0x' + meta.sw.toString(16)});
+      }
+    }
+    return report;
+  });
+}
+
 function formatPivReport(r){
+  const pinText = r.pinRetries ? ` · PIN retries=${r.pinRetries.remaining}/${r.pinRetries.maximum}` : '';
   const lines = [
     `Web Smart Card (direct macOS PCSC) — read-only`,
     `Reader: ${r.reader} (${r.activeProtocol}, state=${r.state})`,
-    `PIV firmware: ${r.version ?? 'unavailable'} · Serial: ${r.serial ?? 'unavailable'}`,
+    `PIV firmware: ${r.version ?? 'unavailable'} · Serial: ${r.serial ?? 'unavailable'}${pinText}`,
     `ATR: ${r.atr}`,
     '',
     'PIV slots:',
@@ -207,14 +577,28 @@ function formatPivReport(r){
 }
 
 const api = {
+  encodeBerLength,
+  encodeBerTlv,
   buildSelectPivApdu,
   buildGetMetadataApdu,
+  buildVerifyPinApdu,
+  buildGeneralAuthenticateData,
+  buildChainedApdus,
   splitSw,
   transmitChained,
+  transmitCommandChained,
   parseBerTlv,
   parseSlotMetadata,
+  parsePinMetadata,
+  parseGeneralAuthenticateResponse,
+  extractEcUncompressedPointFromSpki,
   parseVersion,
   parseSerial,
+  listYubiKeys,
+  hardwareAuditViaSmartCard,
+  signDigestViaSmartCard,
+  decapsulateComponentsViaSmartCard,
+  ecdhViaSmartCard,
   inspectPivViaSmartCard,
   formatPivReport,
 };

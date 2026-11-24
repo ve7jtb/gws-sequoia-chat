@@ -52,6 +52,14 @@ function nativeRequest(op,data={},options={}) {
   }catch(_){finish(Error('Companion extension unavailable.'));}
  });
 }
+// Route hardware requests explicitly through the user-selected hardware transport
+// ('native' helper PKCS#11 or 'smartcard' navigator.smartCard). No silent fallback.
+function hardwareRequest(op,data={},options={}) {
+ if(window.hardwareTransport){
+  return window.hardwareTransport.dispatch(op,data,options,nativeRequest,{identityStore:ownIdentityStore,say});
+ }
+ return nativeRequest(op,data,options);
+}
 // Provider choice is pinned by a revision-checked inventory snapshot. An error
 // in software custody never causes a native key lookup or a hardware retry.
 function identityRequest(snapshot){
@@ -60,7 +68,7 @@ function identityRequest(snapshot){
   return window.softwareIdentities.native(snapshot);
  }
  if(snapshot&&Object.hasOwn(snapshot,'provider'))throw Error('Unknown identity provider.');
- return nativeRequest;
+ return hardwareRequest;
 }
 function custodyLabel(identity){return identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial+(identity.custody==='hardware-companion'?' + encrypted software companion':'');}
 // Display only the selected certificate's authenticated component mapping.
@@ -109,9 +117,9 @@ function dispatchRequest(op,data={}) {
   // Carry a revision-bound account through asynchronous Google and identity
   // work. A second window changing settings invalidates it even before the
   // storage event arrives; no native configuration is a fallback authority.
-  return window.googleTransport.call(op,data,nativeRequest,{account:snapshot.email,contacts,certificateStore,composeReviews,identitySelection,identityRequest,assertAccount:()=>assertAccount(snapshot)}).then(result=>{assertAccount(snapshot);return result;});
+  return window.googleTransport.call(op,data,hardwareRequest,{account:snapshot.email,contacts,certificateStore,composeReviews,identitySelection,identityRequest,assertAccount:()=>assertAccount(snapshot)}).then(result=>{assertAccount(snapshot);return result;});
  }
- return nativeRequest(op,data);
+ return hardwareRequest(op,data);
 }
 function call(op,data={}) {
  if(busy)return Promise.reject(Error('An operation is already running.'));
@@ -318,7 +326,7 @@ async function bootstrap(){
  // unavailable. Startup loads only IWA public stores; hardware metadata is read
  // only when the user explicitly invokes a hardware control or migration.
  const {initializeIdentities}=await import('./identities/ui.js');
- identityUi=await initializeIdentities({request:nativeRequest,say,isBusy:()=>busy,setBusy:operationBusy,identityStore:ownIdentityStore});
+ identityUi=await initializeIdentities({request:hardwareRequest,say,isBusy:()=>busy,setBusy:operationBusy,identityStore:ownIdentityStore});
  const {initializeSoftwareUi}=await import('./software-ui.js');
  softwareUi=initializeSoftwareUi({isBusy:()=>busy,setBusy:operationBusy,say,account:()=>ownEmail,
   changed:async()=>{invalidateCertificateViews();await refreshSendIdentities();},
@@ -563,7 +571,7 @@ event('test',async()=>{
  try{
   const {runHardwareTest,signingFailureLabel}=await import('./hardware-test.js');
   const gate=async()=>{assertAccount(account);window.vaultGate?.();if($('test-identity').value!==choice)throw Error('Test identity changed.');};
-  const result=await runHardwareTest({identity:selected,selection:hardwareIdentitySelection,native:nativeRequest,gate,signal:hardwareTestAbort.signal,
+  const result=await runHardwareTest({identity:selected,selection:hardwareIdentitySelection,native:hardwareRequest,gate,signal:hardwareTestAbort.signal,
    createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
    createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'}),
    onProgress:message=>{$('test-progress').textContent=message;say(message);}});
