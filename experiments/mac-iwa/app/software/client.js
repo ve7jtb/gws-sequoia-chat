@@ -7,8 +7,8 @@ const policy=globalThis.trustedTypes?.createPolicy('sequoia-software-worker',{
 });
 export function createSoftwareClient({createWorker=()=>new Worker(policy?policy.createScriptURL('/software/worker.js'):'/software/worker.js',{type:'module'}),timeoutMs=90000}={}){
  return async function software(op,input,{signal}={}){
-  if(!['inspect','sign','decapsulate'].includes(op))throw Error('Unsupported software operation.');
-  if(JSON.stringify(input).length>400000)throw Error('Software identity request is too large.');
+  if(!['inspect','sign','decapsulate','generate','export','import-p12'].includes(op))throw Error('Unsupported software operation.');
+  if(JSON.stringify(input).length>(op==='import-p12'?1500000:400000))throw Error('Software identity request is too large.');
   return new Promise((resolve,reject)=>{
    let worker,timer,finished=false;const id=crypto.randomUUID();
    const finish=(error,result)=>{
@@ -21,7 +21,7 @@ export function createSoftwareClient({createWorker=()=>new Worker(policy?policy.
    try{
     if(signal?.aborted){cancel();return;}
     signal?.addEventListener('abort',cancel,{once:true});worker=createWorker();
-    timer=setTimeout(()=>finish('Software identity operation timed out; no retry.'),timeoutMs);
+    timer=setTimeout(()=>finish('Software identity operation timed out; no retry.'),op==='import-p12'?Math.max(timeoutMs,180000):timeoutMs);
     worker.onerror=()=>finish('Software cryptography failed; no hardware fallback.');
     worker.onmessage=({data})=>{
      if(!data||data.id!==id||typeof data.ok!=='boolean')return finish('Software response belongs to a different operation.');

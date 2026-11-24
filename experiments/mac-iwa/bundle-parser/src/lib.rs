@@ -35,6 +35,18 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{BTreeMap, BTreeSet};
 mod der;
+pub mod v5;
+pub mod companion;
+/// Use the browser clock in WASM and the OS clock natively. The public
+/// request cannot supply its own timestamp to bypass certificate expiry.
+pub fn current_time()->Result<u32>{
+ #[cfg(target_arch="wasm32")] {
+  let milliseconds=js_sys::Date::now();
+  ensure!(milliseconds.is_finite()&&milliseconds>=0.0&&milliseconds/1000.0<=u32::MAX as f64,"Clock out of range");
+  Ok((milliseconds/1000.0) as u32)
+ }
+ #[cfg(not(target_arch="wasm32"))] {Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs().try_into()?)}
+}
 const MAX: usize = 65_536;
 struct Profile {
     serial: u32,
@@ -57,7 +69,9 @@ pub struct VerifiedBundle {
 #[derive(Clone, Copy)]
 enum Operation {
     MlDsa65,
+    MlDsa87,
     MlKem768,
+    MlKem1024,
     Ed25519,
     X25519,
 }
@@ -68,7 +82,9 @@ enum Operation {
 fn public_spki(operation: Operation, raw: &[u8]) -> Result<Vec<u8>> {
     let (algorithm, size): (&[u8], usize) = match operation {
         Operation::MlDsa65 => (der::MLDSA65, 1952),
+        Operation::MlDsa87 => (der::MLDSA87, 2592),
         Operation::MlKem768 => (der::MLKEM768, 1184),
+        Operation::MlKem1024 => (der::MLKEM1024, 1568),
         Operation::Ed25519 => (&[0x30, 5, 6, 3, 0x2b, 0x65, 0x70], 32),
         Operation::X25519 => (&[0x30, 5, 6, 3, 0x2b, 0x65, 0x6e], 32),
     };
@@ -134,33 +150,21 @@ fn add(keys: &mut BTreeMap<u8, Vec<u8>>, slot: u8, spki: Vec<u8>) -> Result<()> 
     Ok(())
 }
 fn x509_bindings(p: &Profile, keys: &mut BTreeMap<u8, Vec<u8>>) -> Result<bool> {
-    ensure!(
-        p.slots == [0x9c, 0x83, 0x9d, 0x82],
-        "Unsupported Level 3 slot mapping; restore does not migrate keys"
-    );
-    let sign = der::certificate_spki(&p.sign)?;
-    let enc = der::certificate_spki(&p.enc)?;
-    let (sa, s) = der::spki(&sign)?;
-    let (ea, e) = der::spki(&enc)?;
-    if sa == der::MLDSA65 && ea == der::MLKEM768 {
-        add(keys, 0x9c, public_spki(Operation::MlDsa65, s)?)?;
-        add(keys, 0x9d, public_spki(Operation::MlKem768, e)?)?;
-        Ok(false)
-    } else {
-        ensure!(
-            sa == der::COMPOSITE_SIGN && ea == der::COMPOSITE_KEM,
-            "Unsupported bundle profile (requires Level 3 ML-DSA-65/P-384)"
-        );
-        ensure!(
-            s.len() == 1952 + 97 && e.len() == 1184 + 97,
-            "Invalid composite public-key lengths"
-        );
-        add(keys, 0x9c, public_spki(Operation::MlDsa65, &s[..1952])?)?;
-        add(keys, 0x83, der::p384(&s[1952..])?)?;
-        add(keys, 0x9d, public_spki(Operation::MlKem768, &e[..1184])?)?;
-        add(keys, 0x82, der::p384(&e[1184..])?)?;
-        Ok(true)
-    }
+    ensure!(p.slots == [0x9c,0x83,0x9d,0x82], "Unsupported slot mapping; restore never migrates keys");
+    let sign=der::certificate_spki(&p.sign)?; let enc=der::certificate_spki(&p.enc)?;
+    let(sa,s)=der::spki(&sign)?; let(ea,e)=der::spki(&enc)?;
+    // Select an entire supported pair, not two independently guessed algorithms.
+    let (sign_op,enc_op,sign_size,enc_size,hybrid)=
+      if sa==der::MLDSA65 && ea==der::MLKEM768 {(Operation::MlDsa65,Operation::MlKem768,1952,1184,false)}
+      else if sa==der::MLDSA87 && ea==der::MLKEM1024 {(Operation::MlDsa87,Operation::MlKem1024,2592,1568,false)}
+      else if sa==der::COMPOSITE_SIGN && ea==der::COMPOSITE_KEM {(Operation::MlDsa65,Operation::MlKem768,1952,1184,true)}
+      else if sa==der::COMPOSITE_SIGN_87 && ea==der::COMPOSITE_KEM_1024 {(Operation::MlDsa87,Operation::MlKem1024,2592,1568,true)}
+      else {bail!("Unsupported or mixed S/MIME bundle profile")};
+    ensure!(s.len()==sign_size+if hybrid{97}else{0} && e.len()==enc_size+if hybrid{97}else{0},"Invalid composite public-key lengths");
+    add(keys,0x9c,public_spki(sign_op,&s[..sign_size])?)?;
+    add(keys,0x9d,public_spki(enc_op,&e[..enc_size])?)?;
+    if hybrid {add(keys,0x83,der::p384(&s[sign_size..])?)?;add(keys,0x82,der::p384(&e[enc_size..])?)?;}
+    Ok(hybrid)
 }
 
 /// PQ Mail's composite representative signs the SHA-512 payload digest with
@@ -168,52 +172,31 @@ fn x509_bindings(p: &Profile, keys: &mut BTreeMap<u8, Vec<u8>>) -> Result<bool> 
 /// ECDSA signs the SAME representative using SHA-384. Both components must
 /// verify. Neither zlib integrity nor the PQ half alone authenticates a bundle.
 fn verify_envelope(payload: &[u8], signature: &[u8], profile: &Profile) -> Result<()> {
-    use ml_dsa::{MlDsa65, Signature, VerifyingKey};
-    use p384::ecdsa::{signature::Verifier, Signature as EcSignature, VerifyingKey as EcKey};
-    let spki = der::certificate_spki(&profile.sign)?;
-    let (algorithm, raw) = der::spki(&spki)?;
-    let hybrid = algorithm == der::COMPOSITE_SIGN;
-    ensure!(
-        hybrid || algorithm == der::MLDSA65,
-        "Unsupported bundle signing algorithm"
-    );
-    ensure!(
-        raw.len() == if hybrid { 2049 } else { 1952 },
-        "Invalid signing key length"
-    );
-    ensure!(
-        if hybrid {
-            (3310..=3413).contains(&signature.len())
-        } else {
-            signature.len() == 3309
-        },
-        "Invalid bundle signature length"
-    );
-    let domain = b"COMPSIG-MLDSA65-ECDSA-P384-SHA512";
-    let message = if hybrid {
-        let mut message = b"CompositeAlgorithmSignatures2025".to_vec();
-        message.extend(domain);
-        message.push(0);
-        message.extend(Sha512::digest(payload));
-        message
+    use ml_dsa::{MlDsa65,MlDsa87,Signature,VerifyingKey};
+    use p384::ecdsa::{signature::Verifier,Signature as EcSignature,VerifyingKey as EcKey};
+    let spki=der::certificate_spki(&profile.sign)?; let(algorithm,raw)=der::spki(&spki)?;
+    let (level5,hybrid)= if algorithm==der::MLDSA65{(false,false)}
+      else if algorithm==der::MLDSA87{(true,false)}
+      else if algorithm==der::COMPOSITE_SIGN{(false,true)}
+      else if algorithm==der::COMPOSITE_SIGN_87{(true,true)}
+      else {bail!("Unsupported bundle signing algorithm")};
+    let (key_size,sig_size) = if level5{(2592,4627)}else{(1952,3309)};
+    ensure!(raw.len()==key_size+if hybrid{97}else{0},"Invalid signing key length");
+    ensure!(if hybrid{signature.len()>sig_size && signature.len()<=sig_size+104}else{signature.len()==sig_size},"Invalid bundle signature length");
+    let domain: &[u8]=if level5{b"COMPSIG-MLDSA87-ECDSA-P384-SHA512"}else{b"COMPSIG-MLDSA65-ECDSA-P384-SHA512"};
+    let message=if hybrid {let mut m=b"CompositeAlgorithmSignatures2025".to_vec();m.extend(domain);m.push(0);m.extend(Sha512::digest(payload));m}else{payload.to_vec()};
+    let context=if hybrid{domain}else{b""};
+    // FIPS 204 parameter sets have different fixed sizes; decoding the exact
+    // signature type ensures no truncation or cross-parameter interpretation.
+    let valid=if level5 {
+      let kb:&[u8;2592]=raw[..2592].try_into()?;let sb:&[u8;4627]=signature[..4627].try_into()?;
+      VerifyingKey::<MlDsa87>::decode(kb.into()).verify_with_context(&message,context,&Signature::<MlDsa87>::decode(sb.into()).context("Invalid ML-DSA-87 signature")?)
     } else {
-        payload.to_vec()
+      let kb:&[u8;1952]=raw[..1952].try_into()?;let sb:&[u8;3309]=signature[..3309].try_into()?;
+      VerifyingKey::<MlDsa65>::decode(kb.into()).verify_with_context(&message,context,&Signature::<MlDsa65>::decode(sb.into()).context("Invalid ML-DSA-65 signature")?)
     };
-    let key_bytes: &[u8; 1952] = raw[..1952].try_into()?;
-    let sig_bytes: &[u8; 3309] = signature[..3309].try_into()?;
-    let key = VerifyingKey::<MlDsa65>::decode(key_bytes.into());
-    let sig = Signature::<MlDsa65>::decode(sig_bytes.into())
-        .context("Invalid ML-DSA signature encoding")?;
-    ensure!(
-        key.verify_with_context(&message, if hybrid { domain } else { b"" }, &sig),
-        "Bundle ML-DSA signature failed"
-    );
-    if hybrid {
-        let key = EcKey::from_sec1_bytes(&raw[1952..])?;
-        let sig = EcSignature::from_der(&signature[3309..])?;
-        key.verify(&message, &sig)
-            .context("Bundle ECDSA signature failed")?;
-    }
+    ensure!(valid,"Bundle ML-DSA signature failed");
+    if hybrid {EcKey::from_sec1_bytes(&raw[key_size..])?.verify(&message,&EcSignature::from_der(&signature[sig_size..])?).context("Bundle ECDSA signature failed")?;}
     Ok(())
 }
 
@@ -266,6 +249,9 @@ fn pgp_bindings(
             && compat.is_none_or(|c| c.primary_key().key().version() == 4),
         "Expected v6 identity and v4 compatibility certificate"
     );
+    if matches!(cert.primary_key().key().mpis(),mpi::PublicKey::ECDSA{curve:Curve::NistP384,..}) {
+        return level5_bindings(cert,compat,keys);
+    }
     let policy = StandardPolicy::new();
     let valid = cert.with_policy(&policy, None)?;
     valid.alive()?;
@@ -409,6 +395,40 @@ fn pgp_bindings(
     Ok(())
 }
 
+/// The ordinary Level 5 card bundle uses classical P-384 OpenPGP. Its base
+/// RFC 9980 hybrid identity is a separate authenticated encrypted companion.
+/// Do not mistake the S/MIME ML-DSA keys for an absent OpenPGP hybrid signer.
+fn level5_bindings(cert:&Cert,compat:Option<&Cert>,keys:&mut BTreeMap<u8,Vec<u8>>)->Result<()> {
+ let policy=StandardPolicy::new();
+ for (c,is_compat) in std::iter::once((cert,false)).chain(compat.map(|c|(c,true))) {
+  let valid=c.with_policy(&policy,None)?;valid.alive()?;
+  ensure!(!matches!(valid.revocation_status(),pgp::types::RevocationStatus::Revoked(_)),"Revoked Level 5 certificate");
+  ensure!(valid.primary_key().for_certification(),"Primary certification flag required");
+  let mut count=0;let mut roles=BTreeSet::new();
+  for k in c.keys().with_policy(&policy,None).alive().revoked(false) {
+   ensure!(k.key().version()==if is_compat{4}else{6},"Mixed certificate versions");
+   match k.key().mpis() {
+    mpi::PublicKey::ECDSA{curve:Curve::NistP384,q} if k.primary()&&k.for_signing()=>{ensure!(roles.insert("signing"),"Duplicate signing role");add(keys,if is_compat{0x88}else{0x83},der::p384(q.value())?)?;},
+    mpi::PublicKey::ECDH{curve:Curve::NistP384,q,..} if !k.primary()&&k.for_transport_encryption()=>{ensure!(roles.insert("classical-decryption"),"Duplicate classical decryption role");add(keys,if is_compat{0x89}else{0x82},der::p384(q.value())?)?;},
+    mpi::PublicKey::MLKEM768_X25519{mlkem,ecdh} if is_compat&&!k.primary()&&k.for_transport_encryption()=>{
+      ensure!(roles.insert("hybrid-decryption"),"Duplicate hybrid decryption role");
+      add(keys,0x84,public_spki(Operation::MlKem768,mlkem.as_slice())?)?;
+      add(keys,0x85,public_spki(Operation::X25519,ecdh.as_slice())?)?;
+    }
+    _=>bail!("Unsupported Level 5 OpenPGP role")
+   };count+=1;
+  }
+  let expected=if is_compat{3}else{2};
+  ensure!(count==expected&&c.keys().count()==expected&&roles.len()==expected,"Incomplete Level 5 certificate roles");
+ }
+ if let Some(c)=compat {ensure!(emails(c)?.is_subset(&emails(cert)?),"Compatibility email mismatch");}
+ emails(cert)?;
+ // A P-384 OpenPGP pair belongs to Level 5 only if the SAME envelope also
+ // authenticates ML-DSA-87/ML-KEM-1024 hardware keys; names alone are not proof.
+ ensure!(der::spki(keys.get(&0x9c).context("ML-DSA slot")?)?.0==der::MLDSA87&&der::spki(keys.get(&0x9d).context("ML-KEM slot")?)?.0==der::MLKEM1024,"Level 5 S/MIME hardware bindings required");
+ Ok(())
+}
+
 /// Authenticate all public bytes and role bindings. A successful result does
 /// not authorize hardware use: the native caller must still match the serial
 /// and every component with fresh public reads from its selected physical card.
@@ -499,11 +519,11 @@ pub fn verify(stored: &[u8]) -> Result<VerifiedBundle> {
 /// Strict browser request wrapper. Native callers use `verify` directly and
 /// cannot supply source/generation/live-match flags through this JSON surface.
 pub fn inspect(input: &str) -> Result<String> {
-    ensure!(input.len() <= 90_000, "Bundle request limit");
+    ensure!(input.len() <= 450_000, "Bundle request limit");
     let value: Value = serde_json::from_str(input)?;
     let request = value.as_object().context("Object required")?;
     ensure!(
-        request.len() == 1 && request.contains_key("bundle"),
+        request.contains_key("bundle") && request.keys().all(|k|k=="bundle"||k=="compatibilityCertificate"),
         "Unexpected fields"
     );
     let encoded = value["bundle"].as_str().context("Bundle required")?;
@@ -513,7 +533,19 @@ pub fn inspect(input: &str) -> Result<String> {
         B64.encode(&stored) == encoded,
         "Canonical bundle encoding required"
     );
-    Ok(verify(&stored)?.preview()?.to_string())
+    let verified=verify(&stored)?;
+    let mut preview=verified.preview()?;
+    if let Some(encoded)=value.get("compatibilityCertificate") {
+      let encoded=encoded.as_str().context("V5 certificate required")?;
+      ensure!(encoded.len()<=349528,"V5 certificate size");
+      let bytes=B64.decode(encoded)?;
+      ensure!(B64.encode(&bytes)==encoded,"Canonical v5 certificate encoding");
+      // Time is obtained by Sequoia's backend clock, which is also available
+      // in wasm32. No time or expiry flag can be supplied by the bridge caller.
+      let now=current_time()?;
+      preview["certificates"].as_array_mut().context("Certificate list")?.push(verified.v5_view(&bytes,now)?);
+    }
+    Ok(preview.to_string())
 }
 
 impl VerifiedBundle {
@@ -529,43 +561,61 @@ impl VerifiedBundle {
         &self.keys
     }
 
+    /// Bind an optional, already self-certified v5 view to all of the
+    /// authenticated L3 hardware components. It is a host-only public import,
+    /// never a request to generate a signature or change the on-key bundle.
+    pub fn v5_view(&self,bytes:&[u8],now:u32)->Result<Value>{
+      ensure!(matches!(self.cert.primary_key().key().mpis(),mpi::PublicKey::MLDSA65_Ed25519{..}),"V5 import requires Level 3 hardware bundle");
+      let info=v5::inspect(bytes,now)?;
+      let allowed=emails(&self.cert)?;
+      ensure!(info["emails"].as_array().context("V5 certified emails")?.iter().all(|e|e.as_str().is_some_and(|e|allowed.contains(e))),"V5 mailbox does not match bundle");
+      let mut components=info["components"].as_array().context("V5 components")?.clone();
+      for (component,slot) in components.iter_mut().zip([0x88,0x9d,0x85]) {
+        let expected=self.keys.get(&slot).context("V5 hardware role missing")?;
+        ensure!(B64.decode(component["publicKey"].as_str().context("V5 public key")?)?==*expected,"V5 component does not match signed bundle");
+        component["slot"]=json!(format!("{slot:02x}"));component["storage"]=json!("piv");
+      }
+      Ok(json!({"kind":"openpgp","label":"OpenPGP v5 compatibility","certificate":info["certificate"],"profile":"level3-v5-hybrid","components":components}))
+    }
+
     /// Public inventory representation shared by browser and native callers.
     /// This function never asserts live-key matching or file freshness. A
     /// native authority may add such evidence only after fresh physical reads.
     pub fn preview(&self) -> Result<Value> {
         let verified = self;
-        let mut certificates = vec![json!({"kind":"openpgp", "label":"OpenPGP v6",
-        "certificate":B64.encode(verified.cert.armored().to_vec()?)} )];
-        if let Some(compatibility) = &verified.compatibility {
-            certificates.push(json!({"kind":"openpgp", "label":"OpenPGP v4 hybrid",
-            "certificate":B64.encode(compatibility.armored().to_vec()?)}));
-            // This view retains existing v4 certifications. It does not synthesize
-            // a new certificate, signature, identity or subkey binding.
-            let classical = compatibility
-                .clone()
-                .retain_subkeys(|key| key.key().pk_algo() == PublicKeyAlgorithm::ECDH);
-            certificates.push(json!({"kind":"openpgp", "label":"OpenPGP v4 classical",
-            "certificate":B64.encode(classical.armored().to_vec()?)}));
+        let level5=matches!(verified.cert.primary_key().key().mpis(),mpi::PublicKey::ECDSA{curve:Curve::NistP384,..});
+        // Every displayed certificate carries only mappings established by
+        // verified packet bindings above. Native repeats this derivation from
+        // fresh card bytes before accepting a selected profile.
+        let component=|role:&str,algorithm:&str,slot:u8|->Result<Value>{
+          let public=verified.keys.get(&slot).context("Required mapped public key missing")?;
+          Ok(json!({"role":role,"algorithm":algorithm,"storage":"piv","slot":format!("{slot:02x}"),"publicKey":B64.encode(public)}))
+        };
+        let record=|cert:&Cert,label:&str,profile:&str,components:Vec<Value>|->Result<Value>{
+          Ok(json!({"kind":"openpgp","label":label,"certificate":B64.encode(cert.armored().to_vec()?),"profile":profile,"components":components}))
+        };
+        let mut certificates=vec![if level5{record(&verified.cert,"OpenPGP v6 P-384 (classical)","level5-v6-classical",vec![
+          component("signing-classical","ECDSA-P384",0x83)?,component("decryption-classical","ECDH-P384",0x82)?])?
+        }else{record(&verified.cert,"OpenPGP v6","level3",vec![
+          component("signing-pq","ML-DSA-65",0x9c)?,component("signing-classical","Ed25519",0x84)?,
+          component("decryption-pq","ML-KEM-768",0x9d)?,component("decryption-classical","X25519",0x85)?])?}];
+        if let Some(compatibility)=&verified.compatibility {
+          let signer=component("signing-classical",if level5{"ECDSA-P384"}else{"Ed25519"},0x88)?;
+          certificates.push(record(compatibility,"OpenPGP v4 hybrid",if level5{"level5-v4-hybrid-p384"}else{"level3-v4-hybrid"},vec![
+            signer.clone(),component("decryption-pq","ML-KEM-768",if level5{0x84}else{0x9d})?,component("decryption-classical","X25519",0x85)?])?);
+          // Retaining already certified classical subkeys never re-signs or
+          // fabricates a certificate and cannot create a new hardware key.
+          let classical=compatibility.clone().retain_subkeys(|key|key.key().pk_algo()==PublicKeyAlgorithm::ECDH);
+          certificates.push(record(&classical,"OpenPGP v4 classical",if level5{"level5-v4-classical-p384"}else{"level3-v4-classical"},vec![
+            signer,component("decryption-classical",if level5{"ECDH-P384"}else{"X25519"},0x89)?])?);
         }
-        let mut slots = Vec::new();
-        for (slot, role, algorithm) in [
-            (0x9c, "OpenPGP signing", "ML-DSA-65"),
-            (0x84, "OpenPGP signing", "Ed25519"),
-            (0x9d, "OpenPGP decryption", "ML-KEM-768"),
-            (0x85, "OpenPGP decryption", "X25519"),
-            (0x86, "OpenPGP certification", "ML-DSA-65"),
-            (0x87, "OpenPGP certification", "Ed25519"),
-            (0x88, "Classical signing", "Ed25519"),
-            (0x89, "Classical decryption", "X25519"),
-            (0x83, "S/MIME signing", "ECDSA P-384"),
-            (0x82, "S/MIME decryption", "ECDH P-384"),
-        ] {
-            if let Some(public) = verified.keys.get(&slot) {
-                slots.push(
-                    json!({"role":role,"slot":format!("{slot:02x}"),"algorithm":algorithm,
-                "publicKeySha256":format!("{:x}",Sha256::digest(public))}),
-                );
-            }
+        let mut slots=Vec::new();
+        for(slot,public)in &verified.keys {
+          let(alg,_)=der::spki(public)?;
+          let algorithm=if alg==der::MLDSA65{"ML-DSA-65"}else if alg==der::MLDSA87{"ML-DSA-87"}
+            else if alg==der::MLKEM768{"ML-KEM-768"}else if alg==der::MLKEM1024{"ML-KEM-1024"}
+            else if alg==der::P384{"P-384"}else if alg==[0x30,5,6,3,0x2b,0x65,0x70]{"Ed25519"}else{"X25519"};
+          slots.push(json!({"role":"Authenticated certificate component","slot":format!("{slot:02x}"),"algorithm":algorithm,"publicKeySha256":format!("{:x}",Sha256::digest(public))}));
         }
         let mut warnings = vec![
             "File freshness is not established; live public keys have not been checked."
@@ -577,7 +627,7 @@ impl VerifiedBundle {
                     .into(),
             );
         }
-        if !verified.keys.contains_key(&0x86) {
+        if !level5 && !verified.keys.contains_key(&0x86) {
             warnings.push("This bundle uses the original combined certification/signing primary; newer local certificates are not present on the key".into());
         }
         Ok(json!({"format":"sequoia-iwa-identity-preview", "version":1,
@@ -592,6 +642,23 @@ impl VerifiedBundle {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn level5_p384_views_and_all_hardware_roles_are_authenticated(){
+      let f:Value=serde_json::from_str(include_str!("../tests/data/level5.json")).unwrap();
+      let bytes=B64.decode(f["bundle"].as_str().unwrap()).unwrap();
+      let verified=verify(&bytes).unwrap();let p=verified.preview().unwrap();
+      assert_eq!(p["serial"],"123456");
+      assert_eq!(p["certificates"].as_array().unwrap().iter().map(|v|v["profile"].as_str().unwrap()).collect::<Vec<_>>(),vec!["level5-v6-classical","level5-v4-hybrid-p384","level5-v4-classical-p384"]);
+      assert_eq!(p["certificates"][0]["components"][0]["slot"],"83");
+      assert_eq!(p["certificates"][1]["components"][0]["slot"],"88");
+      assert_eq!(p["certificates"][1]["components"][1]["slot"],"84");
+      assert_eq!(p["certificates"][2]["components"][1]["slot"],"89");
+      assert_eq!(verified.public_keys().len(),8);
+      // Changing compressed contents cannot leave an authenticated preview.
+      let mut corrupted=bytes;let n=corrupted.len();corrupted[n/2]^=1;assert!(verify(&corrupted).is_err());
+      assert!(verified.v5_view(b"not a certificate",current_time().unwrap()).is_err());
+    }
 
     // PQ Mail/Bouncy Castle-generated public-only vectors also used by the
     // native OpenSSL adapter. No key generation, helper process or card access
@@ -831,3 +898,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod profile_review_tests;

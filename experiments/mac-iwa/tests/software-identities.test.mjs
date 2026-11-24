@@ -100,3 +100,58 @@ test('guarded vault persistence aborts before put when lock occurs during Indexe
  globalThis.indexedDB={open(){const opening={};queueMicrotask(()=>{opening.result={close(){closed=true;},transaction(){transaction={objectStore:()=>({get(){lookup={};return lookup;},put(){put=true;}}),abort(){queueMicrotask(()=>transaction.onabort?.());}};return transaction;}};opening.onsuccess();});return opening;}};
  try{const controller=new AbortController();const pending=persist(h.saved,h.saved.revision,{signal:controller.signal,guard:()=>{if(!guardValid)throw Error('locked');}});await new Promise(resolve=>setImmediate(resolve));guardValid=false;controller.abort();await assert.rejects(pending,/cancelled/);lookup.result=h.saved;lookup.onsuccess();assert.equal(put,false);assert(closed);}finally{globalThis.indexedDB=previous;}
 });
+
+test('creation uses a fresh random password inside the encrypted vault and survives a new unlock',async()=>{
+ const h=await harness();let generated;
+ h.setCrypto(async(op,input)=>{assert.equal(op,'generate');generated=structuredClone(input);return {encryptedSecret,public:metadata};});
+ const selected=await h.store.create({name:'Created locally',profile:'level3'},account);
+ assert.equal(generated.email,account);assert.equal(generated.profile,'level3');assert.equal(atob(generated.password).length,32);
+ assert(!JSON.stringify(h.saved).includes(generated.password));assert(!JSON.stringify(selected).includes(generated.password));
+ h.lock();await h.unlock();assert.equal((await h.store.list(account)).choices[0].fingerprint,metadata.fingerprint);
+ assert.equal(h.writes,1);assert.equal(h.calls.filter(x=>x==='generate').length,1);
+});
+test('locking during creation rejects late generated keys and never commits a vault item',async()=>{
+ const h=await harness(),entered=deferred(),result=deferred();let signal;
+ h.setCrypto(async(_op,_input,options)=>{signal=options.signal;entered.resolve();return result.promise;});
+ const pending=h.store.create({name:'cancelled',profile:'level5'},account);await entered.promise;h.lock();assert(signal.aborted);
+ result.resolve({encryptedSecret,public:metadata});await assert.rejects(pending);assert.equal(h.writes,0);
+});
+test('portable encrypted export changes only the output password and binds the original certificate',async()=>{
+ const h=await harness(),selected=await h.import(),before=JSON.stringify(h.saved);let input;
+ h.setCrypto(async(op,value)=>{assert.equal(op,'export');input=structuredClone(value);return {encryptedSecret:btoa('new encrypted bytes'),public:metadata};});
+ const output=await h.store.export(selected,'new independent export password');
+ assert.equal(input.password,password);assert.equal(input.newPassword,'new independent export password');assert.equal(output.fingerprint,selected.fingerprint);
+ assert(!('password'in output));assert.equal(JSON.stringify(h.saved),before);assert.equal(h.writes,1);
+ await assert.rejects(h.store.export(selected,'short'),/at least 12/);
+ h.setCrypto(async()=>({encryptedSecret,public:{...metadata,signingFingerprint:'D'.repeat(64)}}));
+ await assert.rejects(h.store.export(selected,'new independent export password'),/changed the certificate/);
+});
+test('export cannot return ciphertext after a vault lock or identity replacement',async()=>{
+ const h=await harness(),selected=await h.import(),entered=deferred(),result=deferred();h.setCrypto(async()=>{entered.resolve();return result.promise;});
+ const pending=h.store.export(selected,'new independent export password');await entered.promise;h.lock();result.resolve({encryptedSecret,public:metadata});await assert.rejects(pending);assert.equal(h.writes,1);
+});
+test('PKCS12 conversion commits only encrypted OpenPGP material and a new vault-held password',async()=>{
+ const h=await harness();let source;
+ h.setCrypto(async(op,input)=>{assert.equal(op,'import-p12');source=structuredClone(input);return {encryptedSecret,public:metadata};});
+ const selected=await h.store.importP12({name:'Imported P12',p12:btoa('encrypted synthetic pfx'),password:'source p12 password'},account);
+ assert.equal(source.password,'source p12 password');assert.equal(atob(source.newPassword).length,32);assert.equal(selected.fingerprint,metadata.fingerprint);
+ const saved=h.engine.data.items[0];assert.equal(saved.password,source.newPassword);assert(!('p12'in saved));assert.equal(saved.encryptedSecret,encryptedSecret);
+ assert(!JSON.stringify(h.saved).includes(source.newPassword));assert(!JSON.stringify(h.saved).includes(source.p12));
+});
+test('Level5 and v4 software profiles enforce their exact component sizes and warning capabilities',async()=>{
+ for(const profile of ['level5','level3-v4-hybrid','level5-v4-classical']){
+  const h=await harness(),version=profile.includes('-v4-')?4:6,n=version===4?40:64,pqSigning=version===6,pqEncryption=!profile.endsWith('-classical');
+  const info={...metadata,version,profile,pqSigning,pqEncryption,signingAlgorithm:version===6?'ML-DSA-87 + Ed448':profile.startsWith('level5')?'ECDSA':'EdDSA',encryptionAlgorithm:pqEncryption?'ML-KEM hybrid':'ECDH',fingerprint:'A'.repeat(n),signingFingerprint:'B'.repeat(n),recipientKey:'C'.repeat(n)};
+  h.setPublic(info);h.setCrypto(async()=>info);const selected=await h.import();assert.equal(selected.version,version);assert.equal(selected.pqSigning,pqSigning);assert.equal(selected.pqEncryption,pqEncryption);
+  const native=h.store.native(selected),material=await native('chat-selected-signing-material',{identity:h.store.nativeBinding(selected)});
+  const request={review:material.review,requestId:'D'.repeat(64),signingFingerprint:info.signingFingerprint,hashAlgorithm:10,digest:b64(new Uint8Array(64))};
+  h.setCrypto(async(_op,input)=>({...input.request,ed25519:b64(new Uint8Array(profile==='level5'?114:profile.startsWith('level5')?132:64)),mldsa65:pqSigning?b64(new Uint8Array(4627)):''}));
+  assert.equal((await native('chat-sign-digest',request)).signingFingerprint,info.signingFingerprint);
+  const next=await native('chat-selected-signing-material',{identity:h.store.nativeBinding(selected)});
+  h.setCrypto(async(_op,input)=>({...input.request,ed25519:b64(new Uint8Array(63)),mldsa65:''}));await assert.rejects(native('chat-sign-digest',{...request,review:next.review}));
+ }
+});
+test('compatibility metadata cannot silently claim post-quantum signing or encryption',async()=>{
+ const h=await harness(),base={...metadata,version:4,profile:'level3-v4-classical',fingerprint:'A'.repeat(40),signingFingerprint:'B'.repeat(40),recipientKey:'C'.repeat(40),signingAlgorithm:'EdDSA',encryptionAlgorithm:'ECDH'};
+ for(const caps of [{pqSigning:true,pqEncryption:false},{pqSigning:false,pqEncryption:true}]){h.setCrypto(async()=>({...base,...caps}));await assert.rejects(h.import(),/capabilities/);assert.equal(h.writes,0);}
+});

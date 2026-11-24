@@ -125,6 +125,14 @@ test('missing selection or mismatched native identity cannot create a signing re
   async(op,data)=>{calls.push(op);return {identity:{...data.identity,serial:'87654321'}};},context));
  assert.deepEqual(calls,['chat-selected-signing-material']);
 });
+test('transport carries only literal compatibility confirmation into the revision-bound Compose review',async()=>{
+ const identity=selectedIdentity(),transport=createTransport({profile:()=>assert.fail('No Google login for offline preparation')});
+ const context={account:identity.email,identitySelection:identitySelection(identity),certificateStore:{trustedContact:async()=>({email:'recipient@example.invalid',pqEncryption:false})},composeReviews:{prepare:async(_own,_peer,options)=>options}};
+ for(const value of [undefined,false,'true',true]){
+  const result=await transport.call('chat-mail-prepare',{identity:identity.id,contact:'trusted',subject:'Compatibility',compatibilityConfirmed:value},async(_op,data)=>({identity:data.identity}),context);
+  assert.equal(result.compatibilityConfirmed,value===true);
+ }
+});
 test('certificate save/trust routes are no longer Google or native transport operations',()=>{
  const t=createTransport({});for(const op of ['chat-mail-cert-save','chat-mail-cert-trust'])assert.equal(t.handles(op),false);
 });

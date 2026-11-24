@@ -9,6 +9,7 @@ use pgp::{Cert,KeyHandle,parse::{Parse,stream::{VerificationHelper,MessageStruct
 use pgp::serialize::SerializeInto;
 use pgp::cert::amalgamation::ValidAmalgamation;
 use wasm_bindgen::prelude::*;
+mod libre;
 mod signing;
 pub use signing::{prepare_signing, finalize_signing, cancel_signing};
 mod decryption;
@@ -19,8 +20,10 @@ mod bundle;
 pub use bundle::inspect_bundle;
 // Software custody is a separate, opt-in, one-shot worker API. Hardware paths
 // continue accepting public material only; no native fallback handles secrets.
+mod companion;
+pub use companion::{companion_inspect, companion_complete};
 mod software;
-pub use software::{software_inspect, software_sign, software_decapsulate};
+pub use software::{software_inspect, software_sign, software_decapsulate, software_generate, software_export, software_import_p12, software_p12_verify_mac};
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}
@@ -40,7 +43,7 @@ impl VerificationHelper for PublicVerify {
   for layer in structure.iter() {
    if let MessageLayer::SignatureGroup{results}=layer { for result in results {
     self.results.push(match result {
-     Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo()),"certificate":B64.encode(good.ka.cert().to_vec()?),"emails":current_emails(good.ka.cert())}),
+     Ok(good)=>serde_json::json!({"status":"valid","fingerprint":good.ka.cert().fingerprint().to_hex(),"signingFingerprint":good.ka.key().fingerprint().to_hex(),"algorithm":format!("{}",good.ka.key().pk_algo()),"pqSigning":matches!(good.ka.key().pk_algo(),pgp::types::PublicKeyAlgorithm::MLDSA65_Ed25519|pgp::types::PublicKeyAlgorithm::MLDSA87_Ed448),"certificate":B64.encode(good.ka.cert().to_vec()?),"emails":current_emails(good.ka.cert())}),
      // A bad signature can still identify a candidate certificate whose local
      // trust is meaningful. This is NOT proof that this key authored the message.
      // Never infer identity merely from From or an unverified issuer string.
@@ -54,6 +57,11 @@ impl VerificationHelper for PublicVerify {
  }
 }
 fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
+ let signature=B64.decode(field(v,"signature")?)?;
+ if libre::is_signature(&signature){return libre::verify_detached(v);}
+ // Literal metadata is meaningful only to the explicitly selected v5 parser.
+ // A normal RFC signature cannot opt into an alternate digest transcript.
+ ensure!(v.get("literalMetadata").is_none(),"Unexpected literal metadata");
  let encoded=v["certificates"].as_array().context("Certificates required")?;
  ensure!(encoded.len()<=32,"Too many certificates");
  // Unusable attachments are not trusted and must not prevent trying saved keys.
@@ -91,9 +99,12 @@ fn encrypt_public(v:&serde_json::Value)->Result<serde_json::Value> {
  use std::io::{Read,Write};
  use pgp::serialize::stream::{Message,Encryptor,Compressor};
  use pgp::types::{PublicKeyAlgorithm as A,CompressionAlgorithm};
+ let own_raw=B64.decode(field(v,"senderCertificate")?)?;
+ let peer_raw=B64.decode(field(v,"recipientCertificate")?)?;
+ if libre::is_certificate(&own_raw)||libre::is_certificate(&peer_raw){return libre::encrypt_signed(v);}
  let own=public(field(v,"senderCertificate")?)?;
  let peer=public(field(v,"recipientCertificate")?)?;
- ensure!(peer.primary_key().key().version()==6 && own.primary_key().key().version()==6,"v6 required");
+ ensure!(matches!(peer.primary_key().key().version(),4|6)&&matches!(own.primary_key().key().version(),4|6),"Supported OpenPGP version required");
  ensure!(peer.fingerprint().to_hex()==field(v,"recipientFingerprint")?,"Recipient mismatch");
  ensure!(current_emails(&peer).iter().any(|e|e==field(v,"recipientEmail").unwrap_or("")),"Recipient mailbox mismatch");
  let signed=B64.decode(field(v,"signed")?)?;
@@ -106,9 +117,14 @@ fn encrypt_public(v:&serde_json::Value)->Result<serde_json::Value> {
  let mut clear=Vec::new();verifier.by_ref().take((LIMIT+1) as u64).read_to_end(&mut clear)?;
  ensure!(clear==payload,"Signed payload mismatch");
  let results=verifier.into_helper().results;
- ensure!(results.len()==1 && results[0]["status"]=="valid" && results[0]["fingerprint"]==own.fingerprint().to_hex() && results[0]["algorithm"]==A::MLDSA65_Ed25519.to_string(),"One valid Level 3 hybrid signature required");
- let recipients:Vec<_>=peer.keys().with_policy(&p,None).alive().revoked(false).for_transport_encryption().filter(|k|k.key().pk_algo()==A::MLKEM768_X25519).collect();
- ensure!(recipients.len()==1,"Exactly one supported hybrid recipient required");
+ ensure!(results.len()==1 && results[0]["status"]=="valid" && results[0]["fingerprint"]==own.fingerprint().to_hex(),"One valid message signature required");
+ // Selection is derived from current certified usages. Prefer hybrid keys
+ // within either certificate version; a classical-only contact is explicitly
+ // warned about by the UI before any software signing operation.
+ let all:Vec<_>=peer.keys().with_policy(&p,None).alive().revoked(false).for_transport_encryption().filter(|k|certificates::encryption_supported(k.key())).collect();
+ let has_hybrid=all.iter().any(|k|matches!(k.key().pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448));
+ let recipients:Vec<_>=all.into_iter().filter(|k|!has_hybrid||matches!(k.key().pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448)).collect();
+ ensure!(recipients.len()==1,"Exactly one supported recipient required");
  // RustCrypto obtains fresh randomness through getrandom's wasm_js backend;
  // no session key or random seed is supplied by JavaScript or the native host.
  let mut cipher=Vec::new();
@@ -142,7 +158,10 @@ impl VerificationHelper for SessionOpen {
  fn check(&mut self,structure:MessageStructure)->Result<()> {
   let mut encrypted=false;let mut count=0;
   for layer in structure.iter(){match layer {
-   MessageLayer::Encryption{aead_algo,..}=>{ensure!(aead_algo.is_some(),"AEAD required");encrypted=true;},
+   // Message compatibility permits authenticated SEIPDv1/MDC; the packet
+   // preflight below rejects unauthenticated Symmetrically Encrypted Data.
+   // Existing vault wrappers remain v6/AEAD only.
+   MessageLayer::Encryption{aead_algo,..}=>{if self.vault{ensure!(aead_algo.is_some(),"Vault AEAD required");}encrypted=true;},
    MessageLayer::Compression{..}=>{},
    MessageLayer::SignatureGroup{results}=>for result in results {
     let sig=match result {Err(pgp::parse::stream::VerificationError::MissingKey{sig})=>sig,_=>anyhow::bail!("Unsupported signature structure")};
@@ -154,8 +173,9 @@ impl VerificationHelper for SessionOpen {
 }
 impl pgp::parse::stream::DecryptionHelper for SessionOpen {
  fn decrypt(&mut self,pk:&[pgp::packet::PKESK],sk:&[pgp::packet::SKESK],hint:Option<pgp::types::SymmetricAlgorithm>,decrypt:&mut dyn FnMut(Option<pgp::types::SymmetricAlgorithm>,&pgp::crypto::SessionKey)->bool)->Result<Option<Cert>> {
-  ensure!(pk.len()==1 && sk.is_empty() && pk[0].version()==6 && pk[0].recipient()==Some(self.recipient.clone().into()),"Recipient mismatch");
-  ensure!(hint==Some(self.algorithm) && decrypt(Some(self.algorithm),&self.key),"Authentication failed");Ok(None)
+  ensure!(pk.len()==1&&sk.is_empty()&&pk[0].recipient().map(|r|r.aliases(pgp::KeyHandle::from(self.recipient.clone()))).unwrap_or(false),"Recipient mismatch");
+  if self.vault{ensure!(pk[0].version()==6,"Vault recipient version");}
+  ensure!(hint.map(|a|a==self.algorithm).unwrap_or(true)&&decrypt(Some(self.algorithm),&self.key),"Authentication failed");Ok(None)
  }
 }
 fn decrypt_session_mode(v:&serde_json::Value,vault:bool)->Result<serde_json::Value> {
@@ -165,6 +185,10 @@ fn decrypt_session_mode(v:&serde_json::Value,vault:bool)->Result<serde_json::Val
  let cipher=B64.decode(field(v,"cipher")?)?;
  ensure!(!cipher.is_empty() && cipher.len()<=LIMIT,"Ciphertext limit");
  ensure!(format!("{:x}",Sha256::digest(&cipher))==field(v,"cipherHash")?,"Ciphertext binding mismatch");
+ // This public export can be called directly, so require authenticated data
+ // here too rather than relying only on the split-phase recipient parser.
+ let pile=pgp::PacketPile::from_bytes(&cipher)?;let packets:Vec<_>=pile.children().collect();
+ ensure!(packets.len()==2&&matches!(packets[0],pgp::Packet::PKESK(_))&&matches!(packets[1],pgp::Packet::SEIP(_)),"One PKESK and authenticated SEIPD required");
  let code=v["algorithm"].as_u64().context("Algorithm required")?;ensure!(code<=255,"Invalid algorithm");
  let algorithm=S::from(code as u8);ensure!(matches!(algorithm,S::AES128|S::AES192|S::AES256),"AES required");
  let key:pgp::crypto::SessionKey=B64.decode(field(v,"sessionKey")?)?.into();
@@ -229,3 +253,6 @@ pub fn unwrap_vault_key(input:&str)->Result<String,JsValue>{
  };
  run().map_err(|_|JsValue::from_str("Vault unwrapping rejected"))
 }
+
+#[cfg(test)]
+mod profile_tests;

@@ -34,7 +34,7 @@ function operationBusy(active) {
 function nativeRequest(op,data={},options={}) {
  // Public metadata stays available while locked. Recheck the vault immediately
  // before each private operation, including the new digest-only signing route.
- if(['chat-signing-material','chat-selected-signing-material','chat-selected-decryption-material','chat-sign-digest'].includes(op)||
+ if(['chat-selected-signing-material','chat-selected-decryption-material','chat-sign-digest'].includes(op)||
     (['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data.service!=='Vault')){try{window.vaultGate?.();}catch(e){return Promise.reject(e);}}
  return new Promise((resolve,reject)=>{
   let port,finished=false;
@@ -62,7 +62,29 @@ function identityRequest(snapshot){
  if(snapshot&&Object.hasOwn(snapshot,'provider'))throw Error('Unknown identity provider.');
  return nativeRequest;
 }
-function custodyLabel(identity){return identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial;}
+function custodyLabel(identity){return identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial+(identity.custody==='hardware-companion'?' + encrypted software companion':'');}
+// Display only the selected certificate's authenticated component mapping.
+// A legacy record's identity.slots is the union of ALL bundle profiles, including
+// S/MIME and compatibility keys, so using that union would misstate which keys
+// this operation will use. It is neither a fallback map nor native authority.
+function operationSlots(identity,purpose){
+ const components=identity.components?.filter(c=>c.role.startsWith(purpose));
+ if(components?.length)return components.map(c=>c.storage==='piv'?c.slot.toUpperCase()+' ('+c.algorithm+')':c.algorithm+' in encrypted companion').join(' + ');
+ // Older public inventories can still be independently authorized by native
+ // code. Do not invent slot numbers from their profile name: a fresh read-only
+ // bundle restore adds the exact per-certificate mapping to the local record.
+ return 'verified from the current signed manifest (restore this bundle again to display exact slots)';
+}
+// Public inspector capabilities, not the presence of a classical component,
+// control fallback warnings. A modern hybrid signature is still PQ protected.
+function compatibilityWarnings(sender,recipient){
+ const warnings=[];
+ if(sender?.pqSigning===false)warnings.push('The selected compatibility identity uses classical signing, which is not post-quantum resistant.');
+ if(recipient?.pqEncryption===false)warnings.push('This recipient certificate uses classical encryption, which is not post-quantum resistant.');
+ return warnings;
+}
+function versionRank(identity){return ({6:0,5:1,4:2})[identity.version||6]??3;}
+function contactLabel(contact){return contact.email+' · v'+(contact.version||6)+' · '+(contact.pqEncryption===false?'classical encryption':'hybrid encryption')+' · '+contact.fingerprint.slice(-12);}
 // Certificate bytes and trust decisions stay within the signed IWA origin.
 // Legacy operation names below are UI aliases, not native capabilities.
 function assertAccount(snapshot=accountSnapshot){
@@ -101,28 +123,32 @@ function clearPendingOpen(){openMessage=null;localEncrypted=null;$('open').close
 function beginReading(){clearPendingOpen();readerEvidence=null;$('reader').hidden=true;return ++readerGeneration;}
 function assertReading(generation){if(generation!==readerGeneration)throw Error('Message view changed or locked; open it again.');}
 function options(id,rows,value,label){const el=$(id),old=el.value;el.replaceChildren();for(const row of rows){const o=document.createElement('option');o.value=value(row);o.textContent=label(row);el.append(o);}if([...el.options].some(o=>o.value===old))el.value=old;}
-function renderContacts(){for(const id of ['recipient','signer'])options(id,contacts,c=>c.id,c=>c.email);$('contact-list').replaceChildren();for(const c of contacts){const el=document.createElement('div');el.className='contact';el.textContent=c.email+'\n'+c.fingerprint;$('contact-list').append(el);}}
+function renderContacts(){const ordered=[...contacts].sort((a,b)=>a.email.localeCompare(b.email)||versionRank(a)-versionRank(b)||Number(a.pqEncryption===false)-Number(b.pqEncryption===false));for(const id of ['recipient','signer'])options(id,ordered,c=>c.id,contactLabel);$('contact-list').replaceChildren();for(const c of ordered){const el=document.createElement('div');el.className='contact';el.textContent=contactLabel(c)+'\n'+c.fingerprint;$('contact-list').append(el);}}
 // Local inventory is independent of Gmail/Chat login and never prompts for PINs.
 async function refreshCertificates(){const r=await call('chat-cert-list');contacts=r.contacts;renderContacts();renderSavedCertificates(r.certificates);}
-function identityLabel(c){return c.email+' · v6 ML-DSA-65 + Ed25519 · '+custodyLabel(c)+' · '+c.fingerprint.slice(-12);}
+// A v4 hybrid view and its classical-only view can share both signing key and
+// primary fingerprint. Include encryption capability so Compose, decryption and
+// hardware-test selectors do not present those distinct packet views identically.
+function identityLabel(c){return c.email+' · v'+(c.version||6)+' '+(c.signingAlgorithm||'signing algorithm checked from certificate')+' · encrypt: '+(c.encryptionAlgorithm||'algorithm checked from certificate')+' · '+custodyLabel(c)+' · '+c.fingerprint.slice(-12);}
 async function refreshSendIdentities(){
  const generation=++identityListGeneration;
  if(!identitySelection||!ownEmail){sendIdentities=[];for(const id of ['send-identity','test-identity'])options(id,[],c=>c.id,identityLabel);$('send-identity-help').textContent='Configure your Google account in Account, then restore its supported public identity in Identities.';return;}
  const account=ownEmail,snapshot=accountSnapshot;
  const listed=await identitySelection.list(account);
  if(generation!==identityListGeneration||account!==ownEmail||snapshot!==accountSnapshot)return;
- sendIdentities=listed.choices;
+ sendIdentities=[...listed.choices].sort((a,b)=>versionRank(a)-versionRank(b)||Number(a.pqSigning===false)-Number(b.pqSigning===false));
  const before=$('send-identity').value;options('send-identity',sendIdentities,c=>c.id,identityLabel);
  options('test-identity',sendIdentities.filter(c=>c.provider!=='software'),c=>c.id,identityLabel);
  // This preference contains only a public inventory identifier. It never
  // selects a native executable, slot or grant, and is revalidated on every use.
  let remembered;try{remembered=localStorage.getItem('sequoia-iwa-send-identity');}catch(_){}
- if(!sendIdentities.some(c=>c.id===before)&&sendIdentities.some(c=>c.id===remembered))$('send-identity').value=remembered;
+ const hasHybridV6=sendIdentities.some(c=>(c.version||6)===6&&c.pqSigning===true);
+ if(!sendIdentities.some(c=>c.id===before)&&sendIdentities.some(c=>c.id===remembered&&(c.version||6)===6&&(!hasHybridV6||c.pqSigning!==false)))$('send-identity').value=remembered;
  updateIdentityHelp();
 }
 function updateIdentityHelp(){
  const selected=sendIdentities.find(c=>c.id===$('send-identity').value);
- $('send-identity-help').textContent=!selected?'Restore a matching Level 3 v6 YubiKey identity, or unlock the vault and import an encrypted software OpenPGP identity.':selected.provider==='software'?'Software (experimental): keys are unlocked only in a disposable browser worker. The vault must remain unlocked; no YubiKey signing operation is used.':'The selected signed bundle is checked against its YubiKey before the PIN prompt. Signing: 9c + 84; decryption: 9d + 85.';
+ $('send-identity-help').textContent=!selected?'Restore a matching YubiKey identity, or unlock the vault and create or import a software OpenPGP identity.':selected.provider==='software'?'Software (experimental): keys are unlocked only in a disposable browser worker. The vault must remain unlocked; no YubiKey signing operation is used. '+compatibilityWarnings(selected,selected).join(' '):'The selected signed manifest is checked against its YubiKey before the PIN prompt. Signing: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'. '+compatibilityWarnings(selected,selected).join(' ');
 }
 $('send-identity').addEventListener('change',()=>{updateIdentityHelp();
  invalidateCertificateViews();try{localStorage.setItem('sequoia-iwa-send-identity',$('send-identity').value);}catch(_){}
@@ -364,7 +390,7 @@ async function readOrdinary(message){
 }
 function showOrdinary(r,message){
  $('read-subject').textContent=r.subject;
- $('verified').textContent=mailSecuritySummary(r)+'\n'+(r.signatures||[]).filter(s=>s.fingerprint).map(s=>(s.candidateOnly?'Candidate certificate (sender NOT authenticated): ':'Primary fingerprint: ')+s.fingerprint+' · '+s.algorithm).join('\n')+'\n'+r.notice+' From (outer header): '+r.sender+(r.omittedAttachments?' '+r.omittedAttachments+' attachment(s) omitted by size/count limits.':'');
+ $('verified').textContent=mailSecuritySummary(r)+'\n'+(r.signatures||[]).filter(s=>s.fingerprint).map(s=>(s.candidateOnly?'Candidate certificate (sender NOT authenticated): ':'Primary fingerprint: ')+s.fingerprint+' · '+s.algorithm).join('\n')+'\n'+(r.warning?r.warning+'\n':'')+r.notice+' From (outer header): '+r.sender+(r.omittedAttachments?' '+r.omittedAttachments+' attachment(s) omitted by size/count limits.':'');
  $('verified').classList.toggle('error',r.signatureStatus!=='valid'||r.certificateTrust!=='trusted');
  $('read-body').textContent=r.text;
  $('toggle-html').hidden=!r.html;
@@ -400,21 +426,25 @@ event('prepare',async()=>{
   const snapshot=accountSnapshot;
   const assertSender=async()=>{assertAccount(snapshot);await identitySelection.assert(sender);assertAccount(snapshot);if($('send-identity').value!==senderChoice)throw Error('Sending identity changed; prepare again.');};
   await assertSender();
+  const warnings=compatibilityWarnings(sender,selected);
+  const compatibilityConfirmed=!warnings.length||window.confirm(warnings.join('\n\n')+'\n\nContinue with this compatibility profile?');
+  if(!compatibilityConfirmed)throw Error('Compatibility signing/encryption cancelled before private operations.');
+  await certificateStore.assertContact(selected);await assertSender();
   compose.attachments=await attachmentData();
   // This metadata-only route does not receive MIME or prompt for a PIN.
   const material=await dispatchRequest(mail?'chat-mail-prepare':'chat-prepare',{
-   ...(!mail?{space}:{}),contact:recipient.id,subject:compose.subject,identity:senderChoice});
+   ...(!mail?{space}:{}),contact:recipient.id,subject:compose.subject,identity:senderChoice,compatibilityConfirmed});
   prepared=material.review;
   const {signAndEncrypt}=await import('./signing-session.js');
   const encrypted=await signAndEncrypt(material,compose,
    async request=>{
     await certificateStore.assertContact(selected);await assertSender();
     const result=await identityRequest(sender)('chat-sign-digest',request,{signal:signingAbort.signal});
-    await assertSender();return result;
+    try{await assertSender();return result;}catch(error){if(result)delete result.companionShared;throw error;}
    },
    {createWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),signal:signingAbort.signal});
   await assertSender();const r=await composeReviews.complete(material.review,encrypted.cipher);
-  review=r.review;$('send-details').textContent='Send as: '+r.sender+' · '+custodyLabel(sender)+'\nSigning certificate: '+r.senderFingerprint+'\nSubject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint;
+  review=r.review;$('send-details').textContent='Send as: '+r.sender+' · '+custodyLabel(sender)+'\nSigning certificate: '+r.senderFingerprint+'\nSubject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint+(r.compatibilityWarnings?.length?'\n\n'+r.compatibilityWarnings.join('\n'):'');
   $('confirm-send').showModal();say((mail?'Gmail':'Chat')+' signature constructed and verified in WASM; encrypted message ready for review.');
  } catch(e){if(prepared)composeReviews.cancel(prepared);throw e;}
  finally {signingAbort=null;operationBusy(false);}
@@ -448,14 +478,14 @@ function reviewMatchedIdentity(matched,generation,account){
  if(decryptionChoice)cancelDecryptionChoice();
  return new Promise((resolve,reject)=>{
   decryptionChoice={matched,generation,account,resolve,reject};
-  options('decrypt-identity',matched.choices,c=>c.id,c=>c.email+' · '+custodyLabel(c)+' · '+c.fingerprint.slice(-12));
+  options('decrypt-identity',matched.choices,c=>c.id,identityLabel);
   $('matched-identity-help').textContent=matched.choices.length===1?'The encrypted recipient packet matches this saved identity. Review its custody provider before continuing.':'More than one saved identity matches this recipient key. Select its custody provider; no private operation has started.';
   showMatchedIdentity();$('matched-identity').showModal();
  });
 }
 function showMatchedIdentity(){
  const selected=decryptionChoice?.matched.choices.find(c=>c.id===$('decrypt-identity').value);
- $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v6 · ML-KEM-768 + X25519'+(selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nSlots: 9d + 85; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
+ $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v'+(selected.version||6)+' · '+(selected.encryptionAlgorithm||'ML-KEM-768 + X25519')+(selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nComponents: '+operationSlots(selected,'decryption')+'; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
 }
 $('decrypt-identity').addEventListener('change',showMatchedIdentity);
 event('matched-identity-cancel',cancelDecryptionChoice);
@@ -502,7 +532,7 @@ async function decryptSelected(){
  await certificateStore.assertContact(selected);await identitySelection.assert(recipient);assertReading(generation);assertAccount(account);window.vaultGate?.();
  if(!r.verified)throw Error('Signature verification failed.');
  $('read-subject').textContent=r.subject;$('verified').classList.remove('error');
- $('verified').textContent='Encryption: Encrypted (decrypted) with '+custodyLabel(recipient)+' · Signature: Valid hybrid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint;
+ $('verified').textContent='Encryption: Encrypted (decrypted) with '+custodyLabel(recipient)+' · Signature: Valid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint+' · '+(r.signatures[0].algorithm||'')+(r.warning?'\n'+r.warning:'');
  $('read-body').textContent=r.text;$('toggle-html').hidden=!r.html;renderSafeHtml($('read-html'),r.html||'');
  $('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;
  say((local?'Local email':selectedService)+' decryption and signature verification passed using IWA trust.');
@@ -528,10 +558,10 @@ event('test',async()=>{
  if(busy)throw Error('An operation is already running.');
  const account=accountSnapshot;assertAccount(account);window.vaultGate?.();
  const choice=$('test-identity').value,selected=await hardwareIdentitySelection.get(choice,ownEmail);
- if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nSigning: ML-DSA-65 (9c) + Ed25519 (84). Decryption: ML-KEM-768 (9d) + X25519 (85).\nExpect two native PIN dialogs; touch if requested. No email, keys, certificates or policies will be changed.'))return;
+ if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nOpenPGP v'+selected.version+' · '+selected.signingAlgorithm+' / '+selected.encryptionAlgorithm+'\nSigning: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'.\n'+compatibilityWarnings(selected,selected).join(' ')+'\nExpect two native PIN operations; touch if requested. No email, keys, certificates or policies will be changed.'))return;
  hardwareTestReport=null;$('test-details').textContent='';hardwareTestAbort=new AbortController();operationBusy(true);
  try{
-  const {runHardwareTest}=await import('./hardware-test.js');
+  const {runHardwareTest,signingFailureLabel}=await import('./hardware-test.js');
   const gate=async()=>{assertAccount(account);window.vaultGate?.();if($('test-identity').value!==choice)throw Error('Test identity changed.');};
   const result=await runHardwareTest({identity:selected,selection:hardwareIdentitySelection,native:nativeRequest,gate,signal:hardwareTestAbort.signal,
    createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
@@ -539,8 +569,15 @@ event('test',async()=>{
    onProgress:message=>{$('test-progress').textContent=message;say(message);}});
   hardwareTestReport=result;
   const unchanged=result.unchanged===true?'All 24 slot records, keys, PIN/touch policies, PIN retry counts and backend hashes unchanged.':result.unchanged===false?'Public audit changed — inspect the report before another operation.':'Unchanged status could not be confirmed — inspect the report before another operation.';
+  // Report the selected certificate's actual algorithms. Packet version and
+  // successful cryptographic verification do not imply post-quantum protection:
+  // v4 compatibility can have classical signing with either hybrid or classical
+  // encryption, and the ordinary Level 5 P-384 v6 view is classical as well.
   $('test-details').textContent=result.status+' — YubiKey '+selected.serial+'\n'+selected.fingerprint+'\n'+
-   'Hybrid signature: '+(result.signatureVerified?'verified':'not completed')+'\nHybrid decryption and exact text/HTML/attachment: '+(result.payloadVerified?'verified':'not completed')+'\n'+unchanged+'\nNo email sent; no card writes requested.';
+   'Signature ('+(selected.signingAlgorithm||'algorithm checked from certificate')+'): '+(result.signatureVerified?'verified':'not completed')+'\nDecryption ('+(selected.encryptionAlgorithm||'algorithm checked from certificate')+') and exact text/HTML/attachment: '+(result.payloadVerified?'verified':'not completed')+'\n'+unchanged+'\n'+compatibilityWarnings(selected,selected).join('\n')+'\nNo email sent; no card writes requested.';
+  // Resolve the code through a fixed label table again at the display boundary.
+  // Reports do not expose native stderr, WASM exception text or private inputs.
+  if(result.failurePhase)$('test-details').textContent+='\nStopped while: '+signingFailureLabel(result.failurePhase)+'.';
   $('test-progress').textContent=result.status==='PASS'?'Local hardware test complete. Independent Sequoia interoperability remains a separate test.':'Test stopped without automatic retry.';
   say(result.status==='PASS'?'PASS — IWA signing, decryption and unchanged hardware audit.':result.status+' — review Hardware test results before trying again.',result.status!=='PASS');
  }finally{hardwareTestAbort=null;operationBusy(false);}

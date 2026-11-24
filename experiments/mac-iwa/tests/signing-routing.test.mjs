@@ -15,7 +15,7 @@ function app(){
    return {disconnect(){},onMessage:{addListener:f=>listeners.push(f)},onDisconnect:{addListener(){}},
     postMessage(request){native.push(request);queueMicrotask(()=>listeners.forEach(f=>f({type:'result',data:{ok:true}})));}};
   }}}};
- context.window.googleTransport={handles:op=>op==='chat-mail-prepare',async call(op,data,send,identity){google.push({op,data,identity});return send('chat-signing-material',{});}};
+ context.window.googleTransport={handles:op=>op==='chat-mail-prepare',async call(op,data,send,identity){google.push({op,data,identity});return send('chat-selected-signing-material',{});}};
  vm.createContext(context);vm.runInContext(source.slice(0,source.indexOf('function event(')),context);
  vm.runInContext("ownEmail='test@example.invalid';accountSnapshot={email:ownEmail,revision:'synthetic'};accountSettings={assert:s=>s.email};contacts=[];",context);
  return {context,native,google,buttons,lock:()=>{unlocked=false;}};
@@ -23,7 +23,7 @@ function app(){
 test('UI prepare uses browser transport followed by metadata-only native prepare',async()=>{
  const a=app();await a.context.call('chat-mail-prepare',{contact:'saved',subject:'test'});
  assert.equal(a.google.length,1);assert.equal(a.google[0].identity.account,'test@example.invalid');
- assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-signing-material');
+ assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-selected-signing-material');
  assert.equal('mime' in a.native[0],false);assert.equal(a.buttons[0].disabled,false);
 });
 test('a held signing lock blocks a second UI operation, but permits the owned digest callback',async()=>{

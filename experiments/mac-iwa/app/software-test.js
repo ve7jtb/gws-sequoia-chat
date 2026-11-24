@@ -46,6 +46,8 @@ export async function runSoftwareTest({identity,selection,request,gate,signal,
     attachment.size!==64||attachment.data!==compose.attachments[0].data||signing!==1||decapsulation!==1)
   throw Error('Software signing/decryption verification failed.');
  return {format:'sequoia-iwa-software-test',version:1,id,status:'PASS',fingerprint:identity.fingerprint,
+  profile:identity.profile||'level3',openPgpVersion:identity.version||6,
+  pqSigning:identity.pqSigning!==false,pqEncryption:identity.pqEncryption!==false,
   signatureVerified:true,decryptionVerified:true,payloadVerified:true,privateOperations:{signing,decapsulation},
   nativeRequests:0,messagesSent:0,cardWrites:0};
 }

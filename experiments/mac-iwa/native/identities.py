@@ -32,6 +32,21 @@ def bundle_bytes(text):
     return raw
 
 
+def checked_serial(value):
+    """Validate a public device selector without changing vault enrollment."""
+    if not isinstance(value,str) or not re.fullmatch(r'[1-9][0-9]{0,9}',value) or int(value)>2147483647:
+        raise ValueError('Invalid selected serial')
+    return value
+
+
+def devices(bridge):
+    """Enumerate serials only; this discovery route never opens a PIV session."""
+    raw=subprocess.check_output([bridge.cfg['ykman'],'list','--serials'],stderr=subprocess.DEVNULL,timeout=25)
+    if len(raw)>8192:raise ValueError('Device discovery limit')
+    found=[checked_serial(item) for item in raw.decode('ascii').split()]
+    return {'devices':[{'serial':item} for item in sorted(set(found))]}
+
+
 def serial(bridge):
     """Return the fixed enrollment serial used by legacy/vault public review."""
     value=bridge.cfg['serial']
@@ -72,7 +87,7 @@ def current(bridge):
     return result
 
 
-def public_snapshot(bridge,include_bundle):
+def public_snapshot(bridge,include_bundle,selected_serial=None):
     """Read opaque bundle bytes and actual public keys, with no UI decoding.
 
     Only the installed enrollment selects the physical device and executable.
@@ -83,7 +98,7 @@ def public_snapshot(bridge,include_bundle):
     A file import can request the keys alone after an entirely offline review.
     """
     request={'op':'identity-bundle-read' if include_bundle else 'identity-key-snapshot',
-        'serial':serial(bridge),
+        'serial':checked_serial(selected_serial) if selected_serial is not None else serial(bridge),
         'objectHelper':str(Path(bridge.cfg['app'])/'native/bin/hybrid-mail-provision')}
     bridge.emit({'type':'progress','message':'Reading public YubiKey data — no PIN or touch required.'})
     result=run_public(bridge,request)
@@ -108,7 +123,7 @@ def public_snapshot(bridge,include_bundle):
     return result
 
 
-def preview(bridge,encoded=None,selected_serial=None):
+def preview(bridge,encoded=None,selected_serial=None,compatibility_certificate=None):
     """Verify the signed bundle against the selected or configured live card.
 
     This internal authorization path is intentionally distinct from browser
@@ -121,6 +136,7 @@ def preview(bridge,encoded=None,selected_serial=None):
     request={'op':'identity-restore','serial':selected_serial or serial(bridge),
         'objectHelper':str(Path(bridge.cfg['app'])/'native/bin/hybrid-mail-provision')}
     if encoded is not None:request['bundle']=encoded
+    if compatibility_certificate is not None:request['compatibilityCertificate']=compatibility_certificate
     bridge.emit({'type':'progress','message':'Reading and verifying public certificate bundle — no PIN or touch required.'})
     result=run_public(bridge,request)
     if result.get('serial')!=request['serial'] or result.get('source')!=('file' if encoded is not None else 'yubikey'):
@@ -139,18 +155,36 @@ def selection(value):
     display metadata as a request to change the native backend configuration.
     """
     fields={'serial','bundleHash','fingerprint','certificateHash','email'}
-    if not isinstance(value,dict) or set(value)!=fields:
+    if not isinstance(value,dict) or set(value) not in (fields,fields|{'certificate'}):
         raise ValueError('Invalid selected identity')
     if not isinstance(value['serial'],str) or not re.fullmatch(r'[1-9][0-9]{0,9}',value['serial']) or int(value['serial'])>2147483647:
         raise ValueError('Invalid selected serial')
     for field in ('bundleHash','certificateHash'):
         if not isinstance(value[field],str) or not re.fullmatch('[a-f0-9]{64}',value[field]):
             raise ValueError('Invalid selected identity hash')
-    if not isinstance(value['fingerprint'],str) or not re.fullmatch('[A-F0-9]{64}',value['fingerprint']):
-        raise ValueError('Selected v6 fingerprint required')
+    if not isinstance(value['fingerprint'],str) or not re.fullmatch('(?:[A-F0-9]{40}|[A-F0-9]{64})',value['fingerprint']):
+        raise ValueError('Full selected fingerprint required')
     if not isinstance(value['email'],str) or len(value['email'])>320 or not re.fullmatch(r'[^\s<>@,;\x00-\x1f\x7f]+@[^\s<>@,;\x00-\x1f\x7f]+',value['email']) or value['email']!=value['email'].lower():
         raise ValueError('One normalized selected email required')
+    if 'certificate' in value:
+        encoded=value['certificate']
+        if not isinstance(encoded,str) or len(encoded)>87384:raise ValueError('Public certificate cache limit')
+        raw=base64.b64decode(encoded,validate=True)
+        if base64.b64encode(raw).decode()!=encoded or hashlib.sha256(raw).hexdigest()!=value['certificateHash']:
+            raise ValueError('Public certificate cache hash mismatch')
     return dict(value)
+
+
+def companion_preview(bridge,selected_serial,certificate=None):
+    """Read/authenticate encrypted public metadata only; no companion opening."""
+    request={'op':'identity-companion-read','serial':checked_serial(selected_serial),
+        'objectHelper':str(Path(bridge.cfg['app'])/'native/bin/hybrid-mail-provision')}
+    if certificate is not None:request['certificate']=certificate
+    bridge.emit({'type':'progress','message':'Reading encrypted on-key companion — no PIN or touch required.'})
+    result=run_public(bridge,request)
+    if result.get('serial')!=request['serial'] or result.get('format')!='sequoia-iwa-companion':
+        raise ValueError('Invalid companion review')
+    return result
 
 
 def selected(bridge,value):
@@ -165,21 +199,39 @@ def selected(bridge,value):
     connected=subprocess.check_output([bridge.cfg['ykman'],'list','--serials'],
         stderr=subprocess.DEVNULL,timeout=25).decode().split()
     if chosen['serial'] not in connected:raise ValueError('Connect YubiKey '+chosen['serial'])
-    snapshot=preview(bridge,selected_serial=chosen['serial'])
-    if snapshot['bundleHash']!=chosen['bundleHash']:
-        raise ValueError('Selected certificate bundle changed; restore it again')
-    candidates=[c for c in snapshot['certificates'] if c.get('kind')=='openpgp' and c.get('label')=='OpenPGP v6']
-    if len(candidates)!=1:raise ValueError('One supported v6 identity required')
-    # Canonical OpenPGP packet bytes, rather than armor or primary fingerprint
-    # alone, bind the exact UID/subkey/certification view reviewed by the IWA.
-    public=run_public(bridge,{'op':'identity-canonical','certificate':candidates[0]['certificate']})
-    if (public.get('fingerprint')!=chosen['fingerprint'] or
-        public.get('certificateHash')!=chosen['certificateHash'] or
-        chosen['email'] not in public.get('emails',[])):
-        raise ValueError('Selected public certificate or certified email changed')
-    context={**chosen,'certificate':public['certificate']}
-    context=operation_context(context)
-    return context,public
+    # The ciphertext hash selects a companion independently from the normal
+    # public bundle. A cache may provide an ultra-compact public certificate,
+    # but the signed template and live keys must authenticate it first.
+    cached=run_public(bridge,{'op':'identity-canonical','certificate':chosen['certificate']}) if 'certificate' in chosen else None
+    compatibility=chosen['certificate'] if cached and cached.get('version')==5 else None
+    try:snapshot=preview(bridge,selected_serial=chosen['serial'],compatibility_certificate=compatibility)
+    except ValueError:snapshot=None
+    if snapshot is None or snapshot['bundleHash']!=chosen['bundleHash']:
+        companion=companion_preview(bridge,chosen['serial'],chosen.get('certificate'))
+        if companion['companionHash']!=chosen['bundleHash']:
+            raise ValueError('Selected certificate bundle changed; restore it again')
+        public=run_public(bridge,{'op':'identity-canonical','certificate':companion['certificate']})
+        if (public.get('fingerprint')!=chosen['fingerprint'] or public.get('certificateHash')!=chosen['certificateHash'] or chosen['email'] not in public.get('emails',[])):
+            raise ValueError('Selected companion certificate changed')
+        context={**{k:chosen[k] for k in ('serial','bundleHash','fingerprint','certificateHash','email')},
+                 'certificate':public['certificate'],'profile':companion['profile'],
+                 'components':companion['components'],'companion':{k:companion[k] for k in ('encoded','serial','publicKeys','certificate')}}
+        return operation_context(context),public
+    candidates=[c for c in snapshot['certificates'] if c.get('kind')=='openpgp']
+    matches=[]
+    # A full packet hash distinguishes compatibility views sharing a primary
+    # fingerprint. Never select by display label or browser-supplied profile.
+    for candidate in candidates:
+        public=run_public(bridge,{'op':'identity-canonical','certificate':candidate['certificate']})
+        if (public.get('fingerprint')==chosen['fingerprint'] and
+            public.get('certificateHash')==chosen['certificateHash'] and
+            chosen['email'] in public.get('emails',[])):
+            matches.append((candidate,public))
+    if len(matches)!=1:raise ValueError('Selected certificate is not in the verified live bundle')
+    candidate,public=matches[0]
+    context={**{k:chosen[k] for k in ('serial','bundleHash','fingerprint','certificateHash','email')},'certificate':public['certificate'],
+             'profile':candidate['profile'],'components':candidate['components']}
+    return operation_context(context),public
 
 
 def operation_context(value):
@@ -189,9 +241,9 @@ def operation_context(value):
     this certificate. This check additionally binds the persisted canonical
     packet bytes to the reviewed hash and rejects malformed grant contents.
     """
-    if not isinstance(value,dict) or set(value)!={'serial','bundleHash','fingerprint','certificateHash','email','certificate'}:
+    if not isinstance(value,dict) or set(value) not in ({'serial','bundleHash','fingerprint','certificateHash','email','certificate','profile','components'},{'serial','bundleHash','fingerprint','certificateHash','email','certificate','profile','components','companion'}):
         raise ValueError('Invalid selected operation context')
-    chosen=selection({k:v for k,v in value.items() if k!='certificate'})
+    chosen=selection({k:value[k] for k in ('serial','bundleHash','fingerprint','certificateHash','email')})
     encoded=value['certificate']
     if not isinstance(encoded,str) or len(encoded)>87384:
         raise ValueError('Selected certificate limit')
@@ -199,7 +251,41 @@ def operation_context(value):
     except (ValueError,TypeError):raise ValueError('Invalid selected certificate') from None
     if not 1<=len(raw)<=65536 or base64.b64encode(raw).decode()!=encoded or hashlib.sha256(raw).hexdigest()!=chosen['certificateHash']:
         raise ValueError('Selected certificate hash mismatch')
-    return {**chosen,'certificate':encoded}
+    # These rows were reconstructed by the signed-bundle parser. Rechecking
+    # their closed schema on grant redemption prevents accidental broadening
+    # of private operations if a future caller adds paths or arbitrary roles.
+    profile=value['profile']
+    if not isinstance(profile,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',profile):
+        raise ValueError('Invalid hardware profile')
+    components=value['components']
+    if not isinstance(components,list) or not 2<=len(components)<=8:
+        raise ValueError('Invalid hardware components')
+    roles=set()
+    for row in components:
+        if not isinstance(row,dict) or set(row)!={'role','algorithm','storage','slot','publicKey'}:
+            raise ValueError('Invalid hardware component')
+        if row['role'] not in ('signing-pq','signing-classical','decryption-pq','decryption-classical','certification-pq','certification-classical','companion-wrap') or row['role'] in roles:
+            raise ValueError('Invalid hardware role')
+        roles.add(row['role'])
+        if row['storage'] not in ('piv','companion') or (row['storage']=='piv' and row['slot'] not in PUBLIC_SLOTS) or (row['storage']=='companion' and row['slot']!=''):
+            raise ValueError('Invalid hardware storage')
+        if row['algorithm'] not in ('ML-DSA-65','ML-DSA-87','ML-KEM-768','ML-KEM-1024','Ed25519','Ed448','X25519','X448','P-384','P-521','ECDSA-P384','ECDH-P384'):
+            raise ValueError('Invalid hardware algorithm')
+        raw_public=base64.b64decode(row['publicKey'],validate=True)
+        if not 32<=len(raw_public)<=4096 or base64.b64encode(raw_public).decode()!=row['publicKey']:
+            raise ValueError('Invalid component public key')
+    result={**chosen,'certificate':encoded,'profile':profile,'components':components}
+    if 'companion' in value:
+        companion=value['companion']
+        if not isinstance(companion,dict) or set(companion)!={'encoded','serial','publicKeys','certificate'} or companion['serial']!=chosen['serial']:
+            raise ValueError('Invalid companion grant')
+        cached_public=base64.b64decode(companion['certificate'],validate=True)
+        if not 1<=len(cached_public)<=65536:raise ValueError('Companion public cache limit')
+        ciphertext=base64.b64decode(companion['encoded'],validate=True)
+        if not 1<=len(ciphertext)<=65536 or hashlib.sha256(ciphertext).hexdigest()!=chosen['bundleHash']:
+            raise ValueError('Companion grant hash mismatch')
+        result['companion']=companion
+    return result
 
 
 def revalidate_context(bridge,value):

@@ -1,4 +1,4 @@
-//! Experimental, one-operation software custody for an encrypted Level 3 TSK.
+//! Experimental, one-operation software custody for encrypted OpenPGP identities.
 //!
 //! The caller must use a fresh dedicated worker and destroy it on completion,
 //! cancellation and vault lock. No unlocked key, password, static handle, PIN,
@@ -19,6 +19,11 @@ use pgp::{
 use sequoia_openpgp as pgp;
 use wasm_bindgen::prelude::*;
 use zeroize::{Zeroize, Zeroizing};
+
+#[path = "software_envelope.rs"]
+mod envelope;
+#[path = "software_p12.rs"]
+mod p12;
 
 const SECRET_LIMIT: usize = 262144;
 const SIGN_FIELDS: [&str; 4] = ["requestId", "signingFingerprint", "hashAlgorithm", "digest"];
@@ -42,7 +47,7 @@ fn text<'a>(v: &'a serde_json::Value, name: &str) -> Result<&'a str> {
     v[name].as_str().context("Text required")
 }
 fn hex(v: &str, upper: bool) -> bool {
-    v.len() == 64
+    (v.len() == 64 || (upper && v.len() == 40))
         && v.bytes().all(|b| {
             b.is_ascii_digit()
                 || if upper {
@@ -134,13 +139,112 @@ fn check_components(pair: &pgp::crypto::KeyPair) -> Result<()> {
                     "Private/public encryption mismatch"
                 );
             }
-            _ => bail!("Only Level 3 hybrid private primitives are allowed"),
+            (
+                mpi::PublicKey::MLDSA87_Ed448 {
+                    eddsa: ep,
+                    mldsa: mp,
+                },
+                mpi::SecretKeyMaterial::MLDSA87_Ed448 { eddsa, mldsa },
+            ) => {
+                let ed = cx448::SigningKey::from(cx448::SecretKey::from_slice(eddsa));
+                let ml = ml_dsa::SigningKey::<ml_dsa::MlDsa87>::from_seed((&mldsa[..]).try_into()?);
+                ensure!(
+                    ed.verifying_key().to_bytes().as_slice() == ep.as_ref()
+                        && ml.verifying_key().encode().as_slice() == mp.as_ref(),
+                    "Private/public Level 5 signing mismatch"
+                );
+            }
+            (
+                mpi::PublicKey::MLKEM1024_X448 {
+                    ecdh: ep,
+                    mlkem: mp,
+                },
+                mpi::SecretKeyMaterial::MLKEM1024_X448 { ecdh, mlkem },
+            ) => {
+                // X448 implements Zeroize but not Drop; own it explicitly so
+                // success and error exits clear the transient scalar copy.
+                let ec = Zeroizing::new(cx448::x448::Secret::from(<[u8; 56]>::try_from(
+                    ecdh.as_ref(),
+                )?));
+                let ml = ml_kem::DecapsulationKey::<ml_kem::MlKem1024>::from_seed(
+                    (&mlkem[..]).try_into()?,
+                );
+                ensure!(
+                    cx448::x448::PublicKey::from(&*ec).as_bytes().as_slice() == ep.as_ref()
+                        && ml.encapsulation_key().to_bytes().as_slice() == mp.as_ref(),
+                    "Private/public Level 5 encryption mismatch"
+                );
+            }
+            // Legacy Ed25519 and P-521 signing use MPI encodings. A fresh
+            // signature proof verifies the seed/scalar against the full public
+            // point without making assumptions about MPI leading zeroes.
+            (
+                mpi::PublicKey::EdDSA {
+                    curve: pgp::types::Curve::Ed25519,
+                    ..
+                },
+                mpi::SecretKeyMaterial::EdDSA { .. },
+            )
+            | (mpi::PublicKey::Ed25519 { .. }, mpi::SecretKeyMaterial::Ed25519 { .. })
+            | (
+                mpi::PublicKey::ECDSA {
+                    curve: pgp::types::Curve::NistP521,
+                    ..
+                },
+                mpi::SecretKeyMaterial::ECDSA { .. },
+            ) => {
+                let mut proof = pair.clone();
+                let signature = proof.sign(H::SHA512, &[0x73; 64])?;
+                pair.public().verify(&signature, H::SHA512, &[0x73; 64])?;
+            }
+            (
+                mpi::PublicKey::ECDH {
+                    curve: pgp::types::Curve::Cv25519,
+                    q,
+                    ..
+                },
+                mpi::SecretKeyMaterial::ECDH { scalar },
+            ) => {
+                let mut raw = [0u8; 32];
+                ensure!(scalar.value().len() <= raw.len(), "X25519 scalar length");
+                raw[32 - scalar.value().len()..].copy_from_slice(scalar.value());
+                raw.reverse();
+                let private = x25519_dalek::StaticSecret::from(raw);
+                raw.zeroize();
+                ensure!(
+                    q.value().first() == Some(&0x40)
+                        && q.value().get(1..)
+                            == Some(
+                                x25519_dalek::PublicKey::from(&private)
+                                    .as_bytes()
+                                    .as_slice()
+                            ),
+                    "Private/public X25519 mismatch"
+                );
+            }
+            (
+                mpi::PublicKey::ECDH {
+                    curve: pgp::types::Curve::NistP521,
+                    q,
+                    ..
+                },
+                mpi::SecretKeyMaterial::ECDH { scalar },
+            ) => {
+                use p521::elliptic_curve::sec1::ToEncodedPoint;
+                let private = p521::SecretKey::from_slice(scalar.value())?;
+                ensure!(
+                    private.public_key().to_encoded_point(false).as_bytes() == q.value(),
+                    "Private/public P521 mismatch"
+                );
+            }
+            _ => bail!("Unsupported software private algorithm"),
         }
         Ok(())
     })
 }
 
 struct Loaded {
+    cert: pgp::Cert,
     info: serde_json::Value,
     pairs: Vec<pgp::crypto::KeyPair>,
 }
@@ -176,8 +280,10 @@ fn load(v: &mut serde_json::Value) -> Result<Loaded> {
     let cert = parser.next().context("One identity required")??;
     ensure!(parser.next().is_none(), "One identity required");
     ensure!(
-        cert.is_tsk() && cert.keys().count() == 3 && cert.keys().secret().count() == 3,
-        "Complete three-key secret identity required"
+        cert.is_tsk()
+            && matches!(cert.keys().count(), 2 | 3)
+            && cert.keys().secret().count() == cert.keys().count(),
+        "Complete supported secret identity required"
     );
     let p = StandardPolicy::new();
     let valid = cert.with_policy(&p, None)?;
@@ -191,27 +297,50 @@ fn load(v: &mut serde_json::Value) -> Result<Loaded> {
     );
     let primary = valid.primary_key();
     let flags = primary.key_flags().context("Primary key flags required")?;
+    let modern = primary.key().version() == 6;
     ensure!(
-        primary.key().version() == 6
-            && primary.key().pk_algo() == A::MLDSA65_Ed25519
-            && flags.for_certification()
-            && !flags.for_signing()
+        flags.for_certification()
             && !flags.for_transport_encryption()
-            && !flags.for_storage_encryption(),
-        "Separate certification primary required"
+            && !flags.for_storage_encryption()
+            && if modern {
+                !flags.for_signing()
+                    && matches!(
+                        primary.key().pk_algo(),
+                        A::MLDSA65_Ed25519 | A::MLDSA87_Ed448
+                    )
+            } else {
+                primary.key().version() == 4
+                    && flags.for_signing()
+                    && matches!(primary.key().pk_algo(), A::EdDSA | A::Ed25519 | A::ECDSA)
+            },
+        "Separate modern certification or explicit classical compatibility primary required"
+    );
+    ensure!(
+        cert.keys().count() == if modern { 3 } else { 2 },
+        "Profile key count"
     );
     for ka in cert.keys() {
         ensure!(
-            ka.key().version() == 6
-                && matches!(ka.key().pk_algo(), A::MLDSA65_Ed25519 | A::MLKEM768_X25519),
-            "Only Level 3 v6 private algorithms allowed"
+            ka.key().version() == primary.key().version()
+                && matches!(
+                    ka.key().pk_algo(),
+                    A::MLDSA65_Ed25519
+                        | A::MLDSA87_Ed448
+                        | A::MLKEM768_X25519
+                        | A::MLKEM1024_X448
+                        | A::EdDSA
+                        | A::Ed25519
+                        | A::ECDSA
+                        | A::ECDH
+                ),
+            "Unsupported private algorithm/version"
         );
     }
     let public = cert.clone().strip_secret_key_material().to_vec()?;
     let info = super::certificates::inspect_identity_value(&B64.encode(public))?;
     ensure!(
-        info["supported"] == true && info["signingFingerprint"] != info["fingerprint"],
-        "Current separate message subkeys required"
+        info["supported"] == true && (!modern || info["signingFingerprint"] != info["fingerprint"]),
+        "Current unambiguous message keys required"
     );
     // Validate every encrypted KDF before deriving even the first one. A file
     // cannot hide excessive work or a plaintext packet behind a valid first key.
@@ -246,21 +375,30 @@ fn load(v: &mut serde_json::Value) -> Result<Loaded> {
         check_components(&pair)?;
         pairs.push(pair);
     }
-    Ok(Loaded { info, pairs })
+    Ok(Loaded { cert, info, pairs })
 }
 
 fn inspect(mut v: serde_json::Value) -> Result<serde_json::Value> {
     fields(&v, &["encryptedSecret", "password"])?;
+    if envelope::is_envelope(&v) {
+        return Ok(envelope::open(&mut v)?.2);
+    }
     Ok(load(&mut v)?.info)
 }
-fn sign(mut v: serde_json::Value) -> Result<serde_json::Value> {
+pub(super) fn sign(mut v: serde_json::Value) -> Result<serde_json::Value> {
     fields(&v, &["encryptedSecret", "password", "request"])?;
+    if envelope::is_envelope(&v) {
+        let (cert, secret, _) = envelope::open(&mut v)?;
+        return super::libre::sign(&cert, &secret, &v["request"]);
+    }
     fields(&v["request"], &SIGN_FIELDS)?;
     // Reject malformed requests before password/KDF work. Identity fingerprints
     // are checked again against the decrypted, publicly bound message subkey.
     let request = &v["request"];
     ensure!(
-        hex(text(request, "requestId")?, true) && hex(text(request, "signingFingerprint")?, true),
+        text(request, "requestId")?.len() == 64
+            && hex(text(request, "requestId")?, true)
+            && hex(text(request, "signingFingerprint")?, true),
         "Signing identifiers"
     );
     ensure!(
@@ -277,31 +415,70 @@ fn sign(mut v: serde_json::Value) -> Result<serde_json::Value> {
     let mut pair = loaded.pair(text(request, "signingFingerprint")?)?;
     let signature = pair.sign(H::SHA512, &digest)?;
     pair.public().verify(&signature, H::SHA512, &digest)?;
-    let mpi::Signature::MLDSA65_Ed25519 { eddsa, mldsa } = signature else {
-        bail!("Wrong signature algorithm")
+    let (ed, ml) = match signature {
+        mpi::Signature::MLDSA65_Ed25519 { eddsa, mldsa } => {
+            (eddsa.as_ref().to_vec(), mldsa.as_ref().to_vec())
+        }
+        mpi::Signature::MLDSA87_Ed448 { eddsa, mldsa } => {
+            (eddsa.as_ref().to_vec(), mldsa.as_ref().to_vec())
+        }
+        mpi::Signature::Ed25519 { s } => (s.to_vec(), Vec::new()),
+        mpi::Signature::EdDSA { r, s } => {
+            let mut bytes = Vec::new();
+            for mpi in [r, s] {
+                ensure!(mpi.value().len() <= 32, "Ed25519 MPI");
+                bytes.extend(vec![0; 32 - mpi.value().len()]);
+                bytes.extend(mpi.value());
+            }
+            (bytes, Vec::new())
+        }
+        mpi::Signature::ECDSA { r, s } => {
+            let mut bytes = Vec::new();
+            for mpi in [r, s] {
+                ensure!(mpi.value().len() <= 66, "P521 MPI");
+                bytes.extend(vec![0; 66 - mpi.value().len()]);
+                bytes.extend(mpi.value());
+            }
+            (bytes, Vec::new())
+        }
+        _ => bail!("Wrong signature algorithm"),
     };
+    // These historical field names are the fixed split-signing protocol. The
+    // recipient's authenticated algorithm determines component sizes; an empty
+    // PQ component is permitted only for explicit v4 classical signing.
     Ok(
-        serde_json::json!({"requestId":request["requestId"],"hashAlgorithm":10,"signingFingerprint":request["signingFingerprint"],"digest":request["digest"],"ed25519":B64.encode(eddsa.as_ref()),"mldsa65":B64.encode(mldsa.as_ref())}),
+        serde_json::json!({"requestId":request["requestId"],"hashAlgorithm":10,"signingFingerprint":request["signingFingerprint"],"digest":request["digest"],"ed25519":B64.encode(ed),"mldsa65":B64.encode(ml)}),
     )
 }
-fn decapsulate(mut v: serde_json::Value) -> Result<serde_json::Value> {
-    use ml_kem::{kem::Decapsulate, DecapsulationKey, MlKem768};
+
+pub(super) fn decapsulate(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    use ml_kem::{kem::Decapsulate, DecapsulationKey, MlKem1024, MlKem768};
     fields(&v, &["encryptedSecret", "password", "request"])?;
+    if envelope::is_envelope(&v) {
+        let (cert, secret, _) = envelope::open(&mut v)?;
+        return super::libre::decapsulate(&cert, &secret, &v["request"]);
+    }
     fields(&v["request"], &DECAP_FIELDS)?;
     let request = &v["request"];
     ensure!(
-        hex(text(request, "requestId")?, true)
+        text(request, "requestId")?.len() == 64
+            && hex(text(request, "requestId")?, true)
             && hex(text(request, "cipherHash")?, false)
             && hex(text(request, "recipientKey")?, true),
         "Decryption identifiers"
     );
-    let ciphertext: [u8; 1088] = octets(request, "mlkemCiphertext", 1088)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("ML-KEM input"))?;
-    let ephemeral: [u8; 32] = octets(request, "x25519Ephemeral", 32)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("X25519 input"))?;
-    ensure!(ephemeral.iter().any(|b| *b != 0), "Zero X25519 input");
+    // Parse only the finite component sizes used by the supported profiles.
+    // The actual profile is authenticated from the decrypted certificate below.
+    let ciphertext = B64.decode(text(request, "mlkemCiphertext")?)?;
+    let ephemeral = B64.decode(text(request, "x25519Ephemeral")?)?;
+    ensure!(
+        matches!(
+            (ciphertext.len(), ephemeral.len()),
+            (1088, 32) | (1568, 56) | (0, 33) | (0, 133)
+        ) && B64.encode(&ciphertext) == text(request, "mlkemCiphertext")?
+            && B64.encode(&ephemeral) == text(request, "x25519Ephemeral")?,
+        "Canonical component input"
+    );
     let mut loaded = load(&mut v)?;
     let request = &v["request"];
     ensure!(
@@ -311,22 +488,266 @@ fn decapsulate(mut v: serde_json::Value) -> Result<serde_json::Value> {
     let pair = loaded.pair(text(request, "recipientKey")?)?;
     let mut result = request.clone();
     pair.secret().map(|secret| -> Result<()> {
-        let mpi::SecretKeyMaterial::MLKEM768_X25519 { ecdh, mlkem } = secret else {
-            bail!("Wrong private algorithm")
+        let (ml_shared, ec_shared): (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>) = match secret {
+            mpi::SecretKeyMaterial::MLKEM768_X25519 { ecdh, mlkem } => {
+                let ct: &[u8; 1088] = ciphertext.as_slice().try_into()?;
+                let ep: [u8; 32] = ephemeral.as_slice().try_into()?;
+                let ec = x25519_dalek::StaticSecret::from(<[u8; 32]>::try_from(ecdh.as_ref())?);
+                let shared = ec.diffie_hellman(&x25519_dalek::PublicKey::from(ep));
+                ensure!(shared.was_contributory(), "Noncontributory X25519");
+                let ml = DecapsulationKey::<MlKem768>::from_seed((&mlkem[..]).try_into()?);
+                (
+                    Zeroizing::new(ml.decapsulate(ct.into()).to_vec()),
+                    Zeroizing::new(shared.as_bytes().to_vec()),
+                )
+            }
+            mpi::SecretKeyMaterial::MLKEM1024_X448 { ecdh, mlkem } => {
+                let ct: &[u8; 1568] = ciphertext.as_slice().try_into()?;
+                let ep: &[u8; 56] = ephemeral.as_slice().try_into()?;
+                // X448 implements Zeroize but not Drop; own it explicitly so
+                // success and error exits clear the transient scalar copy.
+                let ec = Zeroizing::new(cx448::x448::Secret::from(<[u8; 56]>::try_from(
+                    ecdh.as_ref(),
+                )?));
+                let public = cx448::x448::PublicKey::from_bytes(ep).context("X448 point")?;
+                let shared = Zeroizing::new(
+                    ec.as_diffie_hellman(&public)
+                        .context("Noncontributory X448")?,
+                );
+                let ml = DecapsulationKey::<MlKem1024>::from_seed((&mlkem[..]).try_into()?);
+                (
+                    Zeroizing::new(ml.decapsulate(ct.into()).to_vec()),
+                    Zeroizing::new(shared.as_bytes().to_vec()),
+                )
+            }
+            mpi::SecretKeyMaterial::ECDH { scalar } => {
+                ensure!(ciphertext.is_empty(), "Classical component binding");
+                match pair.public().mpis() {
+                    mpi::PublicKey::ECDH {
+                        curve: pgp::types::Curve::Cv25519,
+                        ..
+                    } => {
+                        ensure!(
+                            ephemeral.len() == 33 && ephemeral[0] == 0x40,
+                            "Legacy X25519 point"
+                        );
+                        let mut raw = [0u8; 32];
+                        ensure!(scalar.value().len() <= 32, "Scalar limit");
+                        raw[32 - scalar.value().len()..].copy_from_slice(scalar.value());
+                        raw.reverse();
+                        let ec = x25519_dalek::StaticSecret::from(raw);
+                        raw.zeroize();
+                        let shared = ec.diffie_hellman(&x25519_dalek::PublicKey::from(
+                            <[u8; 32]>::try_from(&ephemeral[1..])?,
+                        ));
+                        ensure!(shared.was_contributory(), "Noncontributory X25519");
+                        (
+                            Zeroizing::new(Vec::new()),
+                            Zeroizing::new(shared.as_bytes().to_vec()),
+                        )
+                    }
+                    mpi::PublicKey::ECDH {
+                        curve: pgp::types::Curve::NistP521,
+                        ..
+                    } => {
+                        let ec = p521::SecretKey::from_slice(scalar.value())?;
+                        let public = p521::PublicKey::from_sec1_bytes(&ephemeral)?;
+                        let shared =
+                            p521::ecdh::diffie_hellman(ec.to_nonzero_scalar(), public.as_affine());
+                        (
+                            Zeroizing::new(Vec::new()),
+                            Zeroizing::new(shared.raw_secret_bytes().to_vec()),
+                        )
+                    }
+                    _ => bail!("Unsupported classical recipient"),
+                }
+            }
+            _ => bail!("Unsupported decryption key"),
         };
-        let ec = x25519_dalek::StaticSecret::from(<[u8; 32]>::try_from(ecdh.as_ref())?);
-        let shared = ec.diffie_hellman(&x25519_dalek::PublicKey::from(ephemeral));
-        ensure!(shared.was_contributory(), "Noncontributory X25519 input");
-        let ml = DecapsulationKey::<MlKem768>::from_seed((&mlkem[..]).try_into()?);
-        let ml_shared = Zeroizing::new(ml.decapsulate((&ciphertext).into()).to_vec());
-        // No partial reply escapes. ML-KEM implicit rejection is deliberately
-        // left intact; the existing WASM AEAD/session-key recovery rejects a bad
-        // ciphertext. The worker must never persist either shared component.
+        // Component shares are released together, only to the matching live
+        // worker operation. The message worker owns combiner/session-key/AEAD
+        // checks; ML-KEM implicit rejection is never converted into an oracle.
         result["mlkemSecret"] = serde_json::json!(B64.encode(&*ml_shared));
-        result["x25519Secret"] = serde_json::json!(B64.encode(shared.as_bytes()));
+        result["x25519Secret"] = serde_json::json!(B64.encode(&*ec_shared));
         Ok(())
     })?;
     Ok(result)
+}
+
+/// Encrypt every private packet while preserving packet roles and all public
+/// bytes/self-signatures. Exporting with a new password never changes a public
+/// fingerprint or silently substitutes freshly generated keys.
+fn protect(cert: &pgp::Cert, password: &str) -> Result<pgp::Cert> {
+    ensure!(
+        (12..=1024).contains(&password.len()),
+        "Use at least 12 password bytes"
+    );
+    let pw = Password::from(password);
+    let pile = pgp::PacketPile::from_bytes(&cert.as_tsk().to_vec()?)?;
+    let mut packets = Vec::new();
+    for packet in pile.children().cloned() {
+        packets.push(match packet {
+            pgp::Packet::SecretKey(key) => pgp::Packet::SecretKey(key.encrypt_secret(&pw)?),
+            pgp::Packet::SecretSubkey(key) => pgp::Packet::SecretSubkey(key.encrypt_secret(&pw)?),
+            other => other,
+        });
+    }
+    pgp::Cert::from_packets(packets.into_iter())
+}
+fn encrypted_result(cert: &pgp::Cert, password: &str) -> Result<serde_json::Value> {
+    let encrypted = protect(cert, password)?;
+    let encoded = B64.encode(encrypted.as_tsk().to_vec()?);
+    let mut check = serde_json::json!({"encryptedSecret":encoded,"password":password});
+    let public = load(&mut check)?.info;
+    Ok(serde_json::json!({"encryptedSecret":encoded,"public":public}))
+}
+pub(super) fn generate(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    use pgp::cert::{CertBuilder, CipherSuite};
+    use pgp::types::{KeyFlags, PublicKeyAlgorithmSpecification as Spec};
+    fields(&v, &["profile", "email", "name", "password"])?;
+    let profile = text(&v, "profile")?.to_string();
+    let email = text(&v, "email")?;
+    ensure!(
+        email.is_ascii()
+            && email.len() <= 254
+            && !email
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace() || "<>".contains(c))
+            && email.matches('@').count() == 1
+            && !email.starts_with('@')
+            && !email.ends_with('@'),
+        "Mailbox required"
+    );
+    let name = text(&v, "name")?;
+    ensure!(
+        name.len() <= 100 && !name.chars().any(|c| c.is_control() || "<>".contains(c)),
+        "Display name limit"
+    );
+    let uid = if name.is_empty() {
+        email.to_owned()
+    } else {
+        format!("{name} <{email}>")
+    };
+    if profile == "level3-v5-hybrid" {
+        let (certificate, secret) = super::libre::generate(email)?;
+        return envelope::seal(&certificate, &secret, text(&v, "password")?);
+    }
+    let modern = matches!(profile.as_str(), "level3" | "level5");
+    ensure!(
+        modern
+            || matches!(
+                profile.as_str(),
+                "level3-v4-hybrid"
+                    | "level3-v4-classical"
+                    | "level5-v4-hybrid"
+                    | "level5-v4-classical"
+            ),
+        "Unsupported profile"
+    );
+    let mut builder = CertBuilder::new().add_userid(uid);
+    builder = if modern {
+        builder
+            .set_profile(pgp::Profile::RFC9580)?
+            .set_cipher_suite(if profile == "level5" {
+                CipherSuite::MLDSA87_Ed448
+            } else {
+                CipherSuite::MLDSA65_Ed25519
+            })
+            .set_primary_key_flags(KeyFlags::empty().set_certification())
+            .add_signing_subkey()
+    } else {
+        // Compatibility identities intentionally use dedicated classical
+        // certification/signing keys; they never reuse a composite component.
+        builder
+            .set_profile(pgp::Profile::RFC4880)?
+            .set_cipher_suite(if profile.starts_with("level5") {
+                CipherSuite::P521
+            } else {
+                CipherSuite::Cv25519
+            })
+            .set_primary_key_flags(KeyFlags::empty().set_certification().set_signing())
+    };
+    if profile.ends_with("-hybrid") {
+        builder = builder.set_encryption_algorithm(Spec::mlkem768_x25519());
+    }
+    let (cert, _revocation) = builder.add_transport_encryption_subkey().generate()?;
+    let mut password = v["password"].take();
+    let value = password.as_str().context("Password required")?;
+    let result = encrypted_result(&cert, value);
+    if let serde_json::Value::String(value) = &mut password {
+        value.zeroize();
+    }
+    result
+}
+fn export(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    fields(&v, &["encryptedSecret", "password", "newPassword"])?;
+    if envelope::is_envelope(&v) {
+        let (cert, secret, _) = envelope::open(&mut v)?;
+        return envelope::seal(&cert, &secret, text(&v, "newPassword")?);
+    }
+    let mut loaded = load(&mut v)?;
+    let pile = pgp::PacketPile::from_bytes(&loaded.cert.as_tsk().to_vec()?)?;
+    let mut packets = Vec::new();
+    for packet in pile.children().cloned() {
+        packets.push(match packet {
+            pgp::Packet::SecretKey(key) => {
+                let pair = loaded.pair(&key.fingerprint().to_hex())?;
+                pgp::Packet::SecretKey(key.add_secret(pair.secret().clone().into()).0)
+            }
+            pgp::Packet::SecretSubkey(key) => {
+                let pair = loaded.pair(&key.fingerprint().to_hex())?;
+                pgp::Packet::SecretSubkey(key.add_secret(pair.secret().clone().into()).0)
+            }
+            other => other,
+        });
+    }
+    let cert = pgp::Cert::from_packets(packets.into_iter())?;
+    let mut password = v["newPassword"].take();
+    let result = encrypted_result(
+        &cert,
+        password.as_str().context("Export password required")?,
+    );
+    if let serde_json::Value::String(value) = &mut password {
+        value.zeroize();
+    }
+    result
+}
+/// Generate only software keys using the browser's CSPRNG-backed Rust backend.
+#[wasm_bindgen]
+pub fn software_generate(input: &str) -> Result<String, JsValue> {
+    call(input, generate).map_err(|_| JsValue::from_str("Software identity generation rejected"))
+}
+/// Produce portable, password-encrypted OpenPGP secret packets; no plaintext key
+/// export exists, and the source vault record is never mutated by this call.
+#[wasm_bindgen]
+pub fn software_export(input: &str) -> Result<String, JsValue> {
+    call(input, export)
+        .map_err(|_| JsValue::from_str("Encrypted software identity export rejected"))
+}
+
+/// Authenticate legacy/current PQ Mail PFX MACs inside bounded Rust work. This
+/// never returns the derived password key or permits an unauthenticated import.
+#[wasm_bindgen]
+pub fn software_p12_verify_mac(input: &str) -> Result<String, JsValue> {
+    let run = || -> Result<String> {
+        ensure!(input.len() <= 1_500_000, "PFX request limit");
+        Ok(serde_json::to_string(&p12::verify_mac(
+            serde_json::from_str(input)?,
+        )?)?)
+    };
+    run().map_err(|_| JsValue::from_str("PKCS12 authentication rejected"))
+}
+/// Reconstruct existing public certificate fingerprints from authenticated,
+/// decrypted PQ Mail PKCS8 bags. All private/public components are rechecked.
+#[wasm_bindgen]
+pub fn software_import_p12(input: &str) -> Result<String, JsValue> {
+    let run = || -> Result<String> {
+        ensure!(input.len() <= 1_500_000, "PFX request limit");
+        Ok(serde_json::to_string(&p12::import(serde_json::from_str(
+            input,
+        )?)?)?)
+    };
+    run().map_err(|_| JsValue::from_str("PQ Mail software PKCS12 import rejected"))
 }
 
 fn call(input: &str, op: fn(serde_json::Value) -> Result<serde_json::Value>) -> Result<String> {
@@ -443,6 +864,84 @@ mod tests {
     }
     fn signing_request(info: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({"requestId":"A".repeat(64),"signingFingerprint":info["signingFingerprint"],"hashAlgorithm":10,"digest":B64.encode([7;64])})
+    }
+    #[test]
+    fn generated_profiles_encrypt_all_secrets_and_export_preserves_identity() {
+        // These generated identities remain in process memory. Export must
+        // change only password protection, including for compatibility views.
+        for profile in [
+            "level3",
+            "level5",
+            "level3-v4-hybrid",
+            "level3-v4-classical",
+            "level5-v4-hybrid",
+            "level5-v4-classical",
+        ] {
+            let generated=generate(serde_json::json!({"profile":profile,"email":"generation@example.invalid","name":"Software fixture","password":PASSWORD})).unwrap();
+            let inspected=inspect(serde_json::json!({"encryptedSecret":generated["encryptedSecret"],"password":PASSWORD})).unwrap();
+            assert_eq!(inspected, generated["public"]);
+            let cert = Cert::from_bytes(
+                &B64.decode(generated["encryptedSecret"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(cert
+                .keys()
+                .secret()
+                .all(|k| matches!(k.key().secret(), key::SecretKeyMaterial::Encrypted(_))));
+            assert_eq!(
+                cert.primary_key().key().version(),
+                if profile.contains("-v4-") { 4 } else { 6 }
+            );
+            let new_password = "A different disposable export password";
+            let reencrypted=export(serde_json::json!({"encryptedSecret":generated["encryptedSecret"],"password":PASSWORD,"newPassword":new_password})).unwrap();
+            assert_eq!(reencrypted["public"], generated["public"]);
+            assert_ne!(reencrypted["encryptedSecret"], generated["encryptedSecret"]);
+            assert!(inspect(serde_json::json!({"encryptedSecret":reencrypted["encryptedSecret"],"password":PASSWORD})).is_err());
+            assert_eq!(inspect(serde_json::json!({"encryptedSecret":reencrypted["encryptedSecret"],"password":new_password})).unwrap(),generated["public"]);
+        }
+    }
+    #[test]
+    fn generation_rejects_unsupported_profiles_and_unsafe_mailboxes() {
+        let base = serde_json::json!({"profile":"level3","email":"fixture@example.invalid","name":"","password":PASSWORD});
+        for (field, value) in [
+            ("profile", "RSA"),
+            ("email", "a@example.invalid\r\nBcc: x@invalid"),
+            ("email", "missing-at"),
+            ("name", "Bad <display>"),
+            ("password", "short"),
+        ] {
+            let mut request = base.clone();
+            request[field] = value.into();
+            assert!(generate(request).is_err());
+        }
+    }
+    #[test]
+    fn v5_encrypted_backup_authenticates_and_preserves_fingerprint() {
+        let generated=generate(serde_json::json!({"profile":"level3-v5-hybrid","email":"v5@example.invalid","name":"","password":PASSWORD})).unwrap();
+        let request =
+            serde_json::json!({"encryptedSecret":generated["encryptedSecret"],"password":PASSWORD});
+        assert_eq!(inspect(request.clone()).unwrap()["version"], 5);
+        let mut wrong = request.clone();
+        wrong["password"] = "wrong".into();
+        assert!(inspect(wrong).is_err());
+        let mut envelope: serde_json::Value = serde_json::from_slice(
+            &B64.decode(generated["encryptedSecret"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut bytes = B64
+            .decode(envelope["ciphertext"].as_str().unwrap())
+            .unwrap();
+        bytes[0] ^= 1;
+        envelope["ciphertext"] = B64.encode(bytes).into();
+        let mut tampered = request.clone();
+        tampered["encryptedSecret"] = B64.encode(serde_json::to_vec(&envelope).unwrap()).into();
+        assert!(inspect(tampered).is_err());
+        let mut export_request = request;
+        export_request["newPassword"] = "Fresh encrypted v5 export password".into();
+        let fresh = export(export_request).unwrap();
+        assert_eq!(fresh["public"], generated["public"]);
     }
     #[test]
     fn encrypted_binary_and_armored_import_returns_only_public_metadata() {

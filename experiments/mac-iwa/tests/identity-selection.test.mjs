@@ -47,3 +47,31 @@ test('missing, duplicated and rebound recipient matches cannot reach hardware',a
  s.setMatch(async()=>({...original,matches:[match,match]}));await assert.rejects(s.model.match(cipher,account),/Invalid recipient/);
  s.setMatch(async()=>({...original,matches:[{...match,certificateHash:'0'.repeat(64)}]}));await assert.rejects(s.model.match(cipher,account),/Invalid recipient/);
 });
+
+test('manifest-backed v4/v5 and classical Level5 v6 preserve exact view, algorithms and custody',async()=>{
+ for(const [version,profile,pqSigning,pqEncryption] of [[4,'level5-v4-hybrid-p384',false,true],[5,'level3-v5-hybrid',false,true],[6,'level5-v6-classical',false,false]]){
+  const {model,data,info}=setup(),cert=data.identities[0].certificates[0];
+  cert.version=info.version=version;cert.fingerprint=info.fingerprint='A'.repeat(version===4?40:64);
+  Object.assign(info,{profile,pqSigning,pqEncryption,signingAlgorithm:version===5?'Ed25519':'ECDSA P-384',encryptionAlgorithm:pqEncryption?'ML-KEM-768 + X25519':'ECDH P-384'});
+  cert.components=[{role:'signing-classical',algorithm:info.signingAlgorithm,storage:'piv',slot:'88',publicKey:btoa('public')}];
+  const selected=(await model.list(account)).choices[0];
+  assert.equal(selected.version,version);assert.equal(selected.profile,profile);assert.equal(selected.pqSigning,pqSigning);assert.equal(selected.pqEncryption,pqEncryption);
+  assert.equal(selected.custody,'hardware');assert.deepEqual(selected.components,cert.components);
+  const material={identity:nativeIdentity(selected),senderCertificate:certificate,senderEmail:account,signingFingerprint:sign,hardwareProfile:profile};
+  await model.validateMaterial(material,selected,'signing');
+  await assert.rejects(model.validateMaterial({...material,hardwareProfile:'level3'},selected,'signing'),/hardware profile/);
+ }
+});
+test('companion selections stay hardware-bound and cannot silently become software providers',async()=>{
+ const {model,data,info}=setup();Object.assign(info,{profile:'level5',pqSigning:true,pqEncryption:true});
+ data.identities[0].id+=':companion';data.identities[0].companion={encoded:btoa('encrypted only'),serial:123,publicKeys:{'82':btoa('public')},certificate};
+ const selected=(await model.list(account)).choices[0];assert.equal(selected.custody,'hardware-companion');assert.equal(selected.provider,undefined);
+ assert.deepEqual(nativeIdentity(selected),{serial:'123',bundleHash,fingerprint:fp,certificateHash:certHash,email:account,certificate});
+ data.identities[0].companion.encoded=btoa('different ciphertext');await assert.rejects(model.assert(selected),/changed/);
+});
+test('v4 certificate widths and version changes cannot be accepted as v6 identity metadata',async()=>{
+ const {model,data,info}=setup();info.version=4;info.fingerprint='A'.repeat(40);
+ await assert.rejects(model.list(account),/version changed/);
+ data.identities[0].certificates[0].version=4;info.fingerprint='A'.repeat(64);
+ await assert.rejects(model.list(account),/version changed/);
+});

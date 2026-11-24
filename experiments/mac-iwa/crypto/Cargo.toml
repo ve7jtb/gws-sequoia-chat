@@ -11,6 +11,8 @@ base64 = "0.22"
 sha2 = "0.10"
 serde_json = "1"
 zeroize = "1"
+openssl = "0.10"
+libc = "0.2"
 sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
 sequoia-pqmail-piv = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1" }
 # No type crosses the two Sequoia backend versions: this public parser returns

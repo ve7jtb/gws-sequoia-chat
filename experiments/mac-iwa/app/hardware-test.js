@@ -4,6 +4,8 @@
 import {signAndEncrypt} from './signing-session.js';
 import {decryptWithHardware} from './decryption-session.js';
 import {nativeIdentity} from './identities/selection.js';
+import {signingFailurePhase} from './signing-phases.js';
+export {signingFailureLabel} from './signing-phases.js';
 
 const SLOTS=['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))];
 const ordered=value=>Array.isArray(value)?value.map(ordered):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,ordered(value[k])])):value;
@@ -35,8 +37,8 @@ export function validateHardwareAudit(value,identity){
  */
 export function hardwareTestFixture(email,runId){
  if(typeof runId!=='string'||!/^[a-f0-9-]{36}$/.test(runId))throw Error('Invalid test identifier');
- const body='Synthetic IWA hardware test '+runId+'.\nSigning, hybrid decryption and exact attachment checks.\nNo email is sent.\n';
- const html='<p>Synthetic IWA hardware test <strong>'+runId+'</strong>.</p><p>Signing, hybrid decryption and exact attachment checks.</p><p>No email is sent.</p>';
+ const body='Synthetic IWA hardware test '+runId+'.\nSigning, decryption and exact attachment checks.\nNo email is sent.\n';
+ const html='<p>Synthetic IWA hardware test <strong>'+runId+'</strong>.</p><p>Signing, decryption and exact attachment checks.</p><p>No email is sent.</p>';
  const bytes=Uint8Array.from({length:64},(_,i)=>(i*37)&255);
  const data=btoa(String.fromCharCode(...bytes));
  return {sender:email,recipient:email,subject:'IWA hardware test '+runId,body,html,attachments:[{name:'hardware-test.bin',data}]};
@@ -63,6 +65,10 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
  let stage='preflight',before=null,after=null,compose,cipher,opened;
  const inFlight=new Set(),report={format:'sequoia-iwa-hardware-test',version:1,id,
   started:new Date(now()).toISOString(),status:'RUNNING',identity:binding,
+  profile:selected.profile||'level3',openPgpVersion:selected.version||6,
+  signingAlgorithm:selected.signingAlgorithm||'ML-DSA-65 + Ed25519',
+  encryptionAlgorithm:selected.encryptionAlgorithm||'ML-KEM-768 + X25519',
+  custody:selected.custody||'hardware',
   steps:[],signatureVerified:false,decryptionVerified:false,payloadVerified:false,
   unchanged:null,messagesSent:0,cardWrites:0,privateAttempts:{signing:0,decryption:0}};
  const progress=(name,message)=>{stage=name;report.steps.push({step:name,status:'running'});onProgress(message);};
@@ -90,7 +96,8 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
    await check();
    if(report.privateAttempts.signing!==0)throw Error('Duplicate signing request');
    report.privateAttempts.signing++;
-   const result=await request('chat-sign-digest',value);await check();return result;
+   const result=await request('chat-sign-digest',value);
+   try{await check();return result;}catch(error){if(result)delete result.companionShared;throw error;}
   },{signal,createWorker:createSigningWorker});
   cipher=encrypted.cipher;await check();report.signatureVerified=true;complete();
   progress('recipient-match','Matching the encrypted recipient to the same saved YubiKey identity in WASM.');
@@ -114,11 +121,15 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
    },gate:check,createWorker:createDecryptionWorker});
   await check();verifiedPayload(opened,compose,selected);
   report.decryptionVerified=report.payloadVerified=true;complete();report.status='PASS';
- }catch(_){
+ }catch(error){
   if(report.steps.at(-1)?.status==='running')report.steps.at(-1).status='stopped';
   // Export only controlled labels. Low-level errors may contain private input
   // or stale process output and are not an acceptable public diagnostic log.
   report.status=signal?.aborted?'CANCELLED':'STOPPED';report.failureStage=stage;
+  // Keep the coarse test stage for older report readers, but distinguish the
+  // browser/native signing boundaries using only our closed public vocabulary.
+  // Never copy arbitrary provider error properties or diagnostics into exports.
+  if(stage==='signing')report.failurePhase=signingFailurePhase(error?.failurePhase);
  }finally{
   await Promise.allSettled([...inFlight]);
   if(before){

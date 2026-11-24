@@ -42,7 +42,7 @@ def validate(config):
 # This prevents accidentally packaging the separately built message oracle or
 # an older broad worker under the production executable filename.
 PRODUCTION_OPERATIONS = frozenset(('identity-current','identity-canonical',
-    'identity-restore','identity-bundle-read','identity-key-snapshot',
+    'identity-restore','identity-companion-read','identity-bundle-read','identity-key-snapshot',
     'decryption-material','signing-material','inspect-public',
     'decapsulate-components','sign-digest'))
 

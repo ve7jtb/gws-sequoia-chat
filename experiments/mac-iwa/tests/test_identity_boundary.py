@@ -37,6 +37,7 @@ class IdentityBoundary(unittest.TestCase):
    request={'op':op}
    self.assertEqual(validate(request),op)
    for name in ('serial','slot','tag','path','helper','objectHelper','pin','trust','config','certificate','bundle'):
+    if name=='serial' and op!='chat-identity-current':continue
     with self.assertRaises(ValueError):validate({**request,name:'not allowed'})
  def test_native_browser_decoding_routes_are_retired_before_any_public_or_private_call(self):
   for request in ({'op':'chat-identity-restore'},{'op':'chat-identity-import','bundle':ENCODED}):

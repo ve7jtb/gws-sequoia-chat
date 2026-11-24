@@ -1903,7 +1903,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "libc",
  "ml-kem",
+ "openssl",
  "sequoia-openpgp 2.4.2 (git+https://github.com/ve7jtb/sequoia.git?rev=6b99afc20984e16180e5bbfbabb51d8685d247e1)",
  "sequoia-pqmail-piv",
  "sequoia-public-bundle",
@@ -2029,8 +2031,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "cx448",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
+ "js-sys",
  "ml-dsa",
  "p384",
  "sequoia-openpgp 2.4.2 (git+https://github.com/ve7jtb/sequoia.git?rev=65979cf360ec0908c793d8801dd4491da2b8398d)",

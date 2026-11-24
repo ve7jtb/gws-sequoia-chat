@@ -124,3 +124,24 @@ test('inventory and review counts are bounded',async()=>{
  for(let i=1;i<=16;i++){info(i);await store.save(await store.previewCertificate(encoded(i)),true);}
  info(17);await assert.rejects(store.save(await store.previewCertificate(encoded(17)),true),/Unsupported own-identity store/);assert.equal((await store.list()).identities.length,16);
 });
+
+function companionSnapshot(){
+ const value=snapshot({format:'sequoia-iwa-companion-preview',generation:0,bundleHash:'5'.repeat(64),certificates:[{kind:'openpgp',label:'Level 5 companion',certificate:encoded(1),profile:'LEVEL5_COMPANION',components:[{role:'signing-pq',algorithm:'ML-DSA-87',storage:'piv',slot:'9c',publicKey:encoded(50)},{role:'signing-classical',algorithm:'Ed448',storage:'companion',slot:'',publicKey:encoded(51)}]}]});
+ value.companion={encoded:btoa('encrypted companion bytes'),serial:123456,publicKeys:{'9c':encoded(50),'82':encoded(52)},certificate:encoded(1)};
+ return value;
+}
+test('encrypted companion coexists with ordinary bundle and persists ciphertext/public custody only',async()=>{
+ const {store,storage,inspect}=setup();await store.save(await store.previewBundle(snapshot()),true);
+ const review=await store.previewBundle(companionSnapshot());assert.equal(review.replacesExisting,false);
+ const result=await store.save(review,true);assert.deepEqual(result.identities.map(i=>i.id),['yubikey:123456','yubikey:123456:companion']);
+ assert.equal(result.identities[0].certificates.length,3);assert.equal(result.identities[1].certificates[0].components[1].storage,'companion');
+ const reopened=createIdentityStore({inspect,storage});assert.deepEqual(await reopened.list(),result);
+ const saved=JSON.stringify(await storage.read());for(const secret of ['companionShared','password','privateKey','pin'])assert.ok(!saved.includes('"'+secret+'"'));
+});
+test('companion schema rejects unwrap secrets, wrong serials and ambiguous component custody',async()=>{
+ const {store,storage}=setup();
+ for(const alter of [s=>s.companion.companionShared=btoa('secret'),s=>s.companion.password='not allowed',s=>s.companion.serial=654321,s=>s.certificates[0].components[1].slot='88',s=>s.certificates[0].components[0].storage='software',s=>s.certificates[0].components.push({...s.certificates[0].components[0]})]){
+  const value=companionSnapshot();alter(value);await assert.rejects(store.previewBundle(value));
+ }
+ assert.equal(await storage.read(),null);
+});

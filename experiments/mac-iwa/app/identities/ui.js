@@ -1,10 +1,12 @@
 // Own public identities are an inventory, separate from recipient trust. This
 // controller never passes an imported slot, serial, file path or certificate to
-// a private-key operation. The helper's installed signing authority stays fixed.
+// a private-key operation. The helper independently verifies any later selection.
 import {createIdentityStore} from './store.js';
 import {inspectCertificate} from '../certificates/client.js';
 import {inspectBundle} from './client.js';
-import {parseCardBundle} from './bundle.js';
+import {parseCardBundle,parseCardCompanion} from './bundle.js';
+import {inspectCompanion} from './client.js';
+import {discoverIdentityDevices} from './devices.js';
 
 const MAX_FILE=262144;
 const encode=bytes=>btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''));
@@ -31,7 +33,7 @@ export function identityFileKind(bytes){
  */
 export async function initializeIdentities({request,say,isBusy,setBusy,identityStore}){
  const $=id=>document.getElementById(id),store=identityStore||createIdentityStore({inspect:inspectCertificate});
- let pending=null,removal=null,current=null;
+ let pending=null,removal=null,current=null,deviceChoice=null,refreshTicket=0;
  const channel=typeof BroadcastChannel==='function'?new BroadcastChannel('sequoia-iwa-own-identities'):null;
  // A second window may change the inventory while this dialog is open. Invalidate
  // its review immediately; the store's revision check independently prevents a
@@ -43,10 +45,32 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   try{await action();}catch(e){say(e.message,true);}finally{setBusy(false);}
  }
  function listen(id,action){$(id).addEventListener('click',()=>run(action));}
+ async function chooseDevice(){
+  const devices=await discoverIdentityDevices(request);
+  if(devices.length===1)return devices[0].serial;
+  const chooser=$('identity-device');chooser.replaceChildren();
+  for(const device of devices){const option=element('option','YubiKey '+device.serial);option.value=device.serial;chooser.append(option);}
+  // The outer operation lock disables ordinary actions. These two controls
+  // must remain usable while the read-only device choice is pending.
+  $('identity-device-continue').disabled=false;$('identity-device-cancel').disabled=false;
+  $('identity-device-dialog').showModal();
+  return new Promise((resolve,reject)=>{deviceChoice={devices,resolve,reject};});
+ }
+ function finishDevice(cancelled){
+  if(!deviceChoice)return;const choice=deviceChoice;deviceChoice=null;$('identity-device-dialog').close();
+  const serial=$('identity-device').value;
+  if(cancelled||!choice.devices.some(d=>d.serial===serial))choice.reject(Error('YubiKey restore cancelled.'));
+  else choice.resolve(serial);
+ }
+ $('identity-device-continue').addEventListener('click',()=>finishDevice(false));
+ $('identity-device-cancel').addEventListener('click',()=>finishDevice(true));
+ $('identity-device-dialog').addEventListener('cancel',()=>finishDevice(true));
  function describeCertificate(parent,c){
   parent.append(element('h4',c.label||'OpenPGP certificate'));
   parent.append(element('p','OpenPGP v'+c.version+' · '+c.algorithms.join(' / ')));
   const fp=element('p',c.fingerprint);fp.className='identity-fingerprint';parent.append(fp);
+  if(c.profile)parent.append(element('p','Profile: '+c.profile));
+  if(c.components)parent.append(element('p','Component custody: '+c.components.map(part=>part.algorithm+(part.storage==='piv'?' in PIV '+part.slot.toUpperCase():' in encrypted companion')).join('; ')));
   parent.append(element('p','Certified email addresses: '+(c.emails.join(', ')||'None currently valid')));
  }
  function describeSlots(parent,slots){
@@ -60,11 +84,12 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  }
  function describe(parent,identity){
   parent.append(element('p',identity.serial?'YubiKey serial: '+identity.serial:'Public certificate from file · no hardware mapping'));
+  if(identity.companion)parent.append(element('p','Encrypted on-key companion: software private components are unwrapped only in a disposable WASM worker for each operation. This inventory stores ciphertext and public keys only. It provides no hardware isolation for those software components.'));
   if(identity.bundleHash){
    // Older saved entries were authenticated by the native parser. Do not
    // mislabel their provenance merely because this UI now parses new imports
    // in WASM; both retain the same independent live private-operation check.
-   parent.append(element('p','Signed bundle verified. '+(identity.liveKeysMatched?'All mapped public keys matched the connected YubiKey at import. ':'Hardware keys have not been matched. This identity cannot be selected for private operations yet. ')+(identity.generation?'Card generation '+identity.generation+'.':'File bundle: card generation is unavailable; freshness is not established.')));
+   parent.append(element('p',(identity.companion?'Signed companion verified. ':'Signed bundle verified. ')+(identity.liveKeysMatched?'All mapped public keys matched the connected YubiKey at import. ':'Hardware keys have not been matched. This identity cannot be selected for private operations yet. ')+(identity.companion?'Companion ciphertext and live keys were checked at import.':identity.generation?'Card generation '+identity.generation+'.':'File bundle: card generation is unavailable; freshness is not established.')));
    const digest=element('p','Bundle SHA-256: '+identity.bundleHash);digest.className='identity-fingerprint';parent.append(digest);
   }
   for(const c of identity.certificates)describeCertificate(parent,c);
@@ -72,7 +97,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   for(const warning of identity.warnings)parent.append(element('p',warning));
  }
  async function refresh(){
-  const inventory=await store.list(),list=$('identity-list');list.replaceChildren();
+  const ticket=++refreshTicket,inventory=await store.list();if(ticket!==refreshTicket)return;const list=$('identity-list');list.replaceChildren();
   if(!inventory.identities.length)list.append(element('p','No own identities saved in this IWA yet. Restore from your YubiKey or import a public certificate from file.'));
   for(const identity of inventory.identities){
    const card=document.createElement('article');card.className='identity-card';
@@ -83,7 +108,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
     const match=element('button','Match connected YubiKey…');
     match.addEventListener('click',()=>run(async()=>{
      clearReview();say('Reading public keys only; no PIN or touch is required.');
-     review(await store.previewLiveMatch(identity.id,await request('chat-identity-key-snapshot')));
+     review(await store.previewLiveMatch(identity.id,await request('chat-identity-key-snapshot',{serial:identity.serial})));
     }));card.append(match);
    }
    const remove=element('button','Forget local identity…');
@@ -110,9 +135,24 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  }
  listen('identity-refresh',async()=>{await configured();await refresh();say('Own public identities refreshed.');});
  listen('identity-restore',async()=>{
-  clearReview();say('Reading public card data, then verifying the compressed bundle in this IWA. No PIN is required.');
-  review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read'),inspectBundle)));
+  clearReview();const serial=await chooseDevice();say('Reading public card data from YubiKey '+serial+', then verifying the compressed bundle in this IWA. No PIN is required.');
+  // Optional v5 input is public and never supplies its own slot mapping. The
+  // WASM bundle parser requires every compatibility component and certified
+  // email to match the newly authenticated normal card bundle.
+  const v5=$('identity-v5-file').files[0];let compatibilityCertificate;
+  if(v5){if(!v5.size||v5.size>MAX_FILE)throw Error('Choose a v5 public certificate up to 256 KiB.');compatibilityCertificate=encode(new Uint8Array(await v5.arrayBuffer()));}
+  review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read',{serial}),inspectBundle,{compatibilityCertificate})));
   say('Review the YubiKey certificate bundle before saving.');
+ });
+ listen('identity-companion-restore',async()=>{
+  clearReview();const serial=await chooseDevice();say('Reading encrypted companion and public keys from YubiKey '+serial+'. No PIN or decryption is required for review.');
+  // A companion import is deliberately distinct from the ordinary public
+  // bundle. Both may coexist on one card and have different certificate views.
+  const file=$('identity-companion-certificate').files[0];let certificate;
+  if(file){if(!file.size||file.size>MAX_FILE)throw Error('Choose a public companion certificate up to 256 KiB.');certificate=encode(new Uint8Array(await file.arrayBuffer()));}
+  const read=await request('chat-identity-companion-read',{serial,...(certificate?{certificate}:{})});
+  review(await store.previewBundle(await parseCardCompanion(read,inspectCompanion)));
+  say('Review the encrypted companion custody, certificate and mapped hardware keys before saving.');
  });
  listen('identity-file-review',async()=>{
   clearReview();const file=$('identity-file').files[0];
@@ -127,7 +167,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  listen('identity-review-save',async()=>{
   if(!pending||!$('identity-review-confirmed').checked)throw Error('Review and confirm the certificates and slot mappings first.');
   await store.save(pending,true);clearReview();channel?.postMessage({changed:true});await refresh();
-  say('Own public identity saved. Hardware-matched, supported v6 profiles are available in Compose and incoming matching. For an unmatched bundle, use Match connected YubiKey first. Recipient trust and vault enrollment are unchanged.');
+  say('Own public identity saved. Hardware-matched, supported v4/v5/v6 profiles are available in Compose and incoming matching. For an unmatched bundle, use Match connected YubiKey first. Recipient trust and vault enrollment are unchanged.');
  });
  listen('identity-review-cancel',()=>clearReview());
  $('identity-review').addEventListener('cancel',()=>{if(pending)store.cancel(pending);pending=null;});
@@ -139,7 +179,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   say('Local identity forgotten. YubiKey data, contact trust and the configured helper remain unchanged.');
  });
  if(channel)channel.onmessage=()=>{clearReview();refresh().catch(e=>say(e.message,true));};
- window.addEventListener('pagehide',()=>{clearReview();channel?.close();});
+ window.addEventListener('pagehide',()=>{finishDevice(true);clearReview();channel?.close();});
  // Startup must work without an extension/native host. Native enrollment is
  // read only after the user explicitly requests Read default vault identity from helper.
  $('identity-current').textContent='Default vault identity metadata is available through Read default vault identity from helper. No hardware is contacted at startup.';

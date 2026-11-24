@@ -8,9 +8,46 @@ use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use sequoia_openpgp as pgp;
 use pgp::{cert::CertParser, parse::Parse, policy::StandardPolicy,
-          serialize::SerializeInto, types::PublicKeyAlgorithm as A};
+          serialize::SerializeInto, types::{PublicKeyAlgorithm as A, Curve}, crypto::mpi, packet::key};
 use wasm_bindgen::prelude::*;
 use sha2::{Digest, Sha256};
+
+/// Keep the accepted outgoing algorithms explicit. Merely parsing an algorithm
+/// identifier is not enough to authorize a private operation or compatibility
+/// fallback. Hardware selection additionally requires the native helper to
+/// authenticate the on-key manifest and match every mapped live public key.
+pub(super) fn signing_supported<P: key::KeyParts, R: key::KeyRole>(k: &pgp::packet::Key<P,R>) -> bool {
+    match (k.version(), k.mpis()) {
+        (6, mpi::PublicKey::MLDSA65_Ed25519 {..} | mpi::PublicKey::MLDSA87_Ed448 {..}) => true,
+        (4, mpi::PublicKey::EdDSA { curve: Curve::Ed25519, .. }) => true,
+        (4, mpi::PublicKey::ECDSA { curve: Curve::NistP521 | Curve::NistP384, .. }) => true,
+        (6, mpi::PublicKey::ECDSA { curve: Curve::NistP384, .. }) => true,
+        _ => false,
+    }
+}
+pub(super) fn encryption_supported<P: key::KeyParts, R: key::KeyRole>(k: &pgp::packet::Key<P,R>) -> bool {
+    match (k.version(), k.mpis()) {
+        (4 | 6, mpi::PublicKey::MLKEM768_X25519 {..}) => true,
+        (6, mpi::PublicKey::MLKEM1024_X448 {..}) => true,
+        (4, mpi::PublicKey::ECDH { curve: Curve::Cv25519 | Curve::NistP521 | Curve::NistP384, .. }) => true,
+        (6, mpi::PublicKey::ECDH { curve: Curve::NistP384, .. }) => true,
+        _ => false,
+    }
+}
+/// Include the curve in classical capability labels. An ECDH label alone
+/// would hide whether a v4 recipient uses X25519 or P-521 and mislead the
+/// compatibility review, even though cryptographic selection stays key-bound.
+fn algorithm_name<P:key::KeyParts,R:key::KeyRole>(key:&pgp::packet::Key<P,R>)->String{
+    match key.mpis(){
+        mpi::PublicKey::ECDH{curve:Curve::Cv25519,..}=>"ECDH (X25519)".into(),
+        mpi::PublicKey::ECDH{curve,..}=>format!("ECDH ({curve})"),
+        mpi::PublicKey::ECDSA{curve,..}=>format!("ECDSA ({curve})"),
+        mpi::PublicKey::EdDSA{curve,..}=>format!("EdDSA ({curve})"),
+        _=>key.pk_algo().to_string(),
+    }
+}
+fn pq_signature(a:A)->bool { matches!(a,A::MLDSA65_Ed25519|A::MLDSA87_Ed448) }
+fn pq_encryption(a:A)->bool { matches!(a,A::MLKEM768_X25519|A::MLKEM1024_X448) }
 
 fn inspect(input: &str) -> Result<String> {
     ensure!(input.len() <= 360000, "Certificate request limit");
@@ -20,6 +57,13 @@ fn inspect(input: &str) -> Result<String> {
     let raw = B64.decode(request["certificate"].as_str().context("Certificate required")?)?;
     ensure!(!raw.is_empty() && raw.len() <= 262144, "Certificate size limit");
 
+    if super::libre::is_certificate(&raw) {
+        let full=super::libre::inspect(&raw)?;
+        // Contacts use only public capabilities, not own-identity subkey state.
+        let names=["certificate","fingerprint","version","algorithms","emails","hybridContact","encryptionSupported","pqSigning","pqEncryption"];
+        let map=names.into_iter().map(|name|(name.to_owned(),full[name].clone())).collect::<serde_json::Map<_,_>>();
+        return Ok(serde_json::to_string(&map)?);
+    }
     // A certificate file is one identity, not a keyring. Reject a second armor
     // block explicitly as some armor readers stop after the first block; the
     // packet parser below independently rejects multiple binary certificates.
@@ -41,23 +85,27 @@ fn inspect(input: &str) -> Result<String> {
     emails.sort(); emails.dedup();
     let mut algorithms = Vec::new();
     for key in cert.keys() {
-        let name = key.key().pk_algo().to_string();
+        let name = algorithm_name(key.key());
         if !algorithms.contains(&name) { algorithms.push(name); }
     }
     let p = StandardPolicy::new();
-    // The current composer supports exactly one Level 3 signing and transport
-    // key. Classical v4 certificates remain useful for incoming verification;
-    // they are not silently promoted to hybrid outgoing contacts.
-    let signing = cert.keys().with_policy(&p, None).alive().revoked(false)
-        .for_signing().filter(|k| k.key().pk_algo() == A::MLDSA65_Ed25519).count();
-    let encryption = cert.keys().with_policy(&p, None).alive().revoked(false)
-        .for_transport_encryption().filter(|k| k.key().pk_algo() == A::MLKEM768_X25519).count();
-    let hybrid = cert.primary_key().key().version() == 6 && !emails.is_empty()
-        && signing == 1 && encryption == 1;
+    // Prefer a unique usable hybrid encryption subkey; use a classical key
+    // only when the certificate exposes no hybrid option. The UI must confirm
+    // that downgrade. Ambiguity within a class never silently selects a key.
+    let signing: Vec<_> = cert.keys().with_policy(&p, None).alive().revoked(false)
+        .for_signing().filter(|k| signing_supported(k.key())).collect();
+    let all: Vec<_> = cert.keys().with_policy(&p, None).alive().revoked(false)
+        .for_transport_encryption().filter(|k| encryption_supported(k.key())).collect();
+    let hybrid:Vec<_>=all.iter().filter(|k|pq_encryption(k.key().pk_algo())).collect();
+    let encryption = if !hybrid.is_empty() { hybrid } else { all.iter().collect() };
+    let has_encryption = !emails.is_empty() && encryption.len()==1;
+    let pq_encrypt = has_encryption && pq_encryption(encryption[0].key().pk_algo());
+    let pq_sign = signing.len()==1 && pq_signature(signing[0].key().pk_algo());
     Ok(serde_json::to_string(&serde_json::json!({
         "certificate": B64.encode(canonical), "fingerprint": cert.fingerprint().to_hex(),
         "version": cert.primary_key().key().version(), "algorithms": algorithms,
-        "emails": emails, "hybridContact": hybrid
+        "emails": emails, "hybridContact": pq_encrypt,
+        "encryptionSupported": has_encryption, "pqSigning": pq_sign, "pqEncryption": pq_encrypt
     }))?)
 }
 
@@ -75,6 +123,9 @@ pub fn inspect_public(input: &str) -> Result<String, JsValue> {
 /// but the native helper must independently authenticate its signed card bundle
 /// and match its live keys before a PIN or private operation is allowed.
 pub(super) fn inspect_identity_value(certificate: &str) -> Result<serde_json::Value> {
+    ensure!(certificate.len()<=349528,"Certificate input bound");
+    let raw=B64.decode(certificate)?;
+    if super::libre::is_certificate(&raw){return super::libre::inspect(&raw);}
     // Reuse the single-public-certificate parser, including secret-packet,
     // multiple-certificate and self-certified-mailbox checks. Reparse only its
     // canonical output so armor and line-ending variants cannot alter the hash.
@@ -84,23 +135,40 @@ pub(super) fn inspect_identity_value(certificate: &str) -> Result<serde_json::Va
     let cert = pgp::Cert::from_bytes(&raw)?;
     let policy = StandardPolicy::new();
     let signing: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
-        .for_signing().filter(|ka| ka.key().version() == 6 && ka.key().pk_algo() == A::MLDSA65_Ed25519)
-        .map(|ka| ka.key().fingerprint().to_hex()).collect();
-    let encryption: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
-        .for_transport_encryption().filter(|ka| ka.key().version() == 6 && ka.key().pk_algo() == A::MLKEM768_X25519)
-        .map(|ka| ka.key().fingerprint().to_hex()).collect();
-    let supported = info["hybridContact"] == true && signing.len() == 1 && encryption.len() == 1;
+        .for_signing().filter(|ka| signing_supported(ka.key())).collect();
+    let all: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
+        .for_transport_encryption().filter(|ka| encryption_supported(ka.key())).collect();
+    let hybrid:Vec<_>=all.iter().filter(|ka|pq_encryption(ka.key().pk_algo())).collect();
+    let encryption=if !hybrid.is_empty(){hybrid}else{all.iter().collect()};
+    let supported = info["encryptionSupported"] == true && !super::current_emails(&cert).is_empty()
+        && signing.len() == 1 && encryption.len() == 1;
+    let profile=if supported {
+        match (cert.primary_key().key().version(),signing[0].key().pk_algo(),encryption[0].key().pk_algo()) {
+            (6,A::MLDSA65_Ed25519,A::MLKEM768_X25519)=>Some("level3"),
+            (6,A::MLDSA87_Ed448,A::MLKEM1024_X448)=>Some("level5"),
+            (4,A::EdDSA,A::MLKEM768_X25519)=>Some("level3-v4-hybrid"),
+            (4,A::EdDSA,A::ECDH)=>Some("level3-v4-classical"),
+            (4,A::ECDSA,A::MLKEM768_X25519)=>Some(if matches!(signing[0].key().mpis(),mpi::PublicKey::ECDSA{curve:Curve::NistP384,..}){"level5-v4-hybrid-p384"}else{"level5-v4-hybrid"}),
+            (4,A::ECDSA,A::ECDH)=>Some(if matches!(signing[0].key().mpis(),mpi::PublicKey::ECDSA{curve:Curve::NistP384,..}){"level5-v4-classical-p384"}else{"level5-v4-classical"}),
+            (6,A::ECDSA,A::ECDH)=>Some("level5-v6-classical"),
+            _=>None,
+        }
+    } else {None};
+    let supported=supported&&profile.is_some();
+    info["profile"]=serde_json::json!(profile);
+    info["signingAlgorithm"]=if supported{serde_json::json!(algorithm_name(signing[0].key()))}else{serde_json::Value::Null};
+    info["encryptionAlgorithm"]=if supported{serde_json::json!(algorithm_name(encryption[0].key()))}else{serde_json::Value::Null};
     info["certificateHash"] = serde_json::json!(format!("{:x}", Sha256::digest(&raw)));
     info["supported"] = serde_json::json!(supported);
     // Unsupported, expired or ambiguous identities stay inspectable but cannot
     // provide an actionable subkey selection. Never silently choose the first
     // of several signing or encryption subkeys from a certificate.
-    info["signingFingerprint"] = if supported {serde_json::json!(signing[0])} else {serde_json::Value::Null};
-    info["recipientKey"] = if supported {serde_json::json!(encryption[0])} else {serde_json::Value::Null};
+    info["signingFingerprint"] = if supported {serde_json::json!(signing[0].key().fingerprint().to_hex())} else {serde_json::Value::Null};
+    info["recipientKey"] = if supported {serde_json::json!(encryption[0].key().fingerprint().to_hex())} else {serde_json::Value::Null};
     Ok(info)
 }
 
-/// Return current Level 3 operation capabilities and the full canonical hash.
+/// Return supported current software capabilities and the full canonical hash.
 #[wasm_bindgen]
 pub fn inspect_identity(input: &str) -> Result<String, JsValue> {
     let run = || -> Result<String> {
@@ -170,7 +238,7 @@ mod tests {
         assert_eq!(value["hybridContact"],false);
     }
     #[test]
-    fn classical_public_certificates_are_verification_only() {
+    fn classical_v4_profiles_are_explicitly_non_pq_compatibility() {
         let (cert,_)=CertBuilder::new().add_userid("classical@example.invalid")
             .add_signing_subkey().add_transport_encryption_subkey().generate().unwrap();
         let value=inspect_bytes(&cert.clone().strip_secret_key_material().to_vec().unwrap()).unwrap();
@@ -178,9 +246,12 @@ mod tests {
         assert_eq!(value["emails"],serde_json::json!(["classical@example.invalid"]));
         assert_eq!(value["hybridContact"],false);
         let identity=inspect_identity_value(&B64.encode(cert.strip_secret_key_material().to_vec().unwrap())).unwrap();
-        assert_eq!(identity["supported"],false);
-        assert_eq!(identity["signingFingerprint"],serde_json::Value::Null);
-        assert_eq!(identity["recipientKey"],serde_json::Value::Null);
+        assert_eq!(identity["supported"],true);
+        assert_eq!(identity["profile"],"level3-v4-classical");
+        assert_eq!(identity["pqSigning"],false);
+        assert_eq!(identity["pqEncryption"],false);
+        assert_eq!(identity["signingFingerprint"].as_str().unwrap().len(),40);
+        assert_eq!(identity["recipientKey"].as_str().unwrap().len(),40);
     }
 
     #[test]

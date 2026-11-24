@@ -15,7 +15,7 @@ class HostTests(unittest.TestCase):
   self.assertIn('No PIN was requested',message)
   self.assertNotIn('private diagnostic',message)
  def test_public_migration_errors_do_not_echo_details_or_request_pin(self):
-  for op in ('chat-certificate-migration','chat-signing-material'):
+  for op in ('chat-certificate-migration','chat-identity-current'):
    message=host.operation_error(op,ValueError('private low-level detail'))
    self.assertIn('No YubiKey operation was attempted',message)
    self.assertNotIn('private low-level detail',message)

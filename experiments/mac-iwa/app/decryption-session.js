@@ -44,7 +44,7 @@ export async function decryptWithHardware({cipher, service, purpose = 'message',
       await check();
       if(purpose==='message'){await validateMaterial(material);await check();}
       if (!material || !/^[a-f0-9]{48}$/.test(material.review) ||
-          !/^[A-F0-9]{64}$/.test(material.recipientKey) ||
+          !/^(?:[A-F0-9]{40}|[A-F0-9]{64})$/.test(material.recipientKey) ||
           typeof material.recipientCertificate !== 'string' || material.recipientCertificate.length > 90000 ||
           (recipientKey && recipientKey !== material.recipientKey))
         throw Error('Configured decryption identity changed.');
@@ -75,7 +75,7 @@ export async function decryptWithHardware({cipher, service, purpose = 'message',
             } finally {
               // Structured cloning gives the disposable worker its own copy.
               // Drop main-page references promptly; JS cannot promise erasure.
-              if (result) { delete result.mlkemSecret; delete result.x25519Secret; }
+              if (result) { delete result.mlkemSecret; delete result.x25519Secret; delete result.companionShared; }
             }
           } else if (data?.type === 'complete' && phase === 'finalizing' && data.requestId === requestId) {
             phase = 'checking'; await check(); finish(null, data.result);

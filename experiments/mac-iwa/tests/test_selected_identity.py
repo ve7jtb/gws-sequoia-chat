@@ -16,11 +16,12 @@ RAW=b'canonical synthetic public certificate'
 ENC=base64.b64encode(RAW).decode()
 SELECT={'serial':'222','bundleHash':'b'*64,'fingerprint':'C'*64,
         'certificateHash':hashlib.sha256(RAW).hexdigest(),'email':'owner@example.invalid'}
-CONTEXT={**SELECT,'certificate':ENC}
+COMPONENTS=[{'role':role,'algorithm':alg,'storage':'piv','slot':slot,'publicKey':base64.b64encode(bytes([n])*40).decode()} for n,(role,alg,slot) in enumerate([('signing-pq','ML-DSA-65','9c'),('signing-classical','Ed25519','84'),('decryption-pq','ML-KEM-768','9d'),('decryption-classical','X25519','85')],1)]
+CONTEXT={**SELECT,'certificate':ENC,'profile':'level3','components':COMPONENTS}
 PUBLIC={'certificate':ENC,'certificateHash':SELECT['certificateHash'],'fingerprint':SELECT['fingerprint'],
         'emails':[SELECT['email']],'signingFingerprint':'D'*64,'recipientKey':'E'*64}
 SNAPSHOT={'serial':'222','bundleHash':'b'*64,'source':'yubikey','bundleSignatureVerified':True,
-          'liveKeysMatched':True,'certificates':[{'kind':'openpgp','label':'OpenPGP v6','certificate':ENC}]}
+          'liveKeysMatched':True,'certificates':[{'kind':'openpgp','label':'OpenPGP v6','certificate':ENC,'profile':'level3','components':COMPONENTS}]}
 
 class SelectedIdentity(unittest.TestCase):
  def setUp(self):
@@ -31,9 +32,9 @@ class SelectedIdentity(unittest.TestCase):
   self.b.chat=Mock();self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
   self.b.emit=Mock();self.b.crypto=Mock(return_value={'result':'synthetic'})
  def public_restore(self,choice=None,snapshot=None,public=None,connected=b'222\n'):
-  with patch('identities.subprocess.check_output',return_value=connected),patch('identities.preview',return_value=snapshot or SNAPSHOT) as read,patch('identities.run_public',return_value=public or PUBLIC):
+  with patch('identities.subprocess.check_output',return_value=connected),patch('identities.preview',return_value=snapshot or SNAPSHOT) as read,patch('identities.run_public',return_value=public or PUBLIC),patch('identities.companion_preview',side_effect=ValueError('No companion')):
    result=identities.selected(self.b,choice or SELECT)
-   read.assert_called_once_with(self.b,selected_serial='222')
+   read.assert_called_once_with(self.b,selected_serial='222',compatibility_certificate=None)
    return result
  def prepare_sign(self):
   with patch('identities.selected',return_value=(CONTEXT,PUBLIC)),patch('signing.backend_hash',return_value='backend'):

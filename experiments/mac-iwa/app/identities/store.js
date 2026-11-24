@@ -5,7 +5,7 @@ import {createIndexedDbStorage} from '../certificates/store.js';
 import {matchBundlePublicKeys} from './bundle.js';
 
 const FORMAT='sequoia-iwa-identities',VERSION=1,MAX_IDENTITIES=16,MAX_CERT_BYTES=262144,MAX_TOTAL_BYTES=1048576;
-const SNAPSHOT='sequoia-iwa-identity-preview',REVIEW_TTL=10*60*1000;
+const SNAPSHOT='sequoia-iwa-identity-preview',COMPANION='sequoia-iwa-companion-preview',REVIEW_TTL=10*60*1000;
 const clone=value=>structuredClone(value),encoder=new TextEncoder();
 const fail=message=>{throw Error(message);};
 const object=value=>!!value&&typeof value==='object'&&!Array.isArray(value);
@@ -38,18 +38,46 @@ const hash=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',
 const sourceHash=async value=>hash(encoder.encode(JSON.stringify(sorted(value))));
 function empty(){return {format:FORMAT,version:VERSION,revision:0,records:[]};}
 
+// Component metadata is copied only from an authenticated public manifest. It
+// explains custody in review dialogs; native code independently derives the
+// operation's real slots from fresh card data, never from these saved labels.
+function components(value){
+ if(!Array.isArray(value)||!value.length||value.length>16)fail('Invalid public component mapping');
+ const roles=new Set();
+ for(const item of value){
+  keys(item,['role','algorithm','storage','slot','publicKey']);text(item.role,80);text(item.algorithm,80);bytes(item.publicKey);
+  if(roles.has(item.role))fail('Duplicate component role');roles.add(item.role);
+  if(!['piv','companion'].includes(item.storage)||typeof item.slot!=='string'||(item.storage==='piv'?!/^(?:9[acde]|8[2-9a-f]|9[0-5])$/.test(item.slot):item.slot!==''))fail('Invalid component custody');
+ }
+ return clone(value);
+}
+function companion(value){
+ // This is encrypted card storage plus public input only. An exact schema
+ // rejects accidental persistence of an unwrap secret, PIN, password or .p12.
+ keys(value,['encoded','serial','publicKeys','certificate']);bytes(value.encoded);bytes(value.certificate);
+ if(!Number.isSafeInteger(value.serial)||value.serial<1||value.serial>0xffffffff||!object(value.publicKeys)||!Object.keys(value.publicKeys).length||Object.keys(value.publicKeys).length>24)fail('Invalid encrypted companion');
+ for(const [slot,key] of Object.entries(value.publicKeys)){
+  if(!/^(?:9[acde]|8[2-9a-f]|9[0-5])$/.test(slot))fail('Invalid companion public key slot');bytes(key);
+ }
+ return clone(value);
+}
+
 /** Bound the public bundle review at the WASM/storage boundary.
  * Slot strings are display metadata only. Nothing in this module passes them
  * to a signer, decapsulator, command line, or hardware selection API.
  */
 function bundle(value){
- keys(value,['format','version','source','serial','bundleHash','generation','certificates','slots','bundleSignatureVerified','liveKeysMatched','warnings']);
- if(value.format!==SNAPSHOT||value.version!==1||!['yubikey','file'].includes(value.source)||typeof value.serial!=='string'||! /^[1-9][0-9]{0,9}$/.test(value.serial)||Number(value.serial)>0xffffffff||!Number.isSafeInteger(value.generation)||(value.source==='yubikey'?value.generation<1:value.generation!==0)||value.bundleSignatureVerified!==true||typeof value.liveKeysMatched!=='boolean'||(value.source==='yubikey'&&!value.liveKeysMatched))fail('Unsupported verified identity snapshot');
+ keys(value,['format','version','source','serial','bundleHash','generation','certificates','slots','bundleSignatureVerified','liveKeysMatched','warnings',...(value.format===COMPANION?['companion']:[])]);
+ const wrapped=value.format===COMPANION;
+ if(![SNAPSHOT,COMPANION].includes(value.format)||value.version!==1||!['yubikey','file'].includes(value.source)||typeof value.serial!=='string'||! /^[1-9][0-9]{0,9}$/.test(value.serial)||Number(value.serial)>0xffffffff||!Number.isSafeInteger(value.generation)||(wrapped?value.generation!==0:value.source==='yubikey'?value.generation<1:value.generation!==0)||value.bundleSignatureVerified!==true||typeof value.liveKeysMatched!=='boolean'||(value.source==='yubikey'&&!value.liveKeysMatched))fail('Unsupported verified identity snapshot');
  digest(value.bundleHash);
+ if(wrapped){companion(value.companion);if(String(value.companion.serial)!==value.serial||value.source!=='yubikey')fail('Companion serial mismatch');}
  if(!Array.isArray(value.certificates)||!value.certificates.length||value.certificates.length>8||!Array.isArray(value.slots)||!value.slots.length||value.slots.length>24||!Array.isArray(value.warnings)||value.warnings.length>16)fail('Identity snapshot limit exceeded');
  const labels=new Set();let size=0;
  for(const item of value.certificates){
-  keys(item,['kind','label','certificate']);if(item.kind!=='openpgp')fail('Unsupported identity certificate type');
+  keys(item,['kind','label','certificate',...['profile','components'].filter(k=>Object.hasOwn(item,k))]);
+  if(Object.hasOwn(item,'profile'))text(item.profile,100);if(Object.hasOwn(item,'components'))components(item.components);
+  if(item.kind!=='openpgp')fail('Unsupported identity certificate type');
   text(item.label,100);if(labels.has(item.label))fail('Duplicate identity certificate label');labels.add(item.label);size+=bytes(item.certificate).length;
  }
  if(size>MAX_TOTAL_BYTES)fail('Public identity storage limit exceeded');
@@ -61,7 +89,7 @@ function bundle(value){
  value.warnings.forEach(w=>text(w,500));return clone(value);
 }
 function source(value){
- if(value?.format===SNAPSHOT)return bundle(value);
+ if([SNAPSHOT,COMPANION].includes(value?.format))return bundle(value);
  keys(value,['format','version','certificate']);
  if(value.format!=='sequoia-iwa-public-identity'||value.version!==1)fail('Unsupported public identity');
  bytes(value.certificate);return clone(value);
@@ -76,6 +104,7 @@ function validate(value){
   if(ids.has(record.id))fail('Duplicate own identity');ids.add(record.id);
   const item=source(record.source);size+=item.certificates?item.certificates.reduce((n,c)=>n+bytes(c.certificate).length,0):bytes(item.certificate).length;
  }
+ size+=value.records.reduce((n,r)=>n+(r.source.companion?bytes(r.source.companion.encoded).length:0),0);
  if(size>MAX_TOTAL_BYTES)fail('Public identity storage limit exceeded');return clone(value);
 }
 
@@ -89,21 +118,21 @@ export function createIdentityStore({inspect,storage=createIndexedDbStorage({nam
  const reviews=new Map(),load=async()=>validate(await storage.read());
  async function certificate(raw,label){
   bytes(raw);const info=await inspect(raw);
-  keys(info,['certificate','fingerprint','version','algorithms','emails','hybridContact']);
+  keys(info,['certificate','fingerprint','version','algorithms','emails','hybridContact',...['encryptionSupported','pqSigning','pqEncryption'].filter(k=>Object.hasOwn(info,k))]);
   fingerprint(info.fingerprint);
-  if(![4,6].includes(info.version)||info.fingerprint.length!==(info.version===4?40:64)||typeof info.hybridContact!=='boolean'||!Array.isArray(info.algorithms)||info.algorithms.length>32||!Array.isArray(info.emails)||info.emails.length>256)fail('Invalid public identity inspection');
+  if(![4,5,6].includes(info.version)||info.fingerprint.length!==(info.version===4?40:64)||typeof info.hybridContact!=='boolean'||!Array.isArray(info.algorithms)||info.algorithms.length>32||!Array.isArray(info.emails)||info.emails.length>256)fail('Invalid public identity inspection');
   info.algorithms.forEach(a=>text(a,128));
   return {label,certificate:info.certificate,fingerprint:info.fingerprint,version:info.version,algorithms:clone(info.algorithms),emails:[...new Set(info.emails.map(email))].sort(),certificateHash:await hash(bytes(info.certificate))};
  }
  async function inspectSource(raw){
   const value=source(raw),certificates=[];
-  for(const c of value.certificates||[{label:'Imported public certificate',certificate:value.certificate}])certificates.push(await certificate(c.certificate,c.label));
+  for(const c of value.certificates||[{label:'Imported public certificate',certificate:value.certificate}])certificates.push({...await certificate(c.certificate,c.label),...(c.profile?{profile:c.profile}:{}),...(c.components?{components:clone(c.components)}:{})});
   // v4 hybrid/classical views deliberately share a primary fingerprint. Exact
   // packet hashes distinguish those views; repeated identical bytes are a bug
   // or ambiguous import and are rejected instead of inventing another role.
   if(new Set(certificates.map(c=>c.certificateHash)).size!==certificates.length)fail('Duplicate public certificate in identity');
-  const hardware=value.format===SNAPSHOT;
-  return {id:hardware?'yubikey:'+value.serial:'certificate:'+certificates[0].certificateHash,source:hardware?value.source:'certificate-file',serial:hardware?value.serial:null,generation:hardware?value.generation:null,bundleHash:hardware?value.bundleHash:null,certificates,slots:hardware?clone(value.slots):[],bundleSignatureVerified:hardware,liveKeysMatched:hardware&&value.liveKeysMatched,warnings:hardware?clone(value.warnings):[]};
+  const hardware=[SNAPSHOT,COMPANION].includes(value.format),wrapped=value.format===COMPANION;
+  return {id:hardware?'yubikey:'+value.serial+(wrapped?':companion':''):'certificate:'+certificates[0].certificateHash,source:hardware?value.source:'certificate-file',serial:hardware?value.serial:null,generation:hardware?value.generation:null,bundleHash:hardware?value.bundleHash:null,certificates,slots:hardware?clone(value.slots):[],bundleSignatureVerified:hardware,liveKeysMatched:hardware&&value.liveKeysMatched,warnings:hardware?clone(value.warnings):[],...(wrapped?{companion:clone(value.companion)}:{})};
  }
  async function inventory(state){
   const identities=[];
@@ -122,10 +151,10 @@ export function createIdentityStore({inspect,storage=createIndexedDbStorage({nam
   const value=source(raw),identity=await inspectSource(value),digest=await sourceHash(value),previous=state.records.find(r=>r.id===identity.id);
   // Canonicalize a standalone OpenPGP import so armor/line-ending variants do
   // not create duplicate identities. The verified bundle itself remains intact.
-  if(value.format!==SNAPSHOT)value.certificate=identity.certificates[0].certificate;
+  if(![SNAPSHOT,COMPANION].includes(value.format))value.certificate=identity.certificates[0].certificate;
   for(const [key,entry] of reviews)if(now()-entry.created>REVIEW_TTL)reviews.delete(key);
   if(reviews.size>=8)fail('Too many pending identity reviews; close and reopen this screen');
-  const token=crypto.randomUUID(),review={token,revision:state.revision,identity,replacesExisting:!!previous,unchanged:!!previous&&previous.sourceHash===(value.format===SNAPSHOT?digest:await sourceHash(value))};
+  const token=crypto.randomUUID(),review={token,revision:state.revision,identity,replacesExisting:!!previous,unchanged:!!previous&&previous.sourceHash===([SNAPSHOT,COMPANION].includes(value.format)?digest:await sourceHash(value))};
   reviews.set(token,{created:now(),review:clone(review),source:value});return clone(review);
  }
  return {

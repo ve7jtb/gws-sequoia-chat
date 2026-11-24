@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {signAndEncrypt} from '../app/signing-session.js';
+import {signingFailureLabel} from '../app/signing-phases.js';
 
 const material = {review: 'a'.repeat(48)};
 function fakeWorker(onPost) {
@@ -61,7 +62,11 @@ test('native failure never finalizes or retries', async () => {
     createWorker: () => fakeWorker((data,w) => {
       assert.equal(data.type, 'prepare'); queueMicrotask(() => w.emit(digestRequest(data.requestId)));
     })
-  }), /Hardware signing did not complete/);
+  }), error=>{
+    assert.match(error.message,/Hardware signing did not complete/);
+    assert.equal(error.failurePhase,'native-signature');
+    assert.ok(!JSON.stringify(error).includes('cancelled PIN'));return true;
+  });
   assert.equal(calls, 1);
 });
 test('timeout waits for in-flight native operation and discards its late response', async () => {
@@ -99,4 +104,54 @@ test('worker error fails closed without calling the native signer', async () => 
     createWorker: () => worker = fakeWorker((_,w) => queueMicrotask(() => w.onerror({})))
   }), /no native fallback/);
   assert.ok(worker.terminated);
+});
+
+test('v5 inline digest is confined to explicitly authenticated software or hardware compatibility material',async()=>{
+ for(const custody of ['softwareProfile','hardwareProfile'])for(const profile of [undefined,'level3','level3-v5-hybrid']){
+  let calls=0;
+  const operation=signAndEncrypt({...material,[custody]:profile},{},async r=>{calls++;assert.equal(r.inlineDigest,Buffer.alloc(64,9).toString('base64'));return {};},{createWorker:()=>fakeWorker((data,w)=>{
+   if(data.type==='prepare'){const r=digestRequest(data.requestId);r.request.inlineDigest=Buffer.alloc(64,9).toString('base64');queueMicrotask(()=>w.emit(r));}
+   else w.emit({type:'complete',requestId:data.requestId,cipher:'YQ=='});
+  })});
+  if(profile==='level3-v5-hybrid'){await operation;assert.equal(calls,1);}
+  else {await assert.rejects(operation,/compatibility/);assert.equal(calls,0);}
+ }
+});
+
+
+test('companion wrapping share is dropped after handoff and after cancellation',async()=>{
+ for(const cancelled of [false,true]){
+  const controller=new AbortController(),response={companionShared:'transient wrapping secret',companion:{encoded:'ciphertext'}};
+  let transferred;
+  const pending=signAndEncrypt(material,{},async()=>{if(cancelled)controller.abort();return response;},{signal:controller.signal,createWorker:()=>fakeWorker((data,w)=>{
+   if(data.type==='prepare')queueMicrotask(()=>w.emit(digestRequest(data.requestId)));
+   else {transferred=structuredClone(data.signature);w.emit({type:'complete',requestId:data.requestId,cipher:'YQ=='});}
+  })});
+  if(cancelled)await assert.rejects(pending,/cancelled/);else {await pending;assert.equal(transferred.companionShared,'transient wrapping secret');}
+  assert.equal(Object.hasOwn(response,'companionShared'),false);
+ }
+});
+
+test('worker diagnostics preserve only allowlisted phase codes and discard exception details',async()=>{
+ for(const phase of ['signing-preparation','companion-completion','signature-finalization','recipient-encryption','private share: SECRET',undefined]){
+  let calls=0;
+  await assert.rejects(signAndEncrypt(material,{},async()=>{calls++;return {companionShared:'SECRET'};},{createWorker:()=>fakeWorker((data,w)=>{
+   if(data.type==='prepare')queueMicrotask(()=>w.emit(digestRequest(data.requestId)));
+   else w.emit({type:'error',requestId:data.requestId,failurePhase:phase,message:'SECRET',stack:'private/path/SECRET'});
+  })}),error=>{
+   assert.equal(error.failurePhase,['signing-preparation','companion-completion','signature-finalization','recipient-encryption'].includes(phase)?phase:'signing-unknown');
+   assert.equal(Object.hasOwn(error,'stack'),true); // Only the local fixed-message stack exists.
+   assert.ok(!String(error.stack).includes('SECRET'));assert.ok(!JSON.stringify(error).includes('SECRET'));
+   assert.ok(!signingFailureLabel(error.failurePhase).includes('SECRET'));return true;
+  });
+  assert.equal(calls,1);
+ }
+});
+test('failed structured-clone handoff has a browser phase and still releases the companion share',async()=>{
+ const response={companionShared:'SECRET'};let calls=0;
+ await assert.rejects(signAndEncrypt(material,{},async()=>{calls++;return response;},{createWorker:()=>fakeWorker((data,w)=>{
+  if(data.type==='prepare')queueMicrotask(()=>w.emit(digestRequest(data.requestId)));
+  else throw Error('SECRET from failed clone');
+ })}),error=>{assert.equal(error.failurePhase,'signing-worker');assert.ok(!String(error).includes('SECRET'));return true;});
+ assert.equal(calls,1);assert.equal(Object.hasOwn(response,'companionShared'),false);
 });

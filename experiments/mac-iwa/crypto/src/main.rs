@@ -17,10 +17,12 @@ mod digest_sign;
 mod component_decap;
 mod identity_restore;
 mod public_snapshot;
+mod mapped;
+mod companion_read;
 
 /// An explicit production capability contract is also checked by installers.
 /// Retired message modes cannot be revived by supplying their old JSON shape.
-const OPERATIONS:[&str;10]=["identity-current","identity-canonical","identity-restore",
+const OPERATIONS:[&str;11]=["identity-current","identity-canonical","identity-restore","identity-companion-read",
  "identity-bundle-read","identity-key-snapshot","decryption-material",
  "signing-material","inspect-public","decapsulate-components","sign-digest"];
 fn production_operation(v:&serde_json::Value)->Result<&str>{
@@ -38,9 +40,12 @@ fn selected(cert:&Cert,sign:bool)->Result<PublicKey>{
  let p=StandardPolicy::new();let mut found=Vec::new();
  for k in cert.keys().with_policy(&p,None).alive().revoked(false){
   let flags=k.key_flags();let eligible=flags.as_ref().map(|f|if sign{f.for_signing()}else{f.for_transport_encryption()}).unwrap_or(false);
-  if eligible && k.key().pk_algo()==if sign{A::MLDSA65_Ed25519}else{A::MLKEM768_X25519}{found.push(k.key().clone().role_into_unspecified());}
+  if eligible && if sign {matches!(k.key().pk_algo(),A::MLDSA65_Ed25519|A::MLDSA87_Ed448|A::EdDSA|A::ECDSA)} else {matches!(k.key().pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448|A::ECDH)} {found.push(k.key().clone().role_into_unspecified());}
  }
- ensure!(found.len()==1 && found[0].version()==6,"One valid Level 3 v6 key required");Ok(found.remove(0))
+ // Prefer an authenticated hybrid subkey over the classical fallback in a
+ // compatibility certificate; the derived classical view contains only ECDH.
+ if found.iter().any(|k|matches!(k.pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448)) {found.retain(|k|matches!(k.pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448));}
+ ensure!(found.len()==1 && matches!(found[0].version(),4|6),"One valid supported key required");Ok(found.remove(0))
 }
 fn current_emails(cert:&Cert)->Vec<String> {
  let p=StandardPolicy::new();
@@ -57,11 +62,12 @@ fn current_emails(cert:&Cert)->Vec<String> {
 fn canonical_identity(encoded:&str)->Result<serde_json::Value> {
  ensure!(encoded.len()<=174764,"Encoded certificate limit");
  let raw=B64.decode(encoded)?;ensure!(!raw.is_empty()&&raw.len()<=131072,"Certificate limit");
+ if let Ok(value)=sequoia_public_bundle::v5::inspect(&raw,std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs().try_into()?) {return Ok(value);}
  let armor=String::from_utf8_lossy(&raw);ensure!(armor.matches("-----BEGIN PGP").count()<=1,"One certificate required");
  let mut parser=pgp::cert::CertParser::from_bytes(&raw)?;
  let cert=parser.next().context("One certificate required")??;
  ensure!(parser.next().is_none()&&!cert.is_tsk(),"One public certificate required");
- ensure!(cert.primary_key().key().version()==6,"v6 certificate required");
+ ensure!(matches!(cert.primary_key().key().version(),4|6),"v4 or v6 certificate required");
  let sign=selected(&cert,true)?;let recipient=selected(&cert,false)?;
  let emails=current_emails(&cert);ensure!(!emails.is_empty(),"Current certified email required");
  let bytes=cert.to_vec()?;ensure!(bytes.len()<=65536,"Certificate limit");
@@ -93,6 +99,7 @@ fn execute()->Result<()> {
   // Public-only selection binding, evaluated before PIN/private configuration.
   println!("{}",canonical_identity(field(&v,"certificate")?)?);return Ok(());
  }
+ if field(&v,"op")?=="identity-companion-read" {println!("{}",companion_read::read(&v)?);return Ok(());}
  if field(&v,"op")?=="identity-restore" {
   // Public-only route: no PIN extraction or private-operation config exists.
   println!("{}",identity_restore::preview(&v)?);return Ok(());
@@ -116,6 +123,25 @@ fn execute()->Result<()> {
  let pin=Zeroizing::new(v["pin"].take().as_str().context("PIN required")?.as_bytes().to_vec());
  let cfg=&v["config"];let path=|n|->Result<PathBuf>{Ok(PathBuf::from(field(cfg,n)?))};
  let config=Config{python:path("python")?,adapters:path("adapters")?,openssl:path("openssl")?,provider:path("provider")?,module:path("module")?,serial:field(cfg,"serial")?.into()};
+ if !v["hardware"].is_null() {
+  // Native grants bind a current signed manifest to the full certificate. The
+  // selected path never uses the legacy default enrollment's implicit slots.
+  let rows=mapped::components(&v)?;mapped::supported(&rows,field(&v,"op")?=="sign-digest")?;
+  // Fixed context labels identify the failed boundary without exposing the
+  // underlying provider error or any digest, key, ciphertext or shared secret.
+  // They do not change failure propagation, PIN use or retry behavior.
+  if v["hardware"].get("companion").is_some(){companion_read::validate_context(&v).context("IWA_COMPANION_CONTEXT")?;}
+  let mut session=mapped::Session::new(config,pin)?;
+  let mut reply=if v["hardware"]["profile"].as_str()==Some("level3-v5-hybrid") {
+   mapped::v5(&rows,&mut session,&v)?
+  } else {
+   let own=public(field(&v,"own")?)?;
+   if field(&v,"op")?=="sign-digest" {mapped::sign(&selected(&own,true)?,&rows,&mut session,&v).context("IWA_HARDWARE_SIGN")?}
+   else {mapped::decapsulate(&selected(&own,false)?,&rows,&mut session,&v).context("IWA_HARDWARE_DECAP")?}
+  };
+  if v["hardware"].get("companion").is_some() {companion_read::complete_hardware(&v,&rows,&mut session,&mut reply).context("IWA_COMPANION_WRAP")?;}
+  println!("{}",reply);return Ok(());
+ }
  let own=public(field(&v,"own")?)?;
  if field(&v,"op")?=="decapsulate-components" {
   // Only fixed-key component inputs cross this boundary. Recipient packet
@@ -145,8 +171,19 @@ fn execute()->Result<()> {
 // diagnostics can contain input bytes. Component identification is sufficient
 // to distinguish a token failure from later packet/session-key validation.
 fn diagnostic_code(error: &anyhow::Error) -> &'static str {
+ // Typed inner boundaries take precedence over the broader message stage.
+ // Downcasting cannot be forged by a provider's diagnostic text, and code()
+ // exposes only a compile-time constant, never that underlying error text.
+ if let Some(boundary)=error.downcast_ref::<mapped::Failure>() {return boundary.code();}
  for cause in error.chain() {
   let message=cause.to_string();
+  match message.as_str() {
+   "IWA_COMPANION_CONTEXT"=>return "COMPANION_CONTEXT_FAILED",
+   "IWA_HARDWARE_SIGN"=>return "HARDWARE_SIGN_FAILED",
+   "IWA_HARDWARE_DECAP"=>return "HARDWARE_DECAP_FAILED",
+   "IWA_COMPANION_WRAP"=>return "COMPANION_WRAP_FAILED",
+   _=>{}
+  }
   if message.starts_with("PKCS#11 ML-KEM-768 failed (exit ") {return "MLKEM_FAILED";}
   if message.starts_with("PKCS#11 X25519 failed (exit ") {return "X25519_FAILED";}
   if message=="PKCS#11 adapter timed out or rejected input; no retry" {return "ADAPTER_TIMEOUT_OR_INPUT";}
@@ -155,21 +192,53 @@ fn diagnostic_code(error: &anyhow::Error) -> &'static str {
  }
  "CRYPTO_FAILED"
 }
+fn emit_adapter_evidence(evidence:&mapped::AdapterEvidence){
+ for code in evidence.codes.iter().take(8){eprintln!("IWA_CRYPTO_ERROR={code:08X}");}
+ if let Some(count)=evidence.callbacks{eprintln!("IWA_CRYPTO_PIN_CALLBACKS={count}");}
+ for (method,rv) in evidence.pkcs11.iter().take(16){eprintln!("IWA_CRYPTO_PKCS11={method}:{rv:08X}");}
+ for row in evidence.pcsc.iter().take(96){
+  eprint!("IWA_CRYPTO_PCSC={}:{:08X}:{}",row.method,row.rv,row.elapsed);
+  if let Some(length)=row.length{eprint!(":{length}");if let Some(sw)=row.sw{eprint!(":{sw:04X}");}}
+  eprintln!();
+ }
+}
 fn main(){
  // Capabilities are public constants; this path never reads stdin, config,
  // files, credentials or a card. Refuse every other command-line argument.
  let args:Vec<_>=std::env::args().skip(1).collect();
  if args==["--capabilities"] {println!("{}",capabilities());return;}
  if !args.is_empty(){eprintln!("IWA_CRYPTO_STATUS=CRYPTO_FAILED");std::process::exit(1);}
- if let Err(error)=execute(){eprintln!("IWA_CRYPTO_STATUS={}",diagnostic_code(&error));std::process::exit(1)}
+ if let Err(error)=execute(){
+  eprintln!("IWA_CRYPTO_STATUS={}",diagnostic_code(&error));
+  // Numeric OpenSSL identifiers and a bounded callback count help distinguish
+  // provider/login/touch failures. Error reason text and data are never emitted.
+  if let Some(evidence)=error.downcast_ref::<mapped::AdapterEvidence>() {
+   emit_adapter_evidence(evidence);
+  }
+  std::process::exit(1)
+ }
 }
 
 #[test]
 fn diagnostics_do_not_echo_error_data() {
  assert_eq!(diagnostic_code(&anyhow::anyhow!("private data")),"CRYPTO_FAILED");
+ for boundary in [mapped::Failure::AdapterExit,mapped::Failure::AdapterEncoding,
+                  mapped::Failure::SignatureLength,mapped::Failure::SignatureDecode,
+                  mapped::Failure::ComponentVerify,mapped::Failure::CompositeVerify,
+                  mapped::Failure::HelperSign,mapped::Failure::HelperVerify] {
+  let error=anyhow::anyhow!("sensitive-example").context(boundary).context("IWA_HARDWARE_SIGN");
+  assert_eq!(diagnostic_code(&error),boundary.code());
+  assert_eq!(diagnostic_code(&anyhow::anyhow!(boundary.code())),"CRYPTO_FAILED");
+ }
  for (component,code) in [("ML-KEM-768","MLKEM_FAILED"),("X25519","X25519_FAILED")] {
   let e=anyhow::anyhow!("PKCS#11 {} failed (exit Some(1)); no retry",component).context("Decapsulation failed; no retry");
   assert_eq!(diagnostic_code(&e),code);
+ }
+ for (boundary,code) in [("IWA_COMPANION_CONTEXT","COMPANION_CONTEXT_FAILED"),("IWA_HARDWARE_SIGN","HARDWARE_SIGN_FAILED"),("IWA_HARDWARE_DECAP","HARDWARE_DECAP_FAILED"),("IWA_COMPANION_WRAP","COMPANION_WRAP_FAILED")] {
+  let error=anyhow::anyhow!("provider diagnostic containing sensitive-example").context(boundary);
+  assert_eq!(diagnostic_code(&error),code);
+  // A suffix cannot smuggle arbitrary text through the fixed status channel.
+  assert_eq!(diagnostic_code(&anyhow::anyhow!("{boundary} sensitive-example")),"CRYPTO_FAILED");
  }
 }
 

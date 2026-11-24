@@ -23,7 +23,7 @@ function request(op,value,{signal}={}){
  });
 }
 
-/** Inspect a public identity; supported means current Level 3 v6 key capability,
+/** Inspect a public identity; supported means a recognized v4/v5/v6 key capability,
  * not a proof that this browser owns it or can use a particular hardware slot.
  */
 export function inspectIdentity(certificate,options){return request('inspect',{certificate},options);}
@@ -32,10 +32,16 @@ export function inspectIdentity(certificate,options){return request('inspect',{c
  * The result deliberately claims no live-key match. Hardware evidence is joined
  * separately, and native private-operation authorization remains independent.
  */
-export function inspectBundle(bundle,options){return request('bundle',{bundle},options);}
+export function inspectBundle(bundle,{compatibilityCertificate,...options}={}){
+ return request('bundle',{bundle,...(compatibilityCertificate?{compatibilityCertificate}:{})},options);
+}
 
 /** Return every exact saved-certificate match, never an arbitrary first match.
  * A message's recipient packet is not yet authenticated plaintext. The caller
  * must bind the chosen identity/cipher hash again before requesting private ops.
  */
 export function matchRecipients({cipher,candidates},options){return request('match',{cipher,candidates},options);}
+
+/** Verify the signed public envelope of a still-encrypted companion in WASM.
+ * This worker receives no wrapping secret, PIN, or plaintext private material. */
+export function inspectCompanion(descriptor,options){return request('companion',descriptor,options);}

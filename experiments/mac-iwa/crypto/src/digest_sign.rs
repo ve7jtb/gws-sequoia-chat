@@ -16,7 +16,7 @@ pub(crate) fn validate_request(v:&serde_json::Value,key:&PublicKey)->Result<Vec<
  ensure!(v["hashAlgorithm"].as_u64()==Some(10),"SHA-512 required");
  ensure!(field(v,"signingFingerprint")?==key.fingerprint().to_hex(),"Wrong configured signing key");
  let digest=B64.decode(field(v,"digest")?)?;
- ensure!(digest.len()==64,"Exactly one SHA-512 digest required");
+ ensure!(digest.len()==64&&B64.encode(&digest)==field(v,"digest")?,"Exactly one canonical SHA-512 digest required");
  Ok(digest)
 }
 

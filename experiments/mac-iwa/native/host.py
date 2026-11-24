@@ -74,8 +74,8 @@ def operation_error(op, error=None):
         if missing and int(missing.group(1))<=2147483647:
             return 'Connect YubiKey '+missing.group(1)+'. No PIN was submitted. Retry only after connecting that key.'
     if op in ('chat-selected-signing-material','chat-selected-decryption-material'):
-        return 'Selected identity review stopped. Connect the selected Level 3 YubiKey and restore its current bundle if certificates changed. The signed bundle, exact public certificate and live keys must match. No PIN was submitted and no card data was changed.'
-    if op in ('chat-identity-bundle-read','chat-identity-key-snapshot'):
+        return 'Selected identity review stopped. Connect the selected YubiKey and restore its current bundle if certificates changed. The signed bundle, exact public certificate and live keys must match. No PIN was submitted and no card data was changed.'
+    if op in ('chat-identity-bundle-read','chat-identity-key-snapshot','chat-identity-companion-read','chat-identity-devices'):
         return 'Public YubiKey read stopped. Connect the configured YubiKey and retry with its current public bundle. No PIN was submitted and no card or identity data was changed.'
     if op=='chat-hardware-audit':
         return 'Read-only hardware audit stopped. The selected signed bundle, device, public keys or metadata could not be read consistently. No PIN was requested and unchanged status is unconfirmed.'
@@ -83,8 +83,6 @@ def operation_error(op, error=None):
         return 'The configured public identity could not be read. No YubiKey operation was attempted.'
     if op=='chat-certificate-migration':
         return 'Legacy public-certificate export stopped. Check the old store for conflicting, malformed or oversized records. No certificates or trust were changed. No YubiKey operation was attempted.'
-    if op=='chat-signing-material':
-        return 'The configured public signing identity could not be read. No YubiKey operation was attempted.'
     if op=='chat-decryption-material':
         return 'The configured public decryption identity could not be read. No YubiKey operation was attempted.'
     if op in ('chat-sign-digest','chat-decapsulate-components'):

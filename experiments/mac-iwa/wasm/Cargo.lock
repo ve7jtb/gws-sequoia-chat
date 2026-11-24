@@ -42,6 +42,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1664,16 +1665,28 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 name = "sequoia-iwa-verify"
 version = "0.1.0"
 dependencies = [
+ "aead",
+ "aes",
+ "aes-gcm",
  "anyhow",
  "base64",
+ "cipher",
+ "cx448",
  "ed25519-dalek",
+ "flate2",
  "getrandom 0.4.3",
+ "hmac",
  "ml-dsa",
  "ml-kem",
+ "ocb3",
+ "p384",
+ "p521",
  "sequoia-openpgp",
  "sequoia-public-bundle",
  "serde_json",
+ "sha1",
  "sha2",
+ "sha3 0.10.9",
  "wasm-bindgen",
  "x25519-dalek",
  "zeroize",
@@ -1748,8 +1761,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "cx448",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
+ "js-sys",
  "ml-dsa",
  "p384",
  "sequoia-openpgp",
@@ -1807,6 +1823,17 @@ checksum = "a84f14a19e9a014bb9f4512488d9829a68e04ecabffb0f9904cd1ace94598177"
 dependencies = [
  "base16ct",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
 ]
 
 [[package]]

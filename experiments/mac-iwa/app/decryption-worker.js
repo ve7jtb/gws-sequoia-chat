@@ -2,19 +2,20 @@
 // AEAD decryption and signature verification remain in this disposable worker.
 // Neither the full message nor an OpenPGP session key reaches the native host.
 import init, {prepare_decryption, finalize_decryption, cancel_decryption,
-  verify_detached} from './wasm/sequoia_iwa_verify.js';
+  verify_detached, companion_complete} from './wasm/sequoia_iwa_verify.js';
 import {readMessage} from './message-mime.js';
+import {completeCompanion} from './companion/complete.js';
 
-let phase = 'new', requestId, purpose, verification, vault;
+let phase = 'new', requestId, purpose, verification, vault, certificate, componentRequest;
 self.onmessage = async ({data}) => {
   try {
     if (!data || JSON.stringify(data).length > 800000) throw Error('Request limit');
     if (phase === 'new' && data.type === 'prepare') {
       phase = 'initializing'; requestId = data.requestId; purpose = data.purpose;
-      verification = data.verification; vault = data.vault;
+      verification = data.verification; vault = data.vault; certificate = data.recipientCertificate;
       await init();
       if (phase !== 'initializing') throw Error('Cancelled');
-      const request = JSON.parse(prepare_decryption(JSON.stringify({requestId,
+      const request = componentRequest = JSON.parse(prepare_decryption(JSON.stringify({requestId,
         cipher: data.cipher, recipientCertificate: data.recipientCertificate,
         recipientKey: data.recipientKey, purpose})));
       phase = 'waiting';
@@ -24,9 +25,17 @@ self.onmessage = async ({data}) => {
     if (phase === 'waiting' && data.type === 'finalize' && data.requestId === requestId) {
       phase = 'finalizing';
       let opened;
-      try { opened = JSON.parse(finalize_decryption(JSON.stringify(data.result))); }
+      try {
+        // A wrapped companion is decrypted only inside this one-operation worker.
+        // Its authenticated manifest binds software components to this exact
+        // certificate and the card's freshly checked public keys.
+        const completed = await completeCompanion('decapsulate', certificate, componentRequest, data.result, companion_complete);
+        if (phase !== 'finalizing') throw Error('Cancelled operation');
+        try { opened = JSON.parse(finalize_decryption(JSON.stringify(completed))); }
+        finally { delete completed.mlkemSecret; delete completed.x25519Secret; }
+      }
       finally {
-        if (data.result) { delete data.result.mlkemSecret; delete data.result.x25519Secret; }
+        if (data.result) { delete data.result.mlkemSecret; delete data.result.x25519Secret; delete data.result.companionShared; }
       }
       if (opened.requestId !== requestId) throw Error('Operation mismatch');
       let result;
@@ -47,12 +56,12 @@ self.onmessage = async ({data}) => {
         result = await readMessage({...opened, expectedEmail, expectedFingerprint, recipient}, material,
           request => JSON.parse(verify_detached(JSON.stringify(request))));
       }
-      phase = 'done'; verification = vault = undefined;
+      phase = 'done'; verification = vault = certificate = componentRequest = undefined;
       self.postMessage({type: 'complete', requestId, result}); self.close(); return;
     }
     throw Error('Unexpected decryption phase');
   } catch (_) {
-    phase = 'failed'; verification = vault = undefined;
+    phase = 'failed'; verification = vault = certificate = componentRequest = undefined;
     try { cancel_decryption(); } catch (_) {}
     self.postMessage({type: 'error', requestId}); self.close();
   }

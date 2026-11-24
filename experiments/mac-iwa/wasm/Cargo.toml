@@ -11,17 +11,33 @@ base64 = "0.22"
 sha2 = "0.10"
 serde_json = "1"
 zeroize = "1"
-# Only the explicitly gated Level 3 software provider uses these private
+# Only the explicitly gated software identity provider uses these private
 # primitives. Their zeroize features are also enabled by the pinned backend.
 ml-dsa = { version = "=0.1.2", default-features = false, features = ["alloc", "zeroize"] }
 ml-kem = { version = "=0.3.4", default-features = false, features = ["zeroize"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"] }
 x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+# All additional private primitives remain confined to the explicit software
+# provider. Versions match the pinned Sequoia dependency graph.
+cx448 = { version = "=0.1.1", default-features = false, features = ["signing", "zeroize"] }
+p521 = { version = "=0.13.3", features = ["ecdh"] }
+aes = { version = "=0.8.4", features = ["zeroize"] }
+aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
+cipher = "=0.4.4"
+sha3 = "=0.10.9"
+# SHA-1 is used only by LibrePGP MDC/legacy PFX integrity, never new signatures.
+sha1 = "=0.10.7"
+flate2 = "=1.1.11"
+ocb3 = "=0.1.0"
+aead = "=0.5.2"
+hmac = "=0.12.1"
 # Both browser inspection and native authorization use this public-only crate.
 sequoia-public-bundle = { path = "../bundle-parser" }
 wasm-bindgen = "=0.2.130"
 sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d", default-features = false, features = ["crypto-rust", "compression-deflate", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 [dev-dependencies]
+# Tests independently emulate P-384 card ECDH; no native device is involved.
+p384 = { version = "=0.13.1", features = ["ecdh"] }
 # Tests emulate the two card operations with disposable software keys. These
 # algorithms already occur in Sequoia's locked dependency graph; no hardware
 # library or provisioning command participates in the regression tests.

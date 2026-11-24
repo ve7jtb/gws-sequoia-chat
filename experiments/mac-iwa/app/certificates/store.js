@@ -109,11 +109,16 @@ export function createCertificateStore({inspect,storage=createIndexedDbStorage()
   // Treat even worker results as bounded data. The parser canonicalizes public
   // packets, and its current self-certified email list is the only trust source.
   const info=await inspect(certificate);
-  keys(info,['certificate','fingerprint','version','algorithms','emails','hybridContact']);
+  // Old stored snapshots are reparsed by the current worker; mocks and
+  // compatibility imports may omit the newer capability booleans. Never turn
+  // their absence into classical encryption authority.
+  const base=['certificate','fingerprint','version','algorithms','emails','hybridContact'];
+  keys(info,[...base,...['encryptionSupported','pqSigning','pqEncryption'].filter(k=>Object.hasOwn(info,k))]);
+  for(const k of ['encryptionSupported','pqSigning','pqEncryption'])if(Object.hasOwn(info,k)&&typeof info[k]!=='boolean')fail('Invalid certificate capability');
   fingerprint(info.fingerprint);
-  if(![4,6].includes(info.version)||info.fingerprint.length!==(info.version===4?40:64)||typeof info.hybridContact!=='boolean'||!Array.isArray(info.emails)||info.emails.length>256||!Array.isArray(info.algorithms)||info.algorithms.length>32||info.algorithms.some(a=>typeof a!=='string'||a.length>128))fail('Invalid certificate inspection');
+  if(![4,5,6].includes(info.version)||info.fingerprint.length!==(info.version===4?40:64)||typeof info.hybridContact!=='boolean'||!Array.isArray(info.emails)||info.emails.length>256||!Array.isArray(info.algorithms)||info.algorithms.length>32||info.algorithms.some(a=>typeof a!=='string'||a.length>128))fail('Invalid certificate inspection');
   const addresses=[...new Set(info.emails.map(email))].sort();
-  if(info.hybridContact&&(info.version!==6||!addresses.length))fail('Invalid hybrid contact');
+  if(info.hybridContact&&(!addresses.length||info.pqEncryption===false))fail('Invalid hybrid contact');
   return {...clone(info),emails:addresses,certificateHash:await hash(bytes(info.certificate))};
  }
  async function inspected(state){
@@ -128,14 +133,16 @@ export function createCertificateStore({inspect,storage=createIndexedDbStorage()
  async function inventory(state){
   const certificates=[],contacts=[];
   for(const {record,info} of await inspected(state)){
-   certificates.push({fingerprint:info.fingerprint,version:info.version,algorithms:info.algorithms,emails:info.emails,trustedEmails:[...record.trustedEmails],hybridContact:info.hybridContact});
+   certificates.push({fingerprint:info.fingerprint,version:info.version,algorithms:info.algorithms,emails:info.emails,trustedEmails:[...record.trustedEmails],hybridContact:info.hybridContact,...(Object.hasOwn(info,'encryptionSupported')?{encryptionSupported:info.encryptionSupported,pqSigning:info.pqSigning,pqEncryption:info.pqEncryption}:{})});
    // Retain stale trust in the inventory for explicit removal, but never offer
    // an expired/revoked mailbox or unusable encryption key for a new operation.
-   if(info.hybridContact)for(const address of record.trustedEmails.filter(e=>info.emails.includes(e))){
-    contacts.push({id:await idFor(address,info.fingerprint),email:address,fingerprint:info.fingerprint,certificate:info.certificate,certificateHash:info.certificateHash,revision:state.revision});
+   if(info.hybridContact||info.encryptionSupported)for(const address of record.trustedEmails.filter(e=>info.emails.includes(e))){
+    contacts.push({id:await idFor(address,info.fingerprint),email:address,fingerprint:info.fingerprint,certificate:info.certificate,certificateHash:info.certificateHash,revision:state.revision,...(Object.hasOwn(info,'encryptionSupported')?{version:info.version,pqEncryption:info.pqEncryption,pqSigning:info.pqSigning}:{})});
    }
   }
-  contacts.sort((a,b)=>a.email.localeCompare(b.email)||a.fingerprint.localeCompare(b.fingerprint));
+  // Version preference does not grant trust: only already-trusted matching
+  // certificates reach this list. Within one version, prefer hybrid recipients.
+  contacts.sort((a,b)=>a.email.localeCompare(b.email)||(b.version||6)-(a.version||6)||Number(b.pqEncryption!==false)-Number(a.pqEncryption!==false)||a.fingerprint.localeCompare(b.fingerprint));
   return {certificates,contacts,revision:state.revision,migration:clone(state.migration)};
  }
  async function commit(state,next){
@@ -208,7 +215,7 @@ export function createCertificateStore({inspect,storage=createIndexedDbStorage()
    return item;
   },
   async assertContact(snapshot){
-   keys(snapshot,['id','email','fingerprint','certificate','certificateHash','revision']);
+   keys(snapshot,['id','email','fingerprint','certificate','certificateHash','revision',...['version','pqEncryption','pqSigning'].filter(k=>Object.hasOwn(snapshot,k))]);
    const item=await this.trustedContact(snapshot.id);
    // The revision catches remove-and-retrust races, including ABA changes back
    // to the same fingerprint. Exact certificate hash and bytes bind the content.

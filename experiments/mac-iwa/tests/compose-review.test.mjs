@@ -112,3 +112,26 @@ test('ciphertext export rejects stale trust, vault lock, expiry and changed acco
  const saving=f.reviews.exportEmail(id,account,true);await Promise.resolve();f.reviews.clear();release();
  await assert.rejects(saving,/cleared/);
 });
+
+test('classical signing or encryption requires explicit compatibility confirmation',async()=>{
+ for(const [pqSigning,pqEncryption] of [[false,true],[true,false],[false,false]]){
+  const selected={provider:'software',profile:'level3-v4-classical',pqSigning};
+  const peer={...contact,pqEncryption};
+  const reviews=createComposeReviews({certificateStore:{assertContact:async()=>true},identitySelection:{assert:async()=>true,validateMaterial:async()=>true}});
+  await assert.rejects(reviews.prepare(native,peer,{...request,identity:selected}),/classical compatibility/);
+  const material=await reviews.prepare(native,peer,{...request,identity:selected,compatibilityConfirmed:true});
+  assert.equal(material.compatibilityWarnings.length,Number(!pqSigning)+Number(!pqEncryption));
+ }
+});
+test('hybrid signature and encryption never warn solely for classical component presence',async()=>{
+ const reviews=createComposeReviews({certificateStore:{assertContact:async()=>true},identitySelection:{assert:async()=>true,validateMaterial:async()=>true}});
+ const value=await reviews.prepare(native,{...contact,pqEncryption:true},{...request,identity:{provider:'software',profile:'level5',pqSigning:true}});
+ assert.equal(value.compatibilityWarnings,undefined);assert.equal(value.softwareProfile,'level5');
+});
+
+// Reject incompatible packet dialects before invoking any private provider.
+test('v5 cannot silently mix with RFC v4/v6 sender or recipient certificates',async()=>{
+ for(const [own,peer] of [[5,6],[6,5],[4,5],[5,4]]){
+  const f=fixture();await assert.rejects(f.reviews.prepare(native,{...contact,version:peer},{...request,identity:{version:own},compatibilityConfirmed:true}),/requires v5 certificates/);
+ }
+});

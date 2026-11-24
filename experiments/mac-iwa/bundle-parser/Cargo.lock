@@ -1729,8 +1729,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "cx448",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
+ "js-sys",
  "ml-dsa",
  "p384",
  "sequoia-openpgp",

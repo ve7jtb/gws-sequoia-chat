@@ -63,37 +63,20 @@ def prepare(bridge,identity=None):
         context,public=selected(bridge,identity)
         rid=secrets.token_hex(24)
         key=public.get('signingFingerprint','')
-        if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid selected signing key')
+        if not re.fullmatch('(?:[A-F0-9]{40}|[A-F0-9]{64})',key):raise ValueError('Invalid selected signing key')
         metadata={'created':time.time(),'backendHash':backend_hash(bridge),
                   'selectedIdentity':context,'signingFingerprint':key}
         write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
         return {'review':rid,'senderCertificate':context['certificate'],
-                'senderEmail':context['email'],'signingFingerprint':key,'identity':dict(identity)}
-    own=Path(bridge.cfg['cert']).read_bytes()
-    if not 1<=len(own)<=65536:raise ValueError('Certificate limit')
-    # Validate the installed sender's current mailbox and select exactly one
-    # permitted hybrid subkey. No browser-supplied public key can select a slot.
-    check_certificate(bridge,bridge.cfg['cert'],bridge.cfg['chat_email'])
-    check={'op':'signing-material','own':base64.b64encode(own).decode()}
-    result=subprocess.run([str(bridge.root/'runtime/sequoia-iwa-crypto')],
-        input=json.dumps(check).encode(),stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,timeout=30)
-    if result.returncode or len(result.stdout)>2048:raise ValueError('Invalid signing identity')
-    key=json.loads(result.stdout).get('signingFingerprint','')
-    if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid signing key')
-    rid=secrets.token_hex(24)
-    metadata={'created':time.time(),'authorityHash':authority_hash(bridge),
-              'signingFingerprint':key}
-    write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
-    return {'review':rid,'senderCertificate':base64.b64encode(own).decode(),
-            'senderEmail':bridge.cfg['chat_email'],'signingFingerprint':key}
+                'senderEmail':context['email'],'signingFingerprint':key,'identity':dict(identity),'hardwareProfile':{'LEVEL3_POLYFILL':'level3','LEVEL5_COMPANION':'level5'}.get(context['profile'],context['profile'])}
+    raise ValueError('Select a restored hardware identity before signing')
 
 
 def ticket(bridge,rid):
     """Revalidate grant age, public identity and native backend before a PIN."""
     if not re.fullmatch('[a-f0-9]{48}',rid):raise ValueError('Invalid signing ticket')
     path=bridge.data/('signing-'+rid+'.json')
-    if path.is_symlink() or path.stat().st_size>100000:raise ValueError('Invalid signing ticket')
+    if path.is_symlink() or path.stat().st_size>300000:raise ValueError('Invalid signing ticket')
     meta=json.loads(path.read_text())
     age=time.time()-meta['created']
     if not 0<=age<=600:raise ValueError('Expired signing ticket')
@@ -102,7 +85,7 @@ def ticket(bridge,rid):
             raise ValueError('Selected signing backend changed')
         from identities import revalidate_context
         meta['selectedIdentity']=revalidate_context(bridge,meta['selectedIdentity'])
-    elif authority_hash(bridge)!=meta['authorityHash']:raise ValueError('Signing identity changed')
+    else:raise ValueError('Selected signing identity required')
     return path,meta
 
 
@@ -119,6 +102,14 @@ def sign(bridge,request):
         raise ValueError('Invalid signing binding')
     digest=base64.b64decode(request['digest'],validate=True)
     if len(digest)!=64:raise ValueError('Exactly one SHA-512 digest required')
+    context=meta['selectedIdentity']
+    # LibrePGP authenticates a second, explicitly bound inline-message digest.
+    # It is accepted only for a native-verified v5 profile, never as a generic
+    # second signature under an ordinary message grant.
+    is_v5='-v5-' in context['profile']
+    if ('inlineDigest' in request)!=is_v5:raise ValueError('Profile digest mismatch')
+    if is_v5 and len(base64.b64decode(request['inlineDigest'],validate=True))!=64:
+        raise ValueError('Exactly one inline SHA-512 digest required')
     # The native operation lock serializes this unlink and the private call.
     # No peer certificate is needed for a signature over a prepared digest.
     path.unlink()

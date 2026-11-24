@@ -9,7 +9,7 @@ use super::{decrypt_session_mode, field, public, B64, LIMIT};
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
 use sequoia_openpgp as pgp;
-use pgp::{crypto::{ecdh::aes_key_unwrap, mpi, SessionKey},
+use pgp::{crypto::{ecdh::{aes_key_unwrap, decrypt_unwrap}, mpi, SessionKey, Decryptor},
     packet::{key, Key}, parse::Parse, policy::StandardPolicy,
     types::{HashAlgorithm, PublicKeyAlgorithm as A, SymmetricAlgorithm as S}};
 use sha2::{Digest, Sha256};
@@ -50,13 +50,13 @@ fn decode(v: &serde_json::Value, name: &str, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-struct Pending {
+pub(super) struct Pending {
     started: f64,
     request: serde_json::Value,
     cipher: Vec<u8>,
     key: PublicKey,
-    wrapped: Vec<u8>,
-    algorithm: S,
+    pkesk: pgp::packet::PKESK,
+    algorithm: Option<S>,
     vault: bool,
 }
 thread_local! {
@@ -65,88 +65,75 @@ thread_local! {
     static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
 }
 
-fn prepare(v: &serde_json::Value, started: f64) -> Result<(Pending, serde_json::Value)> {
-    schema(v, &["requestId", "cipher", "recipientCertificate", "recipientKey", "purpose"])?;
-    ensure!(started.is_finite() && started > 0.0 && hex64(field(v, "requestId")?) && hex64(field(v, "recipientKey")?), "Invalid binding");
-    let vault = match field(v, "purpose")? { "message" => false, "vault" => true, _ => bail!("Invalid purpose") };
-    // Bound the certificate before parsing, and reject secret-key packets even
-    // though this path should receive only the configured public identity.
-    let encoded_cert = decode(v, "recipientCertificate", 65536)?;
-    let cert = public(&B64.encode(encoded_cert))?;
-    ensure!(cert.primary_key().key().version() == 6, "v6 recipient required");
-    let policy = StandardPolicy::new();
-    let valid = cert.with_policy(&policy, None)?;
-    valid.alive()?;
-    ensure!(!matches!(valid.revocation_status(), pgp::types::RevocationStatus::Revoked(_)), "Revoked recipient");
-    let keys: Vec<_> = cert.keys().with_policy(&policy, None).alive().revoked(false)
-        .for_transport_encryption().filter(|ka| ka.key().pk_algo() == A::MLKEM768_X25519)
-        .map(|ka| ka.key().clone().role_into_unspecified()).collect();
-    ensure!(keys.len() == 1 && keys[0].version() == 6, "One Level 3 v6 encryption key required");
-    let key = keys[0].clone();
-    ensure!(key.fingerprint().to_hex() == field(v, "recipientKey")?, "Wrong selected key");
-    let cipher = decode(v, "cipher", if vault {16384} else {LIMIT})?;
-    ensure!(!cipher.is_empty(), "Empty ciphertext");
-    let pile = pgp::PacketPile::from_bytes(&cipher)?;
-    let packets: Vec<_> = pile.children().collect();
-    // The current IWA intentionally supports one named v6 recipient and one
-    // AEAD container. Anonymous recipients, SKESKs, extra packets and legacy
-    // containers fail before native PIN authorization is requested.
-    ensure!(packets.len() == 2, "Exactly two packets required");
-    let pk = match packets[0] {
-        pgp::Packet::PKESK(pgp::packet::PKESK::V6(p)) => p,
-        _ => bail!("v6 PKESK required"),
+/// Validate the envelope before any private operation. Named v3 PKESKs are
+/// needed by v4 compatibility certificates; v6 PKESKs bind a full fingerprint.
+/// Only SEIPDv1 (authenticated MDC) or SEIPDv2 (AEAD) can carry message data.
+fn envelope(cipher:&[u8])->Result<(pgp::packet::PKESK,Option<S>)> {
+    ensure!(!cipher.is_empty()&&cipher.len()<=LIMIT,"Ciphertext limit");
+    let pile=pgp::PacketPile::from_bytes(cipher)?;
+    let packets:Vec<_>=pile.children().collect();
+    ensure!(packets.len()==2,"Exactly one recipient and protected payload required");
+    let pk=match packets[0]{pgp::Packet::PKESK(p)=>p.clone(),_=>bail!("PKESK required")};
+    ensure!(pk.recipient().is_some(),"Hidden recipients unsupported");
+    ensure!(matches!(pk.pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448|A::ECDH),"Unsupported recipient algorithm");
+    let algorithm=match packets[1]{
+        pgp::Packet::SEIP(pgp::packet::SEIP::V2(p))=>Some(p.symmetric_algo()),
+        pgp::Packet::SEIP(pgp::packet::SEIP::V1(_))=>{ensure!(pk.version()==3,"Legacy payload requires v3 PKESK");None},
+        _=>bail!("Authenticated SEIPD required"),
     };
-    ensure!(pk.recipient() == Some(&key.fingerprint()) && pk.pk_algo() == A::MLKEM768_X25519, "Recipient mismatch");
-    let algorithm = match packets[1] {
-        pgp::Packet::SEIP(pgp::packet::SEIP::V2(p)) => p.symmetric_algo(),
-        _ => bail!("SEIPDv2 required"),
-    };
-    ensure!(matches!(algorithm, S::AES128 | S::AES192 | S::AES256), "AES required");
-    let (ephemeral, mlkem, wrapped) = match pk.esk() {
-        mpi::Ciphertext::MLKEM768_X25519 {ecdh, mlkem, esk} => (ecdh.as_ref(), mlkem.as_ref(), esk.to_vec()),
-        _ => bail!("Hybrid ciphertext required"),
-    };
-    ensure!(ephemeral.iter().any(|b| *b != 0), "Invalid X25519 input");
-    ensure!(wrapped.len() == algorithm.key_size()? + 8, "Wrapped key length mismatch");
-    let request = serde_json::json!({"requestId":v["requestId"],
-        "cipherHash":format!("{:x}", Sha256::digest(&cipher)),
-        "recipientKey":key.fingerprint().to_hex(),
-        "mlkemCiphertext":B64.encode(mlkem), "x25519Ephemeral":B64.encode(ephemeral)});
-    Ok((Pending {started, request:request.clone(), cipher, key, wrapped, algorithm, vault}, request))
+    if let Some(a)=algorithm{ensure!(matches!(a,S::AES128|S::AES192|S::AES256),"AES required");}
+    Ok((pk,algorithm))
 }
-
-/// Inspect only the named recipient of the supported message envelope. This
-/// performs no session-key recovery and never touches the split-phase pending
-/// state. It rejects hidden recipients instead of trying cards until one works.
-fn named_recipient(cipher: &[u8]) -> Result<String> {
-    ensure!(!cipher.is_empty() && cipher.len() <= LIMIT, "Ciphertext limit");
-    let pile = pgp::PacketPile::from_bytes(cipher)?;
-    let packets: Vec<_> = pile.children().collect();
-    ensure!(packets.len() == 2, "Exactly one recipient and one AEAD packet required");
-    let recipient = match packets[0] {
-        pgp::Packet::PKESK(pgp::packet::PKESK::V6(p)) => p,
-        _ => bail!("Named v6 PKESK required"),
+pub(super) fn prepare(v: &serde_json::Value, started: f64) -> Result<(Pending, serde_json::Value)> {
+    schema(v, &["requestId", "cipher", "recipientCertificate", "recipientKey", "purpose"])?;
+    let recipient=field(v,"recipientKey")?;
+    ensure!(started.is_finite()&&started>0.0&&hex64(field(v,"requestId")?)
+        && matches!(recipient.len(),40|64)&&recipient.bytes().all(|b|b.is_ascii_digit()||(b'A'..=b'F').contains(&b)),"Invalid binding");
+    let vault=match field(v,"purpose")?{"message"=>false,"vault"=>true,_=>bail!("Invalid purpose")};
+    let encoded_cert=decode(v,"recipientCertificate",65536)?;
+    let cert=public(&B64.encode(encoded_cert))?;
+    let policy=StandardPolicy::new();let valid=cert.with_policy(&policy,None)?;valid.alive()?;
+    ensure!(!matches!(valid.revocation_status(),pgp::types::RevocationStatus::Revoked(_)),"Revoked recipient");
+    let all:Vec<_>=cert.keys().with_policy(&policy,None).alive().revoked(false).for_transport_encryption()
+        .filter(|ka|super::certificates::encryption_supported(ka.key())).map(|ka|ka.key().clone().role_into_unspecified()).collect();
+    let hybrid:Vec<_>=all.iter().filter(|k|matches!(k.pk_algo(),A::MLKEM768_X25519|A::MLKEM1024_X448)).collect();
+    let keys=if !hybrid.is_empty(){hybrid}else{all.iter().collect()};
+    ensure!(keys.len()==1&&keys[0].fingerprint().to_hex()==recipient,"Exactly one selected recipient required");
+    let key=keys[0].clone();
+    // Existing PIV vault enrollment is deliberately not broadened by software
+    // message compatibility. Its origin-bound unsigned format remains L3/v6.
+    if vault{ensure!(key.version()==6&&key.pk_algo()==A::MLKEM768_X25519,"Existing vault profile required");}
+    let cipher=decode(v,"cipher",if vault{16384}else{LIMIT})?;
+    let (pkesk,algorithm)=envelope(&cipher)?;
+    ensure!(pkesk.recipient().unwrap().aliases(pgp::KeyHandle::from(key.fingerprint()))&&pkesk.pk_algo()==key.pk_algo(),"Recipient mismatch");
+    if vault{ensure!(pkesk.version()==6&&algorithm.is_some(),"Vault AEAD profile required");}
+    let (ephemeral,mlkem,wrapped):(&[u8],&[u8],&[u8])=match pkesk.esk(){
+        mpi::Ciphertext::MLKEM768_X25519{ecdh,mlkem,esk}=>(ecdh.as_ref(),mlkem.as_ref(),esk.as_ref()),
+        mpi::Ciphertext::MLKEM1024_X448{ecdh,mlkem,esk}=>(ecdh.as_ref(),mlkem.as_ref(),esk.as_ref()),
+        mpi::Ciphertext::ECDH{e,key}=>(e.value(),&[][..],key.as_ref()),
+        _=>bail!("Unsupported recipient ciphertext"),
     };
-    ensure!(recipient.pk_algo() == A::MLKEM768_X25519, "Supported hybrid recipient required");
-    let fingerprint = recipient.recipient().context("Hidden recipients are unsupported")?.to_hex();
-    ensure!(hex64(&fingerprint), "v6 recipient fingerprint required");
-    let algorithm = match packets[1] {
-        pgp::Packet::SEIP(pgp::packet::SEIP::V2(p)) => p.symmetric_algo(),
-        _ => bail!("SEIPDv2 required"),
-    };
-    ensure!(matches!(algorithm, S::AES128 | S::AES192 | S::AES256), "AES required");
-    let (ephemeral, wrapped) = match recipient.esk() {
-        mpi::Ciphertext::MLKEM768_X25519 {ecdh, esk, ..} => (ecdh.as_ref(), esk.as_ref()),
-        _ => bail!("Hybrid ciphertext required"),
-    };
-    ensure!(ephemeral.iter().any(|b| *b != 0), "Invalid X25519 input");
-    ensure!(wrapped.len() == algorithm.key_size()? + 8, "Wrapped key length mismatch");
-    Ok(fingerprint)
+    ensure!(ephemeral.iter().any(|b|*b!=0)&&!wrapped.is_empty()&&wrapped.len()<=128,"Invalid ciphertext components");
+    if let (mpi::PublicKey::ECDH{curve,..},mpi::Ciphertext::ECDH{e,..})=(key.mpis(),pkesk.esk()) {
+        // RFC 6637 points must use the selected curve's exact canonical shape.
+        // Reject malformed public input before a software KDF or hardware call.
+        e.decode_point(curve)?;
+    }
+    // Old field names identify transport positions, not the selected curve.
+    // Software and hardware consumers validate each curve's lengths from the
+    // authenticated certificate; field names cannot authorize a different key.
+    let request=serde_json::json!({"requestId":v["requestId"],"cipherHash":format!("{:x}",Sha256::digest(&cipher)),
+        "recipientKey":recipient,"mlkemCiphertext":B64.encode(mlkem),"x25519Ephemeral":B64.encode(ephemeral)});
+    Ok((Pending{started,request:request.clone(),cipher,key,pkesk,algorithm,vault},request))
+}
+fn named_recipient(cipher:&[u8])->Result<pgp::KeyHandle>{
+    Ok(envelope(cipher)?.0.recipient().context("Named recipient required")?)
 }
 
 fn matching_identities(v: &serde_json::Value) -> Result<serde_json::Value> {
     schema(v, &["cipher", "candidates"])?;
     let cipher=decode(v,"cipher",LIMIT)?;
+    if super::libre::is_message(&cipher){return super::libre::match_recipients(v);}
     let recipient=named_recipient(&cipher)?;
     let candidates=v["candidates"].as_array().context("Own identities required")?;
     ensure!(candidates.len() <= 16, "Too many own identities");
@@ -158,13 +145,15 @@ fn matching_identities(v: &serde_json::Value) -> Result<serde_json::Value> {
         ensure!(ids.insert(id), "Duplicate own identity ID");
         let certificate=decode(item,"certificate",65536)?;
         let info=super::certificates::inspect_identity_value(&B64.encode(certificate))?;
-        if info["supported"] != true || info["recipientKey"] != recipient {continue;}
+        if info["supported"] != true {continue;}
+        let full:pgp::Fingerprint=field(&info,"recipientKey")?.parse()?;
+        if !recipient.aliases(pgp::KeyHandle::from(full)){continue;}
         // Reuse the exact pre-decryption validation, so matching cannot approve
         // a recipient which the existing split-phase parser would reject. Drop
         // this local Pending immediately; no global state or private material is
         // created, and a later operation will parse its own retained ciphertext.
         prepare(&serde_json::json!({"requestId":"A".repeat(64),"cipher":v["cipher"],
-            "recipientCertificate":info["certificate"],"recipientKey":recipient,"purpose":"message"}),1.0)?;
+            "recipientCertificate":info["certificate"],"recipientKey":info["recipientKey"],"purpose":"message"}),1.0)?;
         matches.push(serde_json::json!({"id":id,"fingerprint":info["fingerprint"],
             "certificateHash":info["certificateHash"],"signingFingerprint":info["signingFingerprint"],
             "recipientKey":info["recipientKey"],"emails":info["emails"]}));
@@ -172,8 +161,12 @@ fn matching_identities(v: &serde_json::Value) -> Result<serde_json::Value> {
     // Keep every match. Two saved identities may legitimately expose the same
     // recipient key (or two cards may hold it); only an explicit UI choice may
     // resolve that ambiguity. Array order is never an authorization decision.
+    // A v3 PKESK carries only a key ID. Do not collapse distinct full keys with
+    // a colliding ID into a single identity; require an unambiguous fingerprint.
+    let full=matches.first().and_then(|v|v["recipientKey"].as_str()).unwrap_or("").to_owned();
+    ensure!(matches.iter().all(|v|v["recipientKey"]==full),"Ambiguous recipient key ID");
     Ok(serde_json::json!({"cipherHash":format!("{:x}",Sha256::digest(&cipher)),
-        "recipientKey":recipient,"matches":matches}))
+        "recipientKey":full,"matches":matches}))
 }
 
 /// Match a message to saved public identities without opening any card session.
@@ -185,10 +178,10 @@ pub fn match_recipients(input: &str) -> Result<String, JsValue> {
         ensure!(input.len() <= 1_800_000, "Recipient matching request limit");
         Ok(serde_json::to_string(&matching_identities(&serde_json::from_str(input)?)?)?)
     };
-    run().map_err(|_| JsValue::from_str("Recipient matching rejected; named Level 3 v6 recipient required"))
+    run().map_err(|_| JsValue::from_str("Recipient matching rejected; supported named recipient required"))
 }
 
-fn finish(pending: Pending, v: &serde_json::Value, now: f64) -> Result<serde_json::Value> {
+pub(super) fn finish(pending: Pending, v: &serde_json::Value, now: f64) -> Result<serde_json::Value> {
     schema(v, &["requestId", "cipherHash", "recipientKey", "mlkemCiphertext", "x25519Ephemeral", "mlkemSecret", "x25519Secret"])?;
     ensure!(now.is_finite() && now >= pending.started && now - pending.started <= LIFETIME_MS, "Decryption expired");
     for name in ["requestId", "cipherHash", "recipientKey", "mlkemCiphertext", "x25519Ephemeral"] {
@@ -197,30 +190,45 @@ fn finish(pending: Pending, v: &serde_json::Value, now: f64) -> Result<serde_jso
     // SessionKey uses Sequoia's protected allocation and wipes on drop. The
     // browser/IPC may still hold temporary encoded copies until worker teardown;
     // this design does not promise erasure of all managed-runtime copies.
-    let ml: SessionKey = decode(v, "mlkemSecret", 32)?.into();
-    let ec: SessionKey = decode(v, "x25519Secret", 32)?.into();
-    ensure!(ml.len() == 32 && ec.len() == 32 && ec.iter().any(|b| *b != 0), "Invalid shared secret");
-    let public_ec = match pending.key.mpis() {
-        mpi::PublicKey::MLKEM768_X25519 {ecdh, ..} => ecdh.as_ref(),
-        _ => bail!("Unexpected public key"),
-    };
-    let ephemeral = decode(&pending.request, "x25519Ephemeral", 32)?;
-    // This exact RFC 9980 multi_key_combine input order matches Sequoia and the
-    // existing PIV adapter: ML share, EC share, ephemeral EC public key, recipient
-    // EC public key, OpenPGP algorithm ID and the full domain tag. Do not replace
-    // it with HKDF or omit either public-key binding.
-    let mut hash = HashAlgorithm::SHA3_256.context()?.for_digest();
-    hash.update(&ml); hash.update(&ec); hash.update(&ephemeral); hash.update(public_ec);
-    hash.update(&[A::MLKEM768_X25519.into()]); hash.update(b"OpenPGPCompositeKDFv1\x15");
-    let mut kek = SessionKey::from(vec![0; 32]); hash.digest(&mut kek)?;
-    // Sequoia's RFC 3394 implementation authenticates its integrity value. A
-    // substituted component (including ML-KEM implicit rejection) cannot release
-    // a usable session key. The retained AEAD container is authenticated too.
-    let session: SessionKey = aes_key_unwrap(S::AES256, kek.as_protected(), &pending.wrapped)?.into();
-    ensure!(session.len() == pending.algorithm.key_size()?, "Session length mismatch");
-    let input = serde_json::json!({"cipher":B64.encode(&pending.cipher),
-        "cipherHash":pending.request["cipherHash"], "recipientKey":pending.request["recipientKey"],
-        "algorithm":u8::from(pending.algorithm), "sessionKey":B64.encode(&session)});
+    let ml:SessionKey=decode(v,"mlkemSecret",32)?.into();
+    let ec:SessionKey=decode(v,"x25519Secret",66)?.into();
+    ensure!(ec.iter().any(|b|*b!=0),"Noncontributory shared secret");
+    struct Components{key:PublicKey,ml:SessionKey,ec:SessionKey}
+    impl Decryptor for Components{
+        fn public(&self)->&PublicKey{&self.key}
+        fn decrypt(&mut self,ciphertext:&mpi::Ciphertext,plaintext_len:Option<usize>)->Result<SessionKey>{
+            // Let Sequoia own the v3/v6 algorithm-octet and checksum handling.
+            // This callback supplies only RFC 6637 unwrap or RFC 9980 combine.
+            if self.key.pk_algo()==A::ECDH{
+                ensure!(self.ml.is_empty(),"Unexpected PQ component");
+                let length=match self.key.mpis(){
+                    mpi::PublicKey::ECDH{curve:pgp::types::Curve::Cv25519,..}=>32,
+                    mpi::PublicKey::ECDH{curve:pgp::types::Curve::NistP521,..}=>66,
+                    mpi::PublicKey::ECDH{curve:pgp::types::Curve::NistP384,..}=>48,
+                    _=>bail!("Unsupported classical curve"),
+                };
+                ensure!(self.ec.len()==length,"Classical shared-secret length");
+                return decrypt_unwrap(&self.key,self.ec.as_protected(),ciphertext,plaintext_len);
+            }
+            let (public_ec,ephemeral,wrapped,length):(&[u8],&[u8],&[u8],usize)=match (self.key.mpis(),ciphertext){
+                (mpi::PublicKey::MLKEM768_X25519{ecdh:public,..},mpi::Ciphertext::MLKEM768_X25519{ecdh,esk,..})=>(public.as_ref(),ecdh.as_ref(),esk.as_ref(),32),
+                (mpi::PublicKey::MLKEM1024_X448{ecdh:public,..},mpi::Ciphertext::MLKEM1024_X448{ecdh,esk,..})=>(public.as_ref(),ecdh.as_ref(),esk.as_ref(),56),
+                _=>bail!("Composite key/ciphertext mismatch"),
+            };
+            ensure!(self.ml.len()==32&&self.ec.len()==length,"Composite shared-secret length");
+            let mut hash=HashAlgorithm::SHA3_256.context()?.for_digest();
+            hash.update(&self.ml);hash.update(&self.ec);hash.update(ephemeral);hash.update(public_ec);
+            hash.update(&[self.key.pk_algo().into()]);hash.update(b"OpenPGPCompositeKDFv1\x15");
+            let mut kek:SessionKey=vec![0;32].into();hash.digest(&mut kek)?;
+            Ok(aes_key_unwrap(S::AES256,kek.as_protected(),wrapped)?.into())
+        }
+    }
+    let mut components=Components{key:pending.key,ml,ec};
+    let (found,session)=pending.pkesk.decrypt(&mut components,pending.algorithm).context("Session-key integrity failed")?;
+    let algorithm=found.or(pending.algorithm).context("Missing symmetric algorithm")?;
+    ensure!(matches!(algorithm,S::AES128|S::AES192|S::AES256)&&session.len()==algorithm.key_size()?,"AES session length mismatch");
+    let input=serde_json::json!({"cipher":B64.encode(&pending.cipher),"cipherHash":pending.request["cipherHash"],
+        "recipientKey":pending.request["recipientKey"],"algorithm":u8::from(algorithm),"sessionKey":B64.encode(&session)});
     let mut result = decrypt_session_mode(&input, pending.vault)?;
     // Only fully authenticated content leaves WASM, never a component secret,
     // KEK or recovered AES session key. MIME/trust checks remain the next layer.
@@ -233,8 +241,11 @@ pub fn prepare_decryption(input: &str) -> Result<String, JsValue> {
     let run = || -> Result<String> {
         ensure!(input.len() <= 450_000, "Request too large");
         PENDING.with(|cell| {
-            ensure!(cell.borrow().is_none(), "Decryption already pending");
-            let (pending, request) = prepare(&serde_json::from_str(input)?, now_ms())?;
+            ensure!(cell.borrow().is_none()&&!super::libre::has_decryption(), "Decryption already pending");
+            let value:serde_json::Value=serde_json::from_str(input)?;
+            let certificate=B64.decode(field(&value,"recipientCertificate")?)?;
+            if super::libre::is_certificate(&certificate){return Ok(super::libre::prepare_decryption(&value)?.to_string());}
+            let (pending, request) = prepare(&value, now_ms())?;
             let result = serde_json::to_string(&request)?;
             *cell.borrow_mut() = Some(pending);
             Ok(result)
@@ -246,6 +257,11 @@ pub fn prepare_decryption(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn finalize_decryption(input: &str) -> Result<String, JsValue> {
     let run = || -> Result<String> {
+        if super::libre::has_decryption(){
+            if input.len()>8192{super::libre::cancel_decryption();bail!("Component response bound");}
+            let value=match serde_json::from_str(input){Ok(v)=>v,Err(e)=>{super::libre::cancel_decryption();return Err(e.into())}};
+            return Ok(super::libre::finalize_decryption(&value)?.to_string());
+        }
         let pending = PENDING.with(|cell| cell.borrow_mut().take()).context("No pending decryption")?;
         ensure!(input.len() <= 8192, "Component response limit");
         Ok(serde_json::to_string(&finish(pending, &serde_json::from_str(input)?, now_ms())?)?)
@@ -254,7 +270,7 @@ pub fn finalize_decryption(input: &str) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn cancel_decryption() { PENDING.with(|cell| { cell.borrow_mut().take(); }); }
+pub fn cancel_decryption() { PENDING.with(|cell| { cell.borrow_mut().take(); });super::libre::cancel_decryption(); }
 
 #[cfg(test)]
 mod tests {

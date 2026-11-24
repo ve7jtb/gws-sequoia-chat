@@ -91,7 +91,10 @@ export async function readMessage(packet,material,verify){
  if(shape.kind!=='signed'){if(/multipart\/signed|BEGIN PGP SIGNED MESSAGE/i.test(binary(raw)))result.signatureStatus='unsupported';return result;}
  const certificates=[...material.certificates];let used=certificates.reduce((n,c)=>n+c.length,0);
  for(const a of content.attachments||[])if(a.mimeType==='application/pgp-keys'&&certificates.length<32&&used+a.content.length<=280000){certificates.push(a.content);used+=a.content.length;}
- const {signatures}=await verify({payload:b64(shape.payload),signature:b64(shape.signature),certificates});
+ // LibrePGP v5 inline signatures bind literal metadata separately from the
+ // payload. Never try the detached transcript after inline verification fails.
+ const metadata=packet.encrypted&&packet.literalMetadata?{literalMetadata:packet.literalMetadata}:{};
+ const {signatures}=await verify({payload:b64(shape.payload),signature:b64(shape.signature),certificates,...metadata});
  const fromHeaders=outer.headers.filter(h=>h.key.toLowerCase()==='from');
  const email=fromHeaders.length===1&&!/[;,]/.test(fromHeaders[0].value.replace(/"[^"]*"/g,''))?(outer.from?.address||'').toLowerCase():'';
  // A valid signature must carry the current self-certified sender mailbox on
@@ -103,7 +106,8 @@ export async function readMessage(packet,material,verify){
  for(const sig of signatures){sig.trusted=!!sig.fingerprint&&material.bindings.some(b=>b.fingerprint.toUpperCase()===sig.fingerprint&&b.email.toLowerCase()===email)&&(sig.status!=='valid'||(sig.emails||[]).some(e=>e.toLowerCase()===email));if(sig.status==='valid'&&sig.certificate)result.certificateActions.push({fingerprint:sig.fingerprint,email,canTrust:(sig.emails||[]).some(e=>e.toLowerCase()===email),saved:material.saved.includes(sig.fingerprint),trusted:sig.trusted,algorithm:sig.algorithm,certificate:sig.certificate});delete sig.certificate;delete sig.emails;}
  result.signatures=signatures;result.signatureStatus=signatures.every(s=>s.status==='valid')?'valid':signatures.some(s=>s.status==='invalid')?'invalid':'unknown-key';
  result.certificateTrust=signatures.every(s=>s.trusted)?'trusted':signatures.some(s=>!s.fingerprint)?'unknown':'untrusted';result.verified=result.signatureStatus==='valid';
- result.warning=result.signatureStatus==='invalid'?'WARNING: Invalid signature. This message may have been altered or forged. Saved certificate trust does not authenticate it.':'';
+ result.warning=result.signatureStatus==='invalid'?'WARNING: Invalid signature. This message may have been altered or forged. Saved certificate trust does not authenticate it.':
+  (result.verified&&signatures.some(s=>s.pqSigning===false)?'WARNING: This valid signature uses a classical algorithm and is not post-quantum resistant.':'');
  if(packet.encrypted){
   // Encrypted messages must match the explicitly selected trusted peer and our
   // own recipient, not just an arbitrary cryptographically valid attachment.

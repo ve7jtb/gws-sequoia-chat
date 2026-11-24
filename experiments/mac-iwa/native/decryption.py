@@ -38,13 +38,19 @@ def validate_components(request):
     retained ciphertext and compares every echoed input before using secrets.
     """
     for name,pattern in [('review','[a-f0-9]{48}'),('requestId','[A-F0-9]{64}'),
-                         ('cipherHash','[a-f0-9]{64}'),('recipientKey','[A-F0-9]{64}')]:
+                         ('cipherHash','[a-f0-9]{64}'),('recipientKey','(?:[A-F0-9]{40}|[A-F0-9]{64})')]:
         if not isinstance(request.get(name),str) or not re.fullmatch(pattern,request[name]):
             raise ValueError('Invalid decryption binding')
     if request.get('service') not in SERVICES:raise ValueError('Unknown service')
-    canonical_bytes(request.get('mlkemCiphertext'),1088)
-    ephemeral=canonical_bytes(request.get('x25519Ephemeral'),32)
-    if not any(ephemeral):raise ValueError('Invalid X25519 public input')
+    # This outer gate permits only bounded supported shapes. The worker checks
+    # the exact lengths against the selected, independently verified public key.
+    for name,sizes in [('mlkemCiphertext',(0,1088,1568)),('x25519Ephemeral',(32,33,56,97,133))]:
+        value=request.get(name)
+        if not isinstance(value,str):raise ValueError('Invalid component encoding')
+        try:raw=base64.b64decode(value,validate=True)
+        except (ValueError,TypeError):raise ValueError('Invalid component encoding') from None
+        if len(raw) not in sizes or base64.b64encode(raw).decode()!=value:raise ValueError('Invalid component encoding')
+        if name=='x25519Ephemeral' and not any(raw):raise ValueError('Invalid public input')
 
 
 def prepare(bridge,service,identity=None):
@@ -61,12 +67,13 @@ def prepare(bridge,service,identity=None):
         from identities import selected
         context,public=selected(bridge,identity)
         key=public.get('recipientKey','')
-        if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid selected decryption key')
+        if not re.fullmatch('(?:[A-F0-9]{40}|[A-F0-9]{64})',key):raise ValueError('Invalid selected decryption key')
         review=secrets.token_hex(24)
         record={'created':time.time(),'backendHash':backend_hash(bridge),
                 'selectedIdentity':context,'recipientKey':key,'service':service}
         write_new(bridge.data/('decryption-'+review+'.json'),json.dumps(record).encode())
-        return {'review':review,'recipientCertificate':context['certificate'],'recipientKey':key,'identity':dict(identity)}
+        return {'review':review,'recipientCertificate':context['certificate'],'recipientKey':key,'identity':dict(identity),'hardwareProfile':{'LEVEL3_POLYFILL':'level3','LEVEL5_COMPANION':'level5'}.get(context['profile'],context['profile'])}
+    if service!='Vault':raise ValueError('Select a restored hardware identity for messages')
     from pathlib import Path
     own=Path(bridge.cfg['cert']).read_bytes()
     if not 1<=len(own)<=65536:raise ValueError('Certificate limit')
@@ -76,7 +83,7 @@ def prepare(bridge,service,identity=None):
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
     if response.returncode or len(response.stdout)>2048:raise ValueError('Invalid decryption identity')
     key=json.loads(response.stdout).get('recipientKey','')
-    if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid decryption key')
+    if not re.fullmatch('(?:[A-F0-9]{40}|[A-F0-9]{64})',key):raise ValueError('Invalid decryption key')
     review=secrets.token_hex(24)
     record={'created':time.time(),'authorityHash':authority_hash(bridge),
             'recipientKey':key,'service':service}
@@ -92,7 +99,7 @@ def components(bridge,request):
     """
     validate_components(request)
     path=bridge.data/('decryption-'+request['review']+'.json')
-    if path.is_symlink() or path.stat().st_size>100000:raise ValueError('Invalid decryption grant')
+    if path.is_symlink() or path.stat().st_size>300000:raise ValueError('Invalid decryption grant')
     record=json.loads(path.read_text())
     age=time.time()-record['created']
     if not 0<=age<=600:raise ValueError('Expired decryption grant')
@@ -102,7 +109,7 @@ def components(bridge,request):
             raise ValueError('Selected decryption backend changed')
         from identities import revalidate_context
         context=revalidate_context(bridge,context)
-    elif authority_hash(bridge)!=record['authorityHash']:raise ValueError('Decryption identity changed')
+    elif record.get('service')!='Vault' or authority_hash(bridge)!=record['authorityHash']:raise ValueError('Decryption identity changed')
     if request['recipientKey']!=record['recipientKey'] or request['service']!=record['service']:
         raise ValueError('Decryption grant mismatch')
     # ChatBridge.action holds an interprocess lock across this unlink and PIN/

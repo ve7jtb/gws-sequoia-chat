@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {validatePublicSnapshot,matchBundlePublicKeys,parseCardBundle} from '../app/identities/bundle.js';
+import {validatePublicSnapshot,matchBundlePublicKeys,parseCardBundle,parseCardCompanion} from '../app/identities/bundle.js';
 import {initializeIdentities} from '../app/identities/ui.js';
 const slots=['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))];
 const encoded=Buffer.from('PQMZIP01synthetic public compressed bytes').toString('base64');
@@ -38,7 +38,7 @@ test('malformed transport framing is rejected before invoking WASM',async()=>{
 test('public UI has no automatic native startup or legacy native bundle parser fallback',()=>{
  const source=fs.readFileSync(new URL('../app/identities/ui.js',import.meta.url),'utf8');
  assert.doesNotMatch(source,/request\('chat-identity-(?:restore|import)'/);
- assert.match(source,/parseCardBundle\(await request\('chat-identity-bundle-read'\),inspectBundle\)/);
+ assert.match(source,/parseCardBundle\(await request\('chat-identity-bundle-read',\{serial\}\),inspectBundle,\{compatibilityCertificate\}\)/);
  assert.doesNotMatch(source,/try\{await configured\(\);\}/);
 });
 test('identities initialize and list saved public data with an unavailable native helper',async()=>{
@@ -57,4 +57,36 @@ test('identities initialize and list saved public data with an unavailable nativ
   assert.match(nodes.get('identity-current').textContent,/No hardware is contacted at startup/);
   assert.equal(nodes.get('identity-list').children.length,1);
  }finally{for(const [key,value] of Object.entries(previous)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}
+});
+
+
+test('encrypted companion is independently parsed and joined to exact ciphertext and live public keys',async()=>{
+ const encoded=btoa('opaque encrypted companion'),publicKey=btoa('public SPKI'),certificate=btoa('public certificate');
+ const read={format:'sequoia-iwa-companion',version:1,serial:'123456',encoded,publicKeys:{'9c':publicKey,'82':publicKey},certificate};
+ const checked={format:'sequoia-iwa-companion',version:1,serial:'123456',companionHash:await sha(Buffer.from(encoded,'base64')),certificate,profile:'LEVEL5_COMPANION',components:[{role:'signing-pq',algorithm:'ML-DSA-87',storage:'piv',slot:'9c',publicKey},{role:'signing-classical',algorithm:'Ed448',storage:'companion',slot:'',publicKey}],wrapping:{slot:'82',publicKey}};
+ let descriptor;const preview=await parseCardCompanion(read,async input=>{descriptor=input;return structuredClone(checked);});
+ assert.deepEqual(Object.keys(descriptor).sort(),['certificate','encoded','publicKeys','serial']);assert.equal(descriptor.serial,123456);
+ assert.equal(preview.format,'sequoia-iwa-companion-preview');assert.equal(preview.bundleHash,checked.companionHash);assert.equal(preview.companion.encoded,encoded);assert.equal(preview.generation,0);assert.equal(preview.liveKeysMatched,true);
+ assert.deepEqual(preview.slots.map(s=>s.slot),['9c','82']);assert.equal(preview.certificates[0].components[1].storage,'companion');
+ for(const change of [s=>s.companionHash='f'.repeat(64),s=>s.serial='654321',s=>s.components[0].publicKey=btoa('different')]){
+  const bad=structuredClone(checked);change(bad);await assert.rejects(parseCardCompanion(read,async()=>bad),/does not match/);
+ }
+ await assert.rejects(parseCardCompanion(read,async()=>{throw Error('Bad companion signature');}),/Bad companion signature/);
+});
+
+test('multiple-device restore remains actionable while the global operation lock is held',async()=>{
+ const previous={document:globalThis.document,window:globalThis.window,BroadcastChannel:globalThis.BroadcastChannel};
+ const nodes=new Map(),calls=[],messages=[];let busy=false;
+ const make=()=>({textContent:'',children:[],value:'',files:[],disabled:false,listeners:new Map(),addEventListener(event,fn){this.listeners.set(event,fn);},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},close(){this.open=false;},showModal(){this.open=true;}});
+ const node=id=>{if(!nodes.has(id))nodes.set(id,make());return nodes.get(id);};
+ globalThis.document={getElementById:node,createElement:make};globalThis.window={addEventListener(){}};globalThis.BroadcastChannel=undefined;
+ try{
+  await initializeIdentities({request:async(op,args)=>{calls.push({op,args});if(op==='chat-identity-devices')return {devices:[{serial:'123'},{serial:'456'}]};throw Error('Read-only test boundary');},say:message=>messages.push(message),isBusy:()=>busy,setBusy:value=>{busy=value;for(const n of nodes.values())n.disabled=value;},identityStore:{list:async()=>({identities:[],revision:0})}});
+  const pending=node('identity-restore').listeners.get('click')();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(busy,true);assert.equal(node('identity-device-dialog').open,true);
+  assert.equal(node('identity-device-continue').disabled,false);assert.equal(node('identity-device-cancel').disabled,false);
+  node('identity-device').value='456';node('identity-device-continue').listeners.get('click')();await pending;
+  assert.deepEqual(calls,[{op:'chat-identity-devices',args:undefined},{op:'chat-identity-bundle-read',args:{serial:'456'}}]);
+  assert.equal(busy,false);assert.equal(node('identity-device-dialog').open,false);assert.match(messages.at(-1),/Read-only test boundary/);
+ }finally{for(const[key,value]of Object.entries(previous)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}
 });

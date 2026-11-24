@@ -72,6 +72,15 @@ test('PIN or signing failure never retries and still collects the public final a
  assert.deepEqual(r.privateAttempts,{signing:1,decryption:0});assert.equal(h.calls.at(-1),'chat-hardware-audit');
  assert.ok(!JSON.stringify(r).includes('sensitive detail'));
 });
+test('hardware report distinguishes signing boundaries using only closed phase codes',async()=>{
+ for(const phase of ['native-signature','companion-completion','signature-finalization','recipient-encryption','SECRET native error',undefined]){
+  const h=harness(),r=await h.run({sign:async()=>{throw Object.assign(Error('SECRET stack/input'),{failurePhase:phase,privateShare:'SECRET'});}});
+  assert.equal(r.status,'STOPPED');assert.equal(r.failureStage,'signing');assert.equal(r.unchanged,true);
+  assert.equal(r.failurePhase,['native-signature','companion-completion','signature-finalization','recipient-encryption'].includes(phase)?phase:'signing-unknown');
+  assert.ok(!JSON.stringify(r).includes('SECRET'));assert.ok(!Object.hasOwn(r,'privateShare'));
+  assert.equal(h.calls.at(-1),'chat-hardware-audit');assert.deepEqual(r.privateAttempts,{signing:0,decryption:0});
+ }
+});
 test('decryption failure never retries or reports plaintext/signature success',async()=>{
  const h=harness({decryptFailure:true}),r=await h.run();
  assert.equal(r.status,'STOPPED');assert.equal(r.signatureVerified,true);assert.equal(r.decryptionVerified,false);assert.equal(r.unchanged,true);

@@ -9,6 +9,278 @@ server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
 in the latest sections below. This change does not move the main loopback app's store.
 
+## Level 5 hardware validation (2026-11-24)
+
+The encrypted on-key companion restored successfully and completed the IWA's
+local synthetic signing/encryption/decryption workflow using its real WASM
+workers and native authorization boundary. The final confirmation used the
+**original installed PKCS#11 backend**, with no diagnostic wrapper or backend
+override. No email was sent.
+
+- **ML-DSA-87 + Ed448:** signature verified.
+- **ML-KEM-1024 + X448:** decryption succeeded and recovered text, HTML and
+  attachment payloads matched exactly.
+- All **24 PIV slot records**, including **nine occupied hardware keys**, their
+  public-key hashes and PIN/touch policies matched before/after and the prior
+  successful baseline. PIN retries remained **3/3**. No card writes occurred.
+- Native-worker timings were **3.789 seconds signing** and **2.894 seconds
+  decryption**, including any physical-touch wait; these are not isolated
+  cryptographic benchmarks.
+
+A preceding isolated diagnostic run also passed. Its three recorded PC/SC
+transmissions returned success and card status `9000`; the largest response was
+4,637 bytes in 2.767 seconds. Earlier attempts reached `C_Sign` and returned
+`CKR_DEVICE_ERROR`, after successful PIN authentication. The user reported a
+missed or unseen touch request. Missed user presence is consistent with those
+failures, but a USB defect or exact earlier PC/SC failure was not established.
+
+The installed native dialog now prominently identifies the **PIV PIN and key
+serial**, distinguishes it from the FIDO/passkey PIN, and explains **Continue →
+wait for flashing → touch the physical sensor**. Authentication and existing
+touch policies are unchanged. Closed diagnostic stages distinguish adapter,
+signature decoding and verification failures; bounded optional numeric PKCS#11
+and PC/SC evidence excludes PINs, APDU bodies and private material. Temporary
+tracing binaries and account-specific hardware artifacts are not shipped.
+
+Validation for the diagnostic/native changes: **26 Rust tests** and **139
+Python tests** passed (three optional skips), plus synthetic forwarding tests
+under macOS hardened-runtime signing. The installed original-backend hardware
+confirmation performed exactly one signing and one decryption operation.
+
+## Hardware profiles and encrypted on-key companions (0.19 preview)
+
+**My identities → Restore certificate bundle from inserted YubiKey** discovers
+connected devices and lets you choose their serial. It authenticates the public
+bundle in WASM and checks its mapped public keys before saving. This does not
+change the helper’s default vault identity. The selected certificate’s full
+fingerprint, exact public packet hash, bundle hash and serial bind every later
+native operation; the helper independently re-reads and authenticates the card.
+Stored display labels and slot numbers never authorize a private operation.
+
+| Restored certificate view | Signing | Encryption |
+| --- | --- | --- |
+| Level 3 v6 | ML-DSA-65 + Ed25519 | ML-KEM-768 + X25519 |
+| Level 3 v4 hybrid | Classical Ed25519 | ML-KEM-768 + X25519 |
+| Level 3 v4 classical | Classical Ed25519 | Classical X25519 |
+| Level 5 ordinary v6 P-384 view | **Classical P-384** | **Classical P-384** |
+| Level 5 v4 hybrid compatibility | Classical P-384 | ML-KEM-768 + X25519 |
+| Level 5 v4 classical | Classical P-384 | Classical P-384 |
+| Optional Level 3 GnuPG / LibrePGP v5 | Classical Ed25519 | LibrePGP ML-KEM-768 + X25519 |
+| Level 5 encrypted companion v6 | ML-DSA-87 + Ed448 | ML-KEM-1024 + X448 |
+| Level 3 polyfill companion v6 | ML-DSA-65 + Ed25519 | ML-KEM-768 + X25519 |
+
+The ordinary Level 5 P-384 v6 certificate is classical; its packet version does
+not make it post-quantum. The Level 5 companion supplies the base RFC hybrid
+Ed448/X448 profile. Hardware P-384 compatibility profiles remain distinct from
+software P-521 profiles. Compose prefers v6, and prefers hybrid signing within
+the same version, while preserving an explicit selection in the current window.
+Classical signing/encryption retains the compatibility warnings. v5 requires
+v5 certificates at both ends: its packet and combiner rules are separate from
+RFC 9580 / RFC 9980.
+
+For a local v5 certificate, select its public file in the optional v5 field
+before restoring the ordinary card bundle. WASM accepts it only after its
+self-certified email and all operation public keys match the signed Level 3
+manifest. Native authorization repeats that comparison. Restore imports an
+existing certificate; it does not issue one or write it to the card.
+
+**Restore encrypted on-key companion** is a separate read-only operation. It
+keeps the ordinary bundle and its v4 compatibility views intact. The inventory
+stores the encrypted companion and authenticated public metadata only, never a
+PIN, wrapping share, password, or plaintext `.p12`. For an ultra-compact companion,
+select its matching existing public certificate cache; the IWA does not
+regenerate missing certificate signatures. Normal compressed companions include
+their public certificate.
+
+During a companion operation, native code checks the live hardware and performs
+only the required card private operations, including the dedicated wrapping-key
+ECDH. A disposable WASM worker authenticates and decrypts the companion,
+validates its private/public key correspondence, completes the software component,
+and verifies or combines it with the card’s result. There is no saved companion
+password and no fallback from a required hardware component to a software key.
+The Level 5 companion holds Ed448/X448 software components; the Level 3 polyfill
+holds ML-DSA-65/ML-KEM-768 software components. Message algorithms and private-key
+storage protection are different properties: plaintext software components exist
+in process memory during use and do not have hardware isolation. JavaScript,
+JSON and WASM allocation cannot guarantee erasure against swap, crash capture or
+an already compromised host.
+
+The local hardware test uses the selected profile and shows its actual component
+custody and slots. It compares all PIV public-key and PIN/touch-policy records
+before and after. Restore and testing do not generate, erase or move keys, write
+card certificates or bundles, or change PIN/touch policies. No message is sent by
+the local test.
+
+PIN entry uses a separate native modal dialog. The helper records only fixed
+operation stages: dialog requested, PIN received locally, and private worker
+started. A dialog timeout or locally rejected input stops before starting the
+private worker and reports that no PIN was sent to the YubiKey. Hardware test
+reports distinguish a requested operation from a started crypto worker; they
+never log the PIN, signature input or recovered secrets. If no PIN dialog is
+visible, wait for or cancel that attempt, inspect the result and final public
+key/policy audit, then start a fresh test after fixing the presentation problem.
+There is no automatic PIN or private-operation retry. A separate display-only
+probe can check modal-window visibility with a Close button and no PIN field or
+YubiKey operation.
+
+Validation status for this increment: the JavaScript suite passed **281 tests**
+with one optional test skipped. Public inventory, revision binding, profile
+selection, device discovery, ciphertext-only persistence and transient
+wrapping-share cleanup are covered. Three additional Rust tests passed P-384
+v4 hybrid, v4 classical and v6 classical signing/encryption/decryption in both
+directions against Sequoia’s independent stream implementation, including
+wrong-width signature and altered-secret rejection. The full Rust suite passed **60 tests**. Actual browser WASM passed the four
+Level 3/Level 5 companion signing/decryption cases and 16 negative checks. A
+read-only four-profile preflight on the existing Level 3 YubiKey authenticated
+v6, v4 hybrid, v4 classical and the matching local v5 view; all public-key and
+PIN/touch-policy records, PIN retries (3/3), and installed backend hashes were
+unchanged. After correcting native PIN-window presentation, the installed
+**0.19.0 IWA passed its Level 3 v6 hardware test on 2026-11-24**: one signing and
+one decryption operation verified the hybrid signature and recovered the exact
+text, HTML and attachment. The exported before/after audits were identical for
+all 24 slots, key hashes, PIN/touch policies, PIN retries (3/3) and backend hashes.
+The test sent no email and requested no card writes. The installed IWA then
+passed **v4 hybrid, v4 classical and v5 hybrid** tests on the same Level 3 key.
+Each verified its classical Ed25519 signature and recovered the exact text,
+HTML and attachment after decryption. v4 hybrid used ML-KEM-768 + X25519; v4
+classical used X25519; v5 used the separate LibrePGP hybrid construction. Each
+profile performed one signing and one decryption operation. All 24 slot
+records, public keys, PIN/touch policies, PIN retries (3/3) and backend hashes
+were identical across all four runs. These are installed-IWA local round trips;
+they do not replace independent cross-client interoperability tests.
+
+The initial native Python suite passed **121 tests**, with three optional
+fixture-dependent skips. Subsequent Level 5 companion hardware validation and
+the expanded native regression results are recorded in the validation section
+above. Existing 0.18 software behavior remains supported.
+
+The **0.19.1** display update names both signing and encryption algorithms in
+identity selectors, so v4 views sharing a primary fingerprint are distinguishable.
+Hardware results name the actual algorithms and retain classical warnings;
+they no longer call every passing signature or decryption hybrid. Older saved
+records without per-certificate component metadata request a fresh public
+restore instead of displaying unrelated slots from the entire bundle. Seven
+controller regressions cover these cases; the JavaScript suite passed **288
+tests**, with one optional skip. This update changes no WASM cryptography,
+native backend, extension permissions or app identity. Installed verification
+confirmed that v6 remains the default after restart.
+
+## Software creation, portable backup and compatibility profiles (0.18 preview)
+
+**Identities → Software identities** can now create a new identity for the
+configured account, restore a password-encrypted identity, and export an
+individual password-encrypted backup. Level 3 v6 is the initial selection; v6
+remains preferred when choosing a sender. v4/v5 compatibility is explicit and
+warns about classical signing. Classical encryption also requires a warning;
+the classical component of a hybrid algorithm does not trigger that warning.
+The selected sender and recipient show their public version and algorithms.
+
+| Software profile | Signing | Encryption |
+| --- | --- | --- |
+| Level 3 v6 (default) | ML-DSA-65 + Ed25519 | ML-KEM-768 + X25519 |
+| Level 5 v6 | ML-DSA-87 + Ed448 | ML-KEM-1024 + X448 |
+| Level 3 v4 hybrid compatibility | Classical Ed25519 | ML-KEM-768 + X25519 |
+| Level 3 v4 classical fallback | Classical Ed25519 | Classical X25519 |
+| Level 5 v4 hybrid compatibility | Classical P-521 | ML-KEM-768 + X25519 |
+| Level 5 v4 classical fallback | Classical P-521 | Classical P-521 |
+| Optional GnuPG / LibrePGP v5 | Classical Ed25519 | LibrePGP ML-KEM-768 + X25519 |
+
+Level 5's v4 hybrid encryption is a Level 3 compatibility algorithm. It is not
+ML-KEM-1024. The v5 packet/combiner/signature rules are distinct from RFC 9580 /
+RFC 9980; v5 and v4/v6 message peers cannot be mixed in one operation. New v6
+identities have separate certification, signing and encryption keys. Creation
+of each compatibility profile generates its own software keys; it does not
+reuse a hybrid component as a standalone classical signing key.
+
+The existing passkey/PIV vault protects every persistent software identity.
+Creation chooses an independent random 256-bit storage password and retains
+that password only inside authenticated vault ciphertext. Import validates
+private/public correspondence, certificate policy and account email before
+saving. Creation, import and export stop on lock, cancellation, account change
+or a stale vault revision. All private operations run in disposable WASM
+workers; no private software key or password is sent to the extension/native
+helper. Software memory can still be exposed by a compromised browser/OS or
+swap. This is software custody, not hardware-equivalent storage.
+
+**Export encrypted identity** asks for a new backup password of at least 12
+characters (at most 1,024 UTF-8 bytes). v4/v6 export produces a standard encrypted OpenPGP secret-key file
+(`.pgp`), preserving the public packets, self-signatures and fingerprints.
+The optional v5 profile exports an authenticated encrypted **`.pqidentity`**
+backup, which this IWA can restore; that private backup is not a standard
+OpenPGP secret-key file for direct GnuPG import. Its public certificate is a
+normal LibrePGP certificate. Whole-vault export/restore remains available and
+includes these entries. Export does not grant recipient trust or change the
+source vault entry.
+
+**Import / restore software identity** also accepts PQ Mail's **Level 5 software
+OpenPGP `.p12` keyset**. The bounded PFX parser authenticates the complete file
+before decrypting its bags, validates all ten expected aliases and seed/public
+relationships, and imports its original v6 certificate plus both v4 views
+atomically. Certificates and fingerprints are preserved, including the
+classical view's already-signed subkey binding. Arbitrary or S/MIME-only `.p12`
+files, legacy bag ciphers, unexpected aliases and unauthenticated data are
+rejected; this is not a general PKCS#12 converter. See the complete
+[software custody, profile and PFX boundaries](wasm/SOFTWARE-KEYS.md).
+
+Automated baseline-worker validation on **2026-11-23** passed all **seven created
+profiles and three imported PQ Mail `.p12` certificate views**. It checked
+password-encrypted export/restore, wrong-password rejection without a write,
+vault restart, signing, decryption, signature verification, and exact text,
+HTML and binary attachment recovery. All **2,029 disposable workers** terminated;
+there were **zero native-helper calls, card writes or messages sent**. The
+`.p12` fixture was generated for the test with disposable keys. All **239
+JavaScript regression tests** also passed, including overlapping inventory
+refresh, cancellation, changed vault/account context and authenticated PFX
+parsing checks. This result
+is an automated software matrix, not a new YubiKey hardware test or live Gmail
+exchange. Independent OpenSSL-backed Sequoia also decrypted and verified every
+v4/v6 profile's outgoing message, and the IWA workers decrypted and verified its
+return message: **six profiles in both directions**. Unmodified GnuPG 2.5.24
+separately verified the v5 detached signature and decrypted/verified its outgoing
+message; the v5 implementation recovered and verified GnuPG's signed MDC and
+OCB replies with exact payloads. These v5 checks use the LibrePGP compatibility
+policy, not Sequoia's RFC-format verifier.
+
+The signed **0.18.0** update is installed on the Mac. Chrome reported a
+successful update, and the installed bundle hash matches the reviewed build.
+The installed UI shows all seven profile options, retains v6 Level 3 as the
+default, and exposes encrypted restore and PQ Mail `.p12` import. Existing
+account/public identities and vault enrollment were preserved; the vault stayed
+locked during this UI check. Private software workflows were tested with the
+actual worker matrix above, not against the user’s locked vault. All **48 WASM
+Rust tests** and **7 independent native-oracle tests** passed. The installed
+native helper, hardware authorization files, extension code and extension
+permissions are unchanged; no YubiKey operation was performed for this update.
+
+The optional v5 implementation is a bounded Rust compatibility module compiled
+into the same WASM package. It is not an embedded GnuPG executable or a separate
+LibrePGP service. Existing crypto libraries supply the primitives; the module
+implements LibrePGP packet policy and its distinct combiner. The independent
+[`v5-gnupg-interop.py`](tests/v5-gnupg-interop.py) harness uses a disposable
+software-only GnuPG keyring with smartcard access disabled. Its source documents
+how to export synthetic Rust fixtures, run stock GnuPG, and verify the replies.
+This new compatibility code remains experimental and has not received an
+independent cryptographic audit.
+
+Wide-arithmetic WASM builds, but the available Node 24 runtime rejects
+its unsupported wide-arithmetic opcode; software operations use baseline WASM.
+
+To repeat with a new private output directory and, optionally, the separate
+OpenSSL-backed Sequoia message oracle:
+
+```sh
+IWA_MESSAGE_ORACLE_BIN=/path/to/examples/message_oracle \
+  node experiments/mac-iwa/tests/software-profile-interop.mjs \
+  /path/to/new-private-results baseline
+```
+
+Set `IWA_P12_FIXTURE` to a **disposable** PQ Mail Level 5 test file with the
+synthetic password documented in the test harness to include the PFX matrix.
+Never point this synthetic-password test at a real identity. Detailed profile,
+worker, lifecycle and malformed-PFX regressions are in the adjacent tests.
+Hardware identities remain restricted to the independently authorized Level 3
+v6 path; this software expansion changes no YubiKey slots, keys or touch policies.
+
 ## Vault-protected software identities and production helper (0.17.2)
 
 **Identities → Software identities** imports a password-encrypted `.pgp`, `.asc`
@@ -443,8 +715,10 @@ published Sequoia PIV adapter reader; the native dependency is pinned to commit
 `6b99afc20984e16180e5bbfbabb51d8685d247e1`.
 
 The 0.13.0 milestone added public identity management; active selection arrived
-in 0.14.0 above. Software `.p12` signing remains unsupported. S/MIME, other
-hardware profiles and companion private keys are not imported as usable identities by this IWA preview.
+in 0.14.0. Those historical milestones did not use software `.p12` identities
+or encrypted companions. The current 0.18/0.19 sections above describe their
+subsequent software and hardware profile support. S/MIME remains outside this
+OpenPGP interface.
 
 Validation for this update: **153 JavaScript tests, 82 Python tests and 14
 native Rust tests passed**, plus actual shipped WASM integration for all three

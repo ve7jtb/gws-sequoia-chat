@@ -185,6 +185,42 @@ fn verify_public(v:&serde_json::Value)->Result<serde_json::Value> {
  Ok(serde_json::json!({"signatures":results}))
 }
 
+// The expanded software oracle deliberately does not reuse `selected`, `Open`
+// or hardware routing above: those retain their fixed Level 3 native authority.
+// This separate consumer accepts policy-validated v4/v6 software fixture keys
+// and authenticates both AEAD and legacy MDC messages through Sequoia itself.
+fn software_selected(cert:&Cert,sign:bool)->Result<PublicKey>{
+ let policy=StandardPolicy::new();
+ let keys:Vec<_>=cert.keys().with_policy(&policy,None).alive().revoked(false)
+  .filter(|key|if sign{key.for_signing()}else{key.for_transport_encryption()})
+  .map(|key|key.key().clone().role_into_unspecified()).collect();
+ ensure!(keys.len()==1,"One software oracle key required");Ok(keys[0].clone())
+}
+struct SoftwareOpen {cert:Cert,own:Cert,key:pgp::crypto::KeyPair,expected:pgp::Fingerprint}
+impl VerificationHelper for SoftwareOpen {
+ fn get_certs(&mut self,_:&[KeyHandle])->Result<Vec<Cert>>{Ok(vec![self.cert.clone()])}
+ fn check(&mut self,structure:MessageStructure)->Result<()>{
+  let(mut signatures,mut encrypted)=(0,false);
+  for layer in structure.iter(){match layer{
+   MessageLayer::SignatureGroup{results}=>for result in results{
+    let valid=result.as_ref().map_err(|_|anyhow::anyhow!("Independent signature invalid"))?;
+    ensure!(valid.ka.key().fingerprint()==self.expected,"Independent signer mismatch");signatures+=1;
+   },
+   MessageLayer::Encryption{..}=>encrypted=true,
+   MessageLayer::Compression{..}=>{},
+  }}
+  ensure!(signatures==1&&encrypted,"Independent signed encryption required");Ok(())
+ }
+}
+impl DecryptionHelper for SoftwareOpen {
+ fn decrypt(&mut self,pk:&[PKESK],sk:&[SKESK],hint:Option<SymmetricAlgorithm>,decrypt:&mut dyn FnMut(Option<SymmetricAlgorithm>,&SessionKey)->bool)->Result<Option<Cert>>{
+  ensure!(pk.len()==1&&sk.is_empty(),"One independent recipient required");
+  ensure!(pk[0].recipient().map(|id|id.aliases(KeyHandle::from(self.key.public().fingerprint()))).unwrap_or(false),"Independent recipient mismatch");
+  let(algorithm,key)=pk[0].decrypt(&mut self.key,hint).context("Independent decapsulation failed")?;
+  ensure!(decrypt(algorithm.or(hint),&key),"Independent authentication failed");Ok(Some(self.own.clone()))
+ }
+}
+
 // Explicitly test-only software message operations provide an independent
 // native Sequoia consumer/producer for the IWA software-provider tests. The
 // installed production executable has no such routes. Inputs are disposable
@@ -205,14 +241,22 @@ fn software_message(v:&mut serde_json::Value)->Result<serde_json::Value> {
  let protected=pgp::crypto::Password::from(text.as_bytes());
  if let serde_json::Value::String(value)=&mut password{value.zeroize();}
  let signing=field(v,"op")?=="software-seal";
- let wanted=selected(&own,signing)?.fingerprint();
+ let wanted=software_selected(&own,signing)?.fingerprint();
  let candidate=secret.keys().secret().find(|key|key.key().fingerprint()==wanted).context("Selected secret fixture key missing")?.key().clone();
  // The AEAD secret packet includes its primary/subkey tag in associated data;
  // restore the exact role before decrypting the encrypted fixture packet.
  let pair=if wanted==secret.fingerprint(){candidate.role_into_primary().decrypt_secret(&protected)?.into_keypair()?}
   else{candidate.role_into_subordinate().decrypt_secret(&protected)?.into_keypair()?};
- let output=if signing {sealed_payload(pair,own,peer,&payload)?}else{
-  let helper=Open{verify:Verify{expected:selected(&peer,true)?.fingerprint(),cert:peer,encryption_required:true},own,key:pair};
+ let output=if signing {
+  let policy=StandardPolicy::new();let selected=software_selected(&peer,false)?.fingerprint();
+  let recipients=peer.keys().with_policy(&policy,None).alive().revoked(false).for_transport_encryption().filter(|key|key.key().fingerprint()==selected);
+  let mut out=Vec::new();{
+   let encryptor=Encryptor::for_recipients(Message::new(&mut out),recipients).build()?;
+   let signer=Signer::new(encryptor,pair)?.build()?;
+   let mut literal=LiteralWriter::new(signer).build()?;literal.write_all(&payload)?;literal.finalize()?;
+  }out
+ }else{
+  let helper=SoftwareOpen{expected:software_selected(&peer,true)?.fingerprint(),cert:peer,own,key:pair};
   let p=StandardPolicy::new();let mut reader=DecryptorBuilder::from_bytes(&payload)?.with_policy(&p,None,helper)?;
   let mut clear=Zeroizing::new(Vec::new());reader.by_ref().take((LIMIT+1)as u64).read_to_end(&mut clear)?;
   ensure!(clear.len()<=LIMIT,"Plaintext limit");clear.to_vec()

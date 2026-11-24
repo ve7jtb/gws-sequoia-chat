@@ -4,6 +4,36 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.19 adds manifest-bound hardware Level 5 and v4/v5 compatibility
+selection, and encrypted on-key companion restore.** Read-only discovery chooses
+an inserted YubiKey by serial without changing the vault’s default hardware
+identity. Companion ciphertext and public metadata are stored separately from
+the ordinary certificate bundle; private software components are unwrapped only
+inside a disposable WASM worker. The native helper continues independently
+checking the live card and performing required hardware operations. v6 remains
+preferred, and classical compatibility is clearly labeled and warned. This
+increment changes no YubiKey keys or touch policies. See [hardware profiles,
+custody and validation status](experiments/mac-iwa/README.md#hardware-profiles-and-encrypted-on-key-companions-019-preview).
+
+**Level 5 hardware validation passed on 2026-11-24:** ML-DSA-87 + Ed448
+signing and ML-KEM-1024 + X448 decryption, including exact recovered content,
+passed with the original installed PKCS#11 backend. All 24 PIV slot records,
+nine hardware public keys and PIN/touch policies were unchanged; PIN retries
+remained 3/3. The native dialog now explicitly separates PIV PIN entry from
+waiting for the key to flash and touching its sensor. See the
+[validation details](experiments/mac-iwa/README.md#level-5-hardware-validation-2026-11-24).
+
+**The IWA 0.18 preview adds software identity creation and portable encrypted
+backup/restore, Level 5 v6, explicit v4/v5 compatibility, and operational PQ Mail
+Level 5 OpenPGP `.p12` import.** Software keys and independent random storage
+passwords stay in the encrypted PRF/PIV vault; private operations use disposable
+WASM workers. v6 remains the default, and classical signing/encryption requires
+explicit compatibility warnings. The automated baseline-worker matrix passed all
+seven created profiles and three imported `.p12` views, including restart and
+exact signed/encrypted message recovery, with zero native/card calls. The v5
+private backup is IWA-specific `.pqidentity`; arbitrary PKCS#12 files are not
+supported. See [current profiles, custody limits and validation](experiments/mac-iwa/README.md#software-creation-portable-backup-and-compatibility-profiles-018-preview).
+
 **IWA 0.17.2 adds experimental vault-protected software OpenPGP identities and
 separates the production helper from test-only message code.** Import an encrypted
 Level 3 v6 OpenPGP secret-key file into the existing PRF/PIV vault, then select it

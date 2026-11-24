@@ -12,7 +12,12 @@ globalThis.fetch=async input=>{
  if(String(input)!==wasm.href)throw Error('Unexpected test fetch');
  return new Response(fs.readFileSync(wasm),{headers:{'Content-Type':'application/wasm'}});
 };
-globalThis.self={postMessage:value=>parentPort.postMessage(value),close:()=>parentPort.close()};
+// A real DedicatedWorkerGlobalScope is its own `self`. Rust's browser RNG
+// resolves self.crypto, so a small fake self object would make new-key
+// generation panic even though the real browser provides secure randomness.
+globalThis.self=globalThis;
+globalThis.postMessage=value=>parentPort.postMessage(value);
+globalThis.close=()=>parentPort.close();
 // Resolve relative static imports exactly as the browser would, replacing only
 // the known baseline WASM directory for the separately shipped wide build.
 const source=fs.readFileSync(entry,'utf8').replace(/from\s+(['"])(\.{1,2}\/[^'"]+)\1/g,(all,quote,relative)=>{

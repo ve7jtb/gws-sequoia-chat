@@ -56,7 +56,7 @@ export function createTransport(session){
    const own=await request('chat-selected-signing-material',{identity:context.identitySelection.nativeBinding(identity)});
    await context.identitySelection.validateMaterial(own,identity,'signing');
    assertAccount();
-   return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space,identity});
+   return context.composeReviews.prepare(own,contact,{account:context.account,subject:d.subject,service,space,identity,compatibilityConfirmed:d.compatibilityConfirmed===true});
   }
   // Every network operation still checks the authenticated Google account
   // before reading data or consuming a send review. Offline preparation does

@@ -1,5 +1,6 @@
 """PIN presentation failures must stop before any private-key subprocess runs."""
 import subprocess
+import re
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,18 @@ import host
 
 
 class PinPromptBoundary(unittest.TestCase):
+    def test_modal_presentation_keeps_dispatch_queue_available(self):
+        # A modal loop entered from a main-dispatch block stranded the visible
+        # probe: accessibility existed, but rendering and Close did not work.
+        # Keep this small source guard alongside real display-only manual QA;
+        # ordinary Python tests cannot exercise AppKit's WindowServer session.
+        source = (Path(__file__).resolve().parents[1] / 'native' / 'PinPrompt.swift').read_text()
+        self.assertIsNone(re.search(r'^\s*DispatchQueue\.main\.', source, re.MULTILINE))
+        self.assertIn('perform(#selector(presentPrompt)', source)
+        self.assertIn('RunLoop.main.add(activation, forMode: .modalPanel)', source)
+        self.assertIn('window.sharingType = visibilityCheck ? .readOnly : .none', source)
+        self.assertIn('if visibilityCheck { exit(0) }', source)
+
     def bridge(self, root):
         # Bypass native state-directory creation; this boundary needs only
         # the fixed device identity and the prompt subprocess. No token exists.
@@ -38,6 +51,12 @@ class PinPromptBoundary(unittest.TestCase):
                 self.assertEqual(Path(run.call_args.args[0][0]).name, 'pin-prompt')
                 self.assertEqual(run.call_args.kwargs['stdout'], subprocess.PIPE)
                 self.assertEqual(run.call_args.kwargs['stderr'], subprocess.DEVNULL)
+                stages=[call.args[0].get('stage') for call in bridge.emit.call_args_list if 'stage' in call.args[0] and call.args[0]['stage']!='PRIVATE_OPERATION_DIAGNOSTIC']
+                self.assertEqual(stages[0],'PIN_DIALOG_STARTED')
+                self.assertNotIn('PRIVATE_WORKER_STARTED',stages)
+                self.assertNotIn('PIN_RECEIVED_LOCALLY',stages)
+                self.assertIn(stages[-1],('PIN_DIALOG_TIMEOUT','PIN_REJECTED_LOCALLY'))
+                self.assertNotIn('sensitive-example',repr(bridge.emit.call_args_list))
 
     def test_timeout_is_fixed_label_and_never_submits_pin(self):
         error = subprocess.TimeoutExpired(['pin-prompt'], 180, output=b'sensitive-example')

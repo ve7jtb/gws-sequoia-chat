@@ -4,7 +4,7 @@
 import {b64,bytes64,LIMIT} from './message-mime.js';
 
 const TTL=10*60*1000;
-const fingerprint=value=>typeof value==='string'&&/^[A-F0-9]{64}$/.test(value);
+const fingerprint=value=>typeof value==='string'&&/^(?:[A-F0-9]{40}|[A-F0-9]{64})$/.test(value);
 function mailbox(value){
  // Outer transport headers contain one bare mailbox, never a display name or
  // caller-provided header syntax. The signed inner MIME remains unchanged.
@@ -59,7 +59,7 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
   return structuredClone(item.outgoing);
  }
  return {
-  async prepare(nativeMaterial,contact,{account,subject,service,space,identity}){
+  async prepare(nativeMaterial,contact,{account,subject,service,space,identity,compatibilityConfirmed=false}){
    const generation=current();mailbox(account);mailbox(contact?.email);destination(service,space);
    if(typeof subject!=='string'||!subject||subject.length>500||/[\x00-\x1f\x7f]/.test(subject))throw Error('Invalid subject');
    if(!nativeMaterial||! /^[a-f0-9]{48}$/.test(nativeMaterial.review)||!fingerprint(nativeMaterial.signingFingerprint)||nativeMaterial.senderEmail!==account)throw Error('Configured signing identity mismatch');
@@ -67,6 +67,13 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
    if(!fingerprint(contact.fingerprint))throw Error('Invalid recipient fingerprint');
    // Re-read the local trust binding after native public-key discovery. A
    // concurrent removal or certificate update must stop before PIN submission.
+   // Classical fallback is explicit for either wire signature or encryption;
+   // a hybrid profile is never warned merely for containing a classical part.
+   if((identity?.version===5)!==(contact?.version===5))throw Error('LibrePGP v5 compatibility currently requires v5 certificates for both sender and recipient. Use v6 for the default message profile.');
+   const compatibilityWarnings=[];
+   if(identity?.pqSigning===false)compatibilityWarnings.push('This compatibility certificate uses a classical signature; it is not post-quantum resistant.');
+   if(contact?.pqEncryption===false)compatibilityWarnings.push('The recipient has only classical encryption in this certificate; confidentiality is not post-quantum resistant.');
+   if(compatibilityWarnings.length&&compatibilityConfirmed!==true)throw Error('Confirm the classical compatibility warning before signing.');
    const snapshot=structuredClone(contact);
    await certificateStore.assertContact(snapshot);unchanged(generation);
    // An identity review binds the full certificate and inventory revision,
@@ -76,7 +83,7 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
    if(pending.has(nativeMaterial.review)||pending.size>=4)throw Error('Compose review already exists or limit reached');
    const material={review:nativeMaterial.review,senderCertificate:nativeMaterial.senderCertificate,senderEmail:account,
     signingFingerprint:nativeMaterial.signingFingerprint,recipientCertificate:snapshot.certificate,
-    recipientEmail:snapshot.email,recipientFingerprint:snapshot.fingerprint,subject,service};
+    recipientEmail:snapshot.email,recipientFingerprint:snapshot.fingerprint,subject,service,...(identity?.provider==='software'?{softwareProfile:identity.profile}:identity?{hardwareProfile:identity.profile}:{}),...(compatibilityWarnings.length?{compatibilityWarnings}:{})};
    pending.set(material.review,{created:now(),stage:'prepared',material:structuredClone(material),contact:snapshot,space,account,identity:identity?structuredClone(identity):null});
    return material;
   },
@@ -92,7 +99,7 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
     const outgoing=item.material.service==='Gmail'?{raw:gmailEnvelope(item.account,item.contact.email,cipher)}:
      {space:item.space,cipher,certificate:item.material.senderCertificate};
     unchanged(generation);item.outgoing=outgoing;item.stage='ready';
-    return {review:id,subject:item.material.subject,recipient:item.contact.email,fingerprint:item.contact.fingerprint,space:item.space,service:item.material.service,
+    return {review:id,subject:item.material.subject,recipient:item.contact.email,fingerprint:item.contact.fingerprint,space:item.space,service:item.material.service,...(item.material.compatibilityWarnings?{compatibilityWarnings:item.material.compatibilityWarnings}:{}),
      ...(item.identity?{sender:item.identity.email,serial:item.identity.serial,senderFingerprint:item.identity.fingerprint}:{})};
    }catch(error){pending.delete(id);throw error;}
   },

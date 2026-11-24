@@ -43,7 +43,7 @@ function setup() {
 
 test('late prepare-port cleanup cannot unlock a newer digest-signing connection', () => {
   const s = setup(), prepare = s.client();
-  prepare.onMessage.emit({op: 'chat-signing-material'});
+  prepare.onMessage.emit({op: 'chat-selected-signing-material',identity:{serial:'123'}});
   const first = s.connections[0];
   first.onMessage.emit({type: 'result', data: {review: 'public ticket'}});
   const signing = s.client();
@@ -131,7 +131,7 @@ test('origin boundary and existing PRF/OAuth delegation are preserved', () => {
 // bridge to mutate legacy trust or stage/export a native send ticket.
 test('certificate mutation and draft routes never reach Native Messaging', () => {
   const s = setup();
-  for (const op of ['chat-preview','chat-trust','chat-cert-list','chat-cert-untrust',
+  for (const op of ['chat-signing-material','chat-preview','chat-trust','chat-cert-list','chat-cert-untrust',
     'chat-cert-delete','chat-verification-material','chat-decrypt',
     // A stale IWA cannot fall back to full native OpenPGP parsing or request an
     // exported session key after the component-only boundary is installed.
@@ -184,7 +184,9 @@ test('only exact IWA top-level ports can delegate Chat attachments, never to nat
 // caller-selected paths/slots, and bundle tests authenticate public contents.
 test('own identity metadata and bundle reads use the scoped native relay', () => {
   for (const request of [{op:'chat-identity-current'}, {op:'chat-identity-bundle-read'},
-    {op:'chat-identity-key-snapshot'}]) {
+    {op:'chat-identity-key-snapshot',serial:'123'}, {op:'chat-identity-devices'},
+    {op:'chat-identity-companion-read',serial:'123'},
+    {op:'chat-identity-companion-read',serial:'123',certificate:'public-cache'}]) {
     const s=setup(),client=s.client();client.onMessage.emit(request);
     assert.equal(s.connections.length,1);
     assert.deepEqual(s.connections[0].messages,[request]);
@@ -213,4 +215,16 @@ test('hardware audit is scoped but the native test runner is retired', () => {
   assert.deepEqual(s.connections[0].messages,[request]);
   const competing=s.client();competing.onMessage.emit({op:'chat-sign-digest'});
   assert.equal(s.connections.length,1);assert.equal(competing.messages.at(-1).type,'error');
+});
+
+
+test('companion read cannot expose a new write route or evade an active private operation',()=>{
+ const s=setup(),busy=s.client();busy.onMessage.emit({op:'chat-sign-digest'});
+ const read=s.client();read.onMessage.emit({op:'chat-identity-companion-read',serial:'123'});
+ assert.equal(s.connections.length,1);assert.equal(read.messages.at(-1).type,'error');
+ s.connections[0].onMessage.emit({type:'result',data:{public:true}});
+ for(const op of ['chat-identity-companion-write','chat-identity-generate','chat-identity-reset','chat-identity-provision']){
+  const client=s.client();client.onMessage.emit({op,serial:'123'});assert.equal(client.messages.at(-1).type,'error');
+ }
+ assert.equal(s.connections.length,1);
 });

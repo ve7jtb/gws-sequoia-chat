@@ -30,15 +30,15 @@ class DecryptionBoundary(unittest.TestCase):
   self.b.cfg={'cert':str(self.own),'chat_email':'owner@example.invalid','serial':'123','app':'fixed-app','ykman':'fixed-ykman'}
   self.b.chat=Mock();self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
   self.b.crypto=Mock(return_value={'components':'synthetic complete response'})
- def prepare(self,service='Gmail'):
+ def prepare(self,service='Vault'):
   with patch('decryption.check_certificate'),patch('decryption.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'recipientKey':'C'*64}).encode())):
    return decryption.prepare(self.b,service)
- def request(self,p,service='Gmail'):
+ def request(self,p,service='Vault'):
   return {'op':'chat-decapsulate-components','review':p['review'],'service':service,
     'requestId':'A'*64,'cipherHash':'b'*64,'recipientKey':'C'*64,
     'mlkemCiphertext':encoded(3,1088),'x25519Ephemeral':encoded(9,32)}
  def test_schema_exposes_only_fixed_component_inputs(self):
-  self.assertEqual(validate({'op':'chat-decryption-material','service':'Gmail'}),'chat-decryption-material')
+  self.assertEqual(validate({'op':'chat-decryption-material','service':'Vault'}),'chat-decryption-material')
   for op in ('chat-decap','chat-vault-decapsulate'):
    with self.assertRaises(ValueError):validate({'op':op,'payload':'YQ==','service':'Gmail'})
   p=self.prepare();r=self.request(p)
@@ -64,13 +64,13 @@ class DecryptionBoundary(unittest.TestCase):
    if failure:
     with self.assertRaises(ValueError):self.b.action(r)
    else:self.assertEqual(self.b.action(r),{'components':'synthetic complete response'})
-   self.b.crypto.assert_called_once_with('decapsulate-components',self.own,b'',service='Gmail',components=r)
+   self.b.crypto.assert_called_once_with('decapsulate-components',self.own,b'',service='Vault',components=r)
    with self.assertRaises(FileNotFoundError):self.b.action(r)
    self.assertEqual(self.b.crypto.call_count,1)
  def test_invalid_binding_or_component_is_rejected_before_pin(self):
   p=self.prepare();r=self.request(p)
   for name,value in [('review','../bad'),('requestId','a'*64),('cipherHash','A'*64),
-      ('recipientKey','D'*64),('service','Vault'),('mlkemCiphertext',encoded(3,1087)),
+      ('recipientKey','D'*64),('service','Gmail'),('mlkemCiphertext',encoded(3,1087)),
       ('x25519Ephemeral',encoded(0,32)),('x25519Ephemeral',encoded(9,31))]:
    with self.subTest(field=name),self.assertRaises(ValueError):self.b.action({**r,name:value})
   self.b.crypto.assert_not_called()
@@ -113,7 +113,7 @@ class DecryptionBoundary(unittest.TestCase):
   self.b.emit=Mock()
   with patch('chat_bridge.subprocess.check_output',return_value=b'123\n'),patch('chat_bridge.subprocess.run',side_effect=[
       subprocess.CompletedProcess([],0,b'123456'),subprocess.CompletedProcess([],0,json.dumps(result).encode(),b'')]) as run:
-   value=ChatBridge.crypto(self.b,'decapsulate-components',self.own,b'',service='Gmail',components=r)
+   value=ChatBridge.crypto(self.b,'decapsulate-components',self.own,b'',service='Vault',components=r)
    wire=json.loads(run.call_args_list[1].kwargs['input'])
    self.assertEqual(set(wire),set(decryption.BINDINGS)|{'op','pin','own','config'})
    self.assertEqual(wire['op'],'decapsulate-components')

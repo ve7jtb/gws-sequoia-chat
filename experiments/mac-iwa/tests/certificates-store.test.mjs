@@ -122,3 +122,22 @@ test('migration merges only matching certificates; conflicts leave preexisting s
  const before=await store.list();infos.set(encoded(3),{...infos.get(encoded(1)),certificate:encoded(3)});
  const changed=await legacy([infos.get(encoded(3))],[]);await assert.rejects(store.importLegacy(changed,true),/Certificate changed/);assert.deepEqual(await store.list(),before);
 });
+
+test('explicit v4/v5 encryption capability is distinct from PQ signature and v6 is preferred',async()=>{
+ const {store,info}=setup();
+ const modern=info(5,{encryptionSupported:true,pqEncryption:true,pqSigning:true});
+ const libre=info(6,{version:5,encryptionSupported:true,pqEncryption:true,pqSigning:false});
+ const legacy=info(7,{version:4,fingerprint:'7'.repeat(40),hybridContact:false,encryptionSupported:true,pqEncryption:false,pqSigning:false,algorithms:['ECDSA','ECDH']});
+ for(const c of [legacy,libre,modern])await store.trust(c.certificate,'alice@example.invalid',c.fingerprint,true);
+ const contacts=(await store.list()).contacts;
+ assert.deepEqual(contacts.map(c=>c.version),[6,5,4]);
+ assert.equal(contacts[1].pqEncryption,true);assert.equal(contacts[1].pqSigning,false);
+ assert.equal(contacts[2].pqEncryption,false);await store.assertContact(contacts[2]);
+ await assert.rejects(store.assertContact({...contacts[2],pqEncryption:true}),/changed/);
+});
+test('invalid capability metadata never creates a sending contact',async()=>{
+ const {store,info}=setup();info(8,{encryptionSupported:'yes',pqEncryption:false,pqSigning:false});
+ await assert.rejects(store.save(encoded(8)),/capability/);
+ info(8,{encryptionSupported:true,pqEncryption:false,pqSigning:false});
+ await assert.rejects(store.save(encoded(8)),/hybrid contact/);
+});

@@ -17,7 +17,9 @@ const MAX: usize = 65_536;
 /// is not authentication; `verify` below validates the signed public contents.
 /// File bytes are used only by the internal regression facility, never a
 /// browser-selected private-operation request or recovery-bank fallback.
-fn authorize(card: &mut impl Card, serial: u32, file: Option<&[u8]>) -> Result<Value> {
+#[cfg(test)]
+fn authorize(card: &mut impl Card, serial: u32, file: Option<&[u8]>) -> Result<Value> {authorize_with_compatibility(card,serial,file,None)}
+fn authorize_with_compatibility(card: &mut impl Card, serial: u32, file: Option<&[u8]>,compatibility:Option<&[u8]>) -> Result<Value> {
     ensure!(serial > 0 && serial <= i32::MAX as u32 && card.serial()? == serial,
         "Wrong YubiKey serial");
     let mut observed = BTreeMap::new();
@@ -50,6 +52,11 @@ fn authorize(card: &mut impl Card, serial: u32, file: Option<&[u8]>) -> Result<V
     ensure!(card.serial()? == serial, "Device changed during public restore");
 
     let mut result = verified.preview()?;
+    if let Some(bytes)=compatibility {
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs().try_into()?;
+        let view=verified.v5_view(bytes,now)?;
+        result["certificates"].as_array_mut().context("Certificate rows")?.push(view);
+    }
     result["source"] = if file.is_some() { "file" } else { "yubikey" }.into();
     result["generation"] = generation.into();
     result["liveKeysMatched"] = true.into();
@@ -69,7 +76,8 @@ fn authorize(card: &mut impl Card, serial: u32, file: Option<&[u8]>) -> Result<V
 pub fn preview(request: &Value) -> Result<Value> {
     let fields = request.as_object().context("Public restore request required")?;
     let has_file = fields.contains_key("bundle");
-    ensure!(fields.len() == if has_file { 4 } else { 3 } &&
+    let has_compatibility=fields.contains_key("compatibilityCertificate");
+    ensure!(fields.len() == 3+usize::from(has_file)+usize::from(has_compatibility) &&
         ["op", "serial", "objectHelper"].iter().all(|field| fields.contains_key(*field)) &&
         request["op"] == "identity-restore", "Invalid native restore fields");
     let text = request["serial"].as_str().context("Serial required")?;
@@ -88,7 +96,8 @@ pub fn preview(request: &Value) -> Result<Value> {
         Ok(bytes)
     }).transpose()?;
     let mut card = ObjectReader::connect(helper, serial)?;
-    authorize(&mut card, serial, file.as_deref())
+    let compatibility=request.get("compatibilityCertificate").map(|v|->Result<Vec<u8>> {let text=v.as_str().context("Compatibility certificate")?;ensure!(text.len()<=87384,"Compatibility certificate limit");Ok(B64.decode(text)?)}).transpose()?;
+    authorize_with_compatibility(&mut card, serial, file.as_deref(),compatibility.as_deref())
 }
 
 #[cfg(test)]
