@@ -1666,12 +1666,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
- "flate2",
  "getrandom 0.4.3",
- "ml-dsa",
  "ml-kem",
- "p384",
  "sequoia-openpgp",
+ "sequoia-public-bundle",
  "serde_json",
  "sha2",
  "wasm-bindgen",
@@ -1739,6 +1737,21 @@ dependencies = [
  "typenum",
  "x25519-dalek",
  "xxhash-rust",
+]
+
+[[package]]
+name = "sequoia-public-bundle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "flate2",
+ "getrandom 0.4.3",
+ "ml-dsa",
+ "p384",
+ "sequoia-openpgp",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

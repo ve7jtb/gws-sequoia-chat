@@ -36,11 +36,10 @@ class GmailTests(unittest.TestCase):
     else:self.assertEqual(gmail_bridge.upload_encrypted_mail(b,api,source),{'id':'test'})
     self.assertEqual(len(paths),1);self.assertFalse(paths[0].exists());self.assertTrue(source.exists())
 
- def test_service_pin_labels(self):
+ def test_retired_native_message_pin_labels_are_rejected(self):
   for service in ('Chat','Gmail'):
-   for op,verb in (('seal','Sign and encrypt'),('sign-browser','Sign'),('decapsulate-browser','Unlock decryption key for'),('open','Decrypt and verify')):
-    self.assertEqual(chat_bridge.crypto_prompt(op,service),verb+' '+service+(' email' if service=='Gmail' else ' bundle'))
-  with self.assertRaises(ValueError):chat_bridge.crypto_prompt('open','untrusted prompt')
+   for op in ('seal','sign-browser','decapsulate-browser','open'):
+    with self.assertRaises(ValueError):chat_bridge.crypto_prompt(op,service)
 
  def test_ordinary_multipart_is_unverified_and_exact_attachment(self):
   from email.message import EmailMessage

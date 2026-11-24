@@ -14,6 +14,8 @@ import secrets
 import subprocess
 import time
 
+from native_state import write_new,check_certificate
+
 
 def certificate_hash(path):
     """Bind the complete configured public certificate, including subkeys."""
@@ -64,14 +66,14 @@ def prepare(bridge,identity=None):
         if not re.fullmatch('[A-F0-9]{64}',key):raise ValueError('Invalid selected signing key')
         metadata={'created':time.time(),'backendHash':backend_hash(bridge),
                   'selectedIdentity':context,'signingFingerprint':key}
-        bridge.chat.write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
+        write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
         return {'review':rid,'senderCertificate':context['certificate'],
                 'senderEmail':context['email'],'signingFingerprint':key,'identity':dict(identity)}
     own=Path(bridge.cfg['cert']).read_bytes()
     if not 1<=len(own)<=65536:raise ValueError('Certificate limit')
     # Validate the installed sender's current mailbox and select exactly one
     # permitted hybrid subkey. No browser-supplied public key can select a slot.
-    bridge.chat.check_cert(bridge.cfg['cert'],bridge.cfg['chat_email'])
+    check_certificate(bridge,bridge.cfg['cert'],bridge.cfg['chat_email'])
     check={'op':'signing-material','own':base64.b64encode(own).decode()}
     result=subprocess.run([str(bridge.root/'runtime/sequoia-iwa-crypto')],
         input=json.dumps(check).encode(),stdout=subprocess.PIPE,
@@ -82,7 +84,7 @@ def prepare(bridge,identity=None):
     rid=secrets.token_hex(24)
     metadata={'created':time.time(),'authorityHash':authority_hash(bridge),
               'signingFingerprint':key}
-    bridge.chat.write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
+    write_new(bridge.data/('signing-'+rid+'.json'),json.dumps(metadata).encode())
     return {'review':rid,'senderCertificate':base64.b64encode(own).decode(),
             'senderEmail':bridge.cfg['chat_email'],'signingFingerprint':key}
 

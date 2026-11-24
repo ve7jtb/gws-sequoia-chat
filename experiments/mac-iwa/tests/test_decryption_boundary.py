@@ -31,7 +31,7 @@ class DecryptionBoundary(unittest.TestCase):
   self.b.chat=Mock();self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
   self.b.crypto=Mock(return_value={'components':'synthetic complete response'})
  def prepare(self,service='Gmail'):
-  with patch('decryption.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'recipientKey':'C'*64}).encode())):
+  with patch('decryption.check_certificate'),patch('decryption.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'recipientKey':'C'*64}).encode())):
    return decryption.prepare(self.b,service)
  def request(self,p,service='Gmail'):
   return {'op':'chat-decapsulate-components','review':p['review'],'service':service,

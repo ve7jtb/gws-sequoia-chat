@@ -14,7 +14,9 @@ import time
 from signing import authority_hash,backend_hash
 
 BINDINGS=('requestId','cipherHash','recipientKey','mlkemCiphertext','x25519Ephemeral')
-SERVICES=('Chat','Gmail','Vault')
+SERVICES=('Chat','Gmail','Vault','Hardware test')
+
+from native_state import write_new,check_certificate
 
 
 def canonical_bytes(value,size):
@@ -63,12 +65,12 @@ def prepare(bridge,service,identity=None):
         review=secrets.token_hex(24)
         record={'created':time.time(),'backendHash':backend_hash(bridge),
                 'selectedIdentity':context,'recipientKey':key,'service':service}
-        bridge.chat.write_new(bridge.data/('decryption-'+review+'.json'),json.dumps(record).encode())
+        write_new(bridge.data/('decryption-'+review+'.json'),json.dumps(record).encode())
         return {'review':review,'recipientCertificate':context['certificate'],'recipientKey':key,'identity':dict(identity)}
     from pathlib import Path
     own=Path(bridge.cfg['cert']).read_bytes()
     if not 1<=len(own)<=65536:raise ValueError('Certificate limit')
-    bridge.chat.check_cert(bridge.cfg['cert'],bridge.cfg['chat_email'])
+    check_certificate(bridge,bridge.cfg['cert'],bridge.cfg['chat_email'])
     response=subprocess.run([str(bridge.root/'runtime/sequoia-iwa-crypto')],
         input=json.dumps({'op':'decryption-material','own':base64.b64encode(own).decode()}).encode(),
         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30)
@@ -78,7 +80,7 @@ def prepare(bridge,service,identity=None):
     review=secrets.token_hex(24)
     record={'created':time.time(),'authorityHash':authority_hash(bridge),
             'recipientKey':key,'service':service}
-    bridge.chat.write_new(bridge.data/('decryption-'+review+'.json'),json.dumps(record).encode())
+    write_new(bridge.data/('decryption-'+review+'.json'),json.dumps(record).encode())
     return {'review':review,'recipientCertificate':base64.b64encode(own).decode(),'recipientKey':key}
 
 

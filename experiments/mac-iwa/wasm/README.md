@@ -18,6 +18,20 @@ not approval to add software signing secrets to that backend. Saved certificate
 trust remains a separate decision. Earlier preview sections below describe the
 successive verification/encryption/decryption milestones.
 
+## Shared public bundle parser (0.16.0)
+
+`inspect_bundle` now delegates to the target-independent
+[`sequoia-public-bundle`](../bundle-parser/README.md) crate. Native authorization
+links the same crate and independently verifies freshly read on-key bytes. The
+shared result contains authenticated public certificates and expected component
+SPKIs, never hardware authorization. Native still compares the live serial and
+all mapped keys and re-reads object frames before issuing a private grant.
+
+The IWA's hardware-test controller uses the existing signing and decryption
+workers for fresh synthetic MIME, while a bounded native audit supplies public
+key/policy snapshots. It does not use the retired native PTY/Java test command.
+The external Sequoia harness remains an independent interoperability check.
+
 ## Compressed public bundle inspection (0.15.1)
 
 The `inspect_bundle` export parses and authenticates supported compressed
@@ -51,15 +65,14 @@ current signed on-key bundle and live keys, validates the selected certificate
 and mailbox, and issues a bound one-use grant. Existing fixed vault enrollment
 and the signing/decryption component boundaries remain unchanged.
 
-The reader in [`src/bundle.rs`](src/bundle.rs) and its bounded DER helper mirror
+At this milestone the reader in [`src/bundle.rs`](src/bundle.rs) and its bounded DER helper mirrored
 only the supported public format/profile rules of the pinned
 `sequoia-pqmail-piv` adapter at
 `6b99afc20984e16180e5bbfbabb51d8685d247e1`. The adapter currently combines its
 decoder with OpenSSL, process and filesystem dependencies, so it cannot link
-directly into `wasm32`; this module uses RustCrypto instead. **The proposed shared,
-target-independent public parser crate is not implemented.** Cross-implementation
-fixtures cover the current mirror, and future format/profile changes require
-reviewing both implementations rather than assuming automatic shared behavior.
+directly into `wasm32`; this module uses RustCrypto instead. Version 0.16.0 replaces that mirror with the shared public parser described
+above. Both targets now run the same code, with cross-implementation fixtures
+retained as regression coverage.
 
 After building the baseline module, run its actual browser-target parser against
 the committed public-only vectors from the repository root:

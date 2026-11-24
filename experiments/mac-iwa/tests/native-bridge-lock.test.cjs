@@ -202,3 +202,15 @@ test('retired native public bundle decoders cannot bypass WASM inspection', () =
     assert.equal(client.messages.at(-1).type,'error');
   }
 });
+
+// The IWA owns sequencing and fixtures. A stale build cannot launch the old
+// native Python/Java test runner, even through an otherwise authorized port.
+test('hardware audit is scoped but the native test runner is retired', () => {
+  const s=setup(),client=s.client();client.onMessage.emit({op:'test'});
+  assert.equal(s.connections.length,0);assert.equal(client.messages.at(-1).type,'error');
+  const audit=s.client(),request={op:'chat-hardware-audit',identity:{serial:'123456'}};
+  audit.onMessage.emit(request);assert.equal(s.connections.length,1);
+  assert.deepEqual(s.connections[0].messages,[request]);
+  const competing=s.client();competing.onMessage.emit({op:'chat-sign-digest'});
+  assert.equal(s.connections.length,1);assert.equal(competing.messages.at(-1).type,'error');
+});

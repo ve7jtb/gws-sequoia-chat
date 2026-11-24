@@ -9,7 +9,7 @@ class VaultBridge(unittest.TestCase):
   for r in [{'op':'chat-vault-material','pin':'secret'},{'op':'chat-vault-ecdh','peer':'a','fingerprint':'b','slot':'9a'}]:
    with self.assertRaises(ValueError):chat_bridge.validate(r)
  def test_vault_prompt_is_not_a_message_prompt(self):
-  self.assertEqual(chat_bridge.crypto_prompt('decapsulate-browser','Vault'),'Unlock IWA credential vault — ML-KEM-768 + X25519')
+  self.assertEqual(chat_bridge.crypto_prompt('decapsulate-components','Vault'),'Unlock IWA credential vault — ML-KEM-768 + X25519')
   with self.assertRaises(ValueError):chat_bridge.crypto_prompt('seal','Vault')
  def test_classical_config_has_fixed_serial_slot_and_curve(self):
   b=Mock();b.cfg={};self.assertIsNone(vault_piv.configured(b))

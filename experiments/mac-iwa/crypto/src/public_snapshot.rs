@@ -29,7 +29,7 @@ fn hex(bytes: &[u8]) -> String { bytes.iter().map(|b| format!("{b:02x}")).collec
 /// We deliberately do not inspect historical/recovery banks or fall back from
 /// malformed current data: deciding which authenticated identity to use is not
 /// a responsibility of this raw UI transport.
-fn bundle(card: &mut impl Card, observed: &mut BTreeMap<u32, Vec<u8>>) -> Result<(u64, Vec<u8>)> {
+pub(crate) fn bundle(card: &mut impl Card, observed: &mut BTreeMap<u32, Vec<u8>>) -> Result<(u64, Vec<u8>)> {
     let manifest = card.object(PRIMARY_BANK)?.context("Current public bundle absent")?;
     ensure!(manifest.len() == 52 && manifest.starts_with(b"PQMIDX01"), "Invalid public bundle index");
     let generation = u64::from_be_bytes(manifest[8..16].try_into()?);

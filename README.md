@@ -4,6 +4,17 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.16.0 moves the hardware-test workflow into the browser and shares its
+public bundle parser with native authorization.** The IWA builds and verifies
+a local synthetic signing/encryption/decryption test; the helper supplies
+native PIN/private operations and stable public key/policy audits. Fresh helper
+installation no longer requires the old mail runtime, Java test harness or
+standalone CLI tools. Independent live-card authorization remains native. The
+installed 0.16.0 passed hybrid signing/decryption and exact MIME/attachment checks
+on the Level 3 YubiKey, with all keys and policies unchanged; 373 automated
+checks passed. See
+[the implementation and test boundary](experiments/mac-iwa/README.md#iwa-hardware-tests-and-shared-public-parser-0160).
+
 **IWA 0.15.1 moves public bundle inspection and account startup into the IWA.**
 The browser WASM worker parses and authenticates compressed certificate bundles;
 native discovery returns bounded public card bytes and slot-key hashes. Bundle

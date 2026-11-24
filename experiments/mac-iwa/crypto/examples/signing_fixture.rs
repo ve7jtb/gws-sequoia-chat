@@ -1,4 +1,4 @@
-//! Disposable OpenSSL-backed oracle for WASM signing regressions.
+//! Disposable software-component oracle for WASM signing/decryption regressions.
 //!
 //! This example is never installed or called by the native host. It uses newly
 //! generated software secrets only; real hardware certificates/PINs must never
@@ -29,7 +29,7 @@ impl VerificationHelper for Verify {
  }
 }
 fn main()->Result<()> {
- let args:Vec<_>=std::env::args().collect();ensure!(args.len()==3,"generate directory | sign secret | verify public");
+ let args:Vec<_>=std::env::args().collect();ensure!(args.len()==3,"generate directory | sign secret | decap secret | verify public");
  if args[1]=="generate" {
   use pgp::cert::{CertBuilder,CipherSuite};
   let directory=Path::new(&args[2]);std::fs::create_dir_all(directory)?;
@@ -57,6 +57,43 @@ fn main()->Result<()> {
   let wanted=selected(&cert)?.fingerprint();
   let key=cert.keys().secret().find(|k|k.key().fingerprint()==wanted).context("Secret signing key required")?.key().clone().role_into_unspecified().into_keypair()?;
   println!("{}",digest_sign::sign(key,&request)?);return Ok(());
+ }
+ if args[1]=="decap" {
+  use ml_kem::{kem::Decapsulate,DecapsulationKey,MlKem768};
+  use pgp::crypto::mpi;
+  // This test-only oracle emulates exactly two native component operations.
+  // Packet parsing, the hybrid combiner and session-key unwrapping remain in
+  // the actual shipped WASM worker under test. Never accept a captured real
+  // operation: inputs must use the disposable software certificate generated
+  // above, which is not available to any production Native Messaging route.
+  let fields=request.as_object().context("Object required")?;
+  ensure!(fields.len()==5 && ["requestId","cipherHash","recipientKey","mlkemCiphertext","x25519Ephemeral"].iter().all(|k|fields.contains_key(*k)),"Unexpected fixture fields");
+  let p=StandardPolicy::new();
+  let keys:Vec<_>=cert.keys().secret().with_policy(&p,None).alive().revoked(false)
+   .for_transport_encryption().filter(|k|k.key().pk_algo()==A::MLKEM768_X25519).collect();
+  ensure!(keys.len()==1,"One fixture encryption key required");
+  let key=keys[0].key();
+  ensure!(field(&request,"recipientKey")?==key.fingerprint().to_hex(),"Wrong fixture recipient");
+  let decode=|name:&str|->Result<Vec<u8>>{
+   let encoded=field(&request,name)?;let bytes=B64.decode(encoded)?;
+   ensure!(B64.encode(&bytes)==encoded,"Noncanonical component input");Ok(bytes)
+  };
+  let ec:[u8;32]=decode("x25519Ephemeral")?.try_into().map_err(|_|anyhow::anyhow!("Wrong X25519 length"))?;
+  let ml:[u8;1088]=decode("mlkemCiphertext")?.try_into().map_err(|_|anyhow::anyhow!("Wrong ML-KEM length"))?;
+  // Echo every validated public binding, including both encapsulation inputs,
+  // because the worker rejects a response for any other pending operation.
+  let mut result=request.clone();
+  key.clone().into_keypair()?.secret().map(|secret|->Result<()>{
+   let mpi::SecretKeyMaterial::MLKEM768_X25519{ecdh,mlkem}=secret else {bail!("Wrong fixture algorithm")};
+   let ec_secret:[u8;32]=ecdh.as_ref().try_into()?;
+   let ml_secret=DecapsulationKey::<MlKem768>::from_seed((&mlkem[..]).try_into()?).decapsulate((&ml).into());
+   result["mlkemSecret"]=serde_json::json!(B64.encode(ml_secret));
+   result["x25519Secret"]=serde_json::json!(B64.encode(x25519_dalek::x25519(ec_secret,ec)));
+   Ok(())
+  })?;
+  // The runner sends these disposable shares directly to the ephemeral worker;
+  // neither stdout nor the private fixture is installed or published.
+  println!("{}",result);return Ok(());
  }
  if args[1]=="verify" {
   let signed=B64.decode(field(&request,"signed")?)?;let p=StandardPolicy::new();

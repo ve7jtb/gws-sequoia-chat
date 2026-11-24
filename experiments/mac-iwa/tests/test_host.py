@@ -4,13 +4,16 @@ from pathlib import Path
 spec=importlib.util.spec_from_file_location('host',Path(__file__).parents[1]/'native/host.py')
 host=importlib.util.module_from_spec(spec);spec.loader.exec_module(host)
 class HostTests(unittest.TestCase):
- def test_connection_errors_do_not_request_pin(self):
-  for op in ('chat-mail-login','chat-mail-connect','chat-mail-list'):
-   message=host.operation_error(op)
-   self.assertIn('Gmail read and send permissions',message)
-   self.assertIn('No YubiKey operation was attempted',message)
-  self.assertIn('Gmail operation stopped',host.operation_error('chat-mail-open'))
-  self.assertIn('Chat operation stopped',host.operation_error('chat-open'))
+ def test_retired_native_tests_and_mail_operations_fail_before_any_work(self):
+  for op in ('test','chat-mail-login','chat-mail-connect','chat-mail-list','chat-open'):
+   with self.assertRaises(ValueError):host.validate_request({'op':op})
+  self.assertFalse(hasattr(host,'run_test'))
+  self.assertFalse(hasattr(host,'pty'))
+ def test_audit_errors_do_not_echo_or_claim_unchanged_state(self):
+  message=host.operation_error('chat-hardware-audit',ValueError('private diagnostic'))
+  self.assertIn('unchanged status is unconfirmed',message)
+  self.assertIn('No PIN was requested',message)
+  self.assertNotIn('private diagnostic',message)
  def test_public_migration_errors_do_not_echo_details_or_request_pin(self):
   for op in ('chat-certificate-migration','chat-signing-material'):
    message=host.operation_error(op,ValueError('private low-level detail'))

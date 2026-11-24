@@ -4,7 +4,7 @@
 export async function decryptWithHardware({cipher, service, purpose = 'message',
   recipientKey, verification, vault, identity, validateMaterial, native, createWorker, gate = async () => {},
   signal, timeoutMs = 240000}) {
-  if (!['Gmail', 'Chat', 'Vault'].includes(service) ||
+  if (!['Gmail', 'Chat', 'Hardware test', 'Vault'].includes(service) ||
       !['message', 'vault'].includes(purpose) || (purpose === 'vault') !== (service === 'Vault'))
     throw Error('Invalid decryption purpose.');
   if(purpose==='message'&&(!identity||typeof validateMaterial!=='function'))

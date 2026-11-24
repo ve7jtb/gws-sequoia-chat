@@ -13,7 +13,7 @@ import host
 
 class PinPromptBoundary(unittest.TestCase):
     def bridge(self, root):
-        # Bypass construction's local transport import; this boundary needs only
+        # Bypass native state-directory creation; this boundary needs only
         # the fixed device identity and the prompt subprocess. No token exists.
         bridge = chat_bridge.ChatBridge.__new__(chat_bridge.ChatBridge)
         bridge.root = Path(root)
@@ -31,7 +31,7 @@ class PinPromptBoundary(unittest.TestCase):
                 else:
                     run.return_value = outcome
                 with self.assertRaisesRegex(ValueError, expected):
-                    bridge.crypto('decapsulate-browser', Path(root) / 'unused-peer', b'cipher', service='Gmail')
+                    bridge.crypto('sign-digest', None, bytes(64), service='Message', signing={})
                 # A second subprocess invocation would be the private crypto
                 # worker. Cancellation/timeouts must never reach that boundary.
                 self.assertEqual(run.call_count, 1)
@@ -50,12 +50,12 @@ class PinPromptBoundary(unittest.TestCase):
                                                '^PIN cancelled or invalid$')
 
     def test_timeout_and_cancel_messages_distinguish_no_pin_submission(self):
-        for op in ['chat-decap', 'chat-sign-digest', 'chat-vault-decapsulate']:
+        for op in ['chat-decapsulate-components', 'chat-sign-digest', 'chat-vault-ecdh']:
             for reason in ['PIN dialog timed out before submission', 'PIN cancelled or invalid']:
                 self.assertIn('No PIN was sent', host.operation_error(op, ValueError(reason)))
 
     def test_unknown_errors_never_echo_secrets_or_claim_safe_submission(self):
-        for op in ['chat-decap', 'chat-sign-digest', 'chat-vault-decapsulate']:
+        for op in ['chat-decapsulate-components', 'chat-sign-digest', 'chat-vault-ecdh']:
             message = host.operation_error(op, ValueError('sensitive-example'))
             self.assertNotIn('sensitive-example', message)
             self.assertNotIn('No PIN was sent', message)

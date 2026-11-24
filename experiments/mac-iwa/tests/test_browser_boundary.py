@@ -1,7 +1,7 @@
 """The native boundary no longer owns message parsing or recipient trust."""
 import base64,sys,tempfile,unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
 from chat_bridge import ChatBridge,validate
 
@@ -28,7 +28,7 @@ class BrowserBoundary(unittest.TestCase):
    b.chat.check_cert.return_value={'fingerprint':'A'*64}
    # A corrupt old contact must not prevent discovery of the own hardware key.
    (b.data/'contact-stale.json').write_text('invalid JSON')
-   r=b.action({'op':'chat-state'})
+   with patch('chat_bridge.check_certificate',return_value={'fingerprint':'A'*64}):r=b.action({'op':'chat-state'})
    self.assertEqual(r['contacts'],[]);self.assertEqual(r['serial'],'123')
 
 if __name__=='__main__':unittest.main()

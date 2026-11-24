@@ -36,7 +36,7 @@ chrome.runtime.onConnectExternal.addListener(port => {
     // Never proxy arbitrary methods, shell commands, paths, PINs or payloads.
     // Full-ciphertext decapsulation routes are retired. Only fixed identity
     // metadata and the bounded component operation may reach the native host.
-    if (nativeOwner || native || !request || JSON.stringify(request).length > 500000 || !['chat-vault-ecdh','chat-vault-material','chat-decryption-material','chat-selected-decryption-material','chat-decapsulate-components','status','test','chat-state','chat-certificate-migration','chat-identity-current','chat-identity-bundle-read','chat-identity-key-snapshot','chat-signing-material','chat-selected-signing-material','chat-sign-digest'].includes(request.op)) {
+    if (nativeOwner || native || !request || JSON.stringify(request).length > 500000 || !['chat-vault-ecdh','chat-vault-material','chat-decryption-material','chat-selected-decryption-material','chat-decapsulate-components','status','chat-hardware-audit','chat-state','chat-certificate-migration','chat-identity-current','chat-identity-bundle-read','chat-identity-key-snapshot','chat-signing-material','chat-selected-signing-material','chat-sign-digest'].includes(request.op)) {
       port.postMessage({type:'error',message:'Busy or unsupported operation.'}); return;
     }
     try {

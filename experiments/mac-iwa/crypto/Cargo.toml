@@ -2,7 +2,7 @@
 name = "sequoia-iwa-crypto"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 license = "MIT"
 publish = false
 [dependencies]
@@ -13,4 +13,12 @@ serde_json = "1"
 zeroize = "1"
 sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
 sequoia-pqmail-piv = { git = "https://github.com/ve7jtb/sequoia.git", rev = "6b99afc20984e16180e5bbfbabb51d8685d247e1" }
-tempfile = "3"
+# No type crosses the two Sequoia backend versions: this public parser returns
+# owned JSON/SPKI bytes, while the PIV adapter retains its pinned OpenSSL types.
+sequoia-public-bundle = { path = "../bundle-parser" }
+
+[dev-dependencies]
+# Software-only test oracle for the IWA hardware coordinator. Production builds
+# never receive or generate these disposable ML-KEM/X25519 private keys.
+ml-kem = { version = "=0.3.4", default-features = false, features = ["zeroize"] }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }

@@ -16,7 +16,7 @@ class SigningBoundary(unittest.TestCase):
   self.b.chat=Mock();self.b.chat.write_new.side_effect=lambda p,data:p.write_bytes(data)
   self.b.crypto=Mock(return_value={'signature':'test response'})
  def prepare(self):
-  with patch('signing.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'signingFingerprint':'C'*64}).encode())):
+  with patch('signing.check_certificate'),patch('signing.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'signingFingerprint':'C'*64}).encode())):
    return signing.prepare(self.b)
  def request(self,p):
   return {'op':'chat-sign-digest','review':p['review'],'requestId':'A'*64,'hashAlgorithm':10,'signingFingerprint':'C'*64,'digest':base64.b64encode(bytes(64)).decode()}

@@ -9,6 +9,90 @@ server for the IWA. Earlier preview milestones below describe their historical
 native/gws transport and certificate storage; the current boundary is described
 in the latest sections below. This change does not move the main loopback app's store.
 
+## IWA hardware tests and shared public parser (0.16.0)
+
+Hardware-test orchestration now runs in the IWA. **Hardware test** selects a
+saved, live-matched Level 3 v6 identity for the configured account. It creates
+fresh synthetic text, HTML and a binary attachment, signs through the existing
+native component interface, encrypts to that identity, matches the recipient
+in WASM, decrypts through the existing component interface and checks the exact
+recovered content. It sends no email and never edits a card or contact store.
+The test's temporary self-trust is confined to that test; it grants no saved
+recipient trust.
+
+The native **`chat-hardware-audit`** route independently authenticates the selected
+live bundle and returns a bounded before/after snapshot: all 24 public slot
+states, public-key hashes, algorithms, origin, PIN/touch policies, PIN retry
+counts and a hash of the installed backend. It reads those slot states twice
+and rejects changes or ambiguous failures. The IWA reports **unchanged** only
+when complete snapshots match. Cancellation, a PIN/backend failure or a missing
+final audit cannot become a green pass, and no private operation is retried.
+The downloadable JSON report contains public identity/audit data and controlled
+status labels, not PINs, message keys or raw process output.
+
+The browser and native authorization now use the same
+[`sequoia-public-bundle` crate](bundle-parser/README.md). The WASM binding is thin;
+native authorization separately reads the current physical bank, invokes that
+same public parser, and compares every authenticated component and serial before
+issuing a private-operation grant. Shared implementation does not make the
+browser's saved preview an authority. Re-reading object frames and live keys
+continues to reject changing snapshots. The crate has no filesystem, process,
+PIN, token or card-write API.
+
+The installed Python helper no longer imports the standalone mail/chat runtime,
+launches the legacy PTY/Java test runner, or performs MIME composition. Small
+native utilities handle public certificate policy checks and exclusive one-use
+grant creation. Fresh installation requires the PKCS#11 backend, ykman, Rust
+worker, public enrollment certificate and native PIN prompt; it does not copy a
+JDK, Java classes, gws, sq CLI or the standalone software-identity executable.
+Historical source-only test oracles remain available outside the installed
+allowlist. Existing installed configuration/vault enrollment is preserved;
+unused older runtime files are not deleted by an upgrade.
+
+The extension still brokers Google OAuth, PRF and bounded Chat attachments, and
+relays the closed native hardware API. Independent external Sequoia/PQ Mail
+interoperability tests remain separate: the new browser self-test is not a
+substitute for checking another implementation.
+
+Validation for 0.16.0 passed **202 JavaScript**, **116 Python**, **23 native
+Rust**, **14 WASM Rust**, and **6 shared-parser** tests. Another **11 actual-worker
+checks** cover identity matching and decryption. A complete software-oracle run
+uses the shipped signing, recipient-matching and decryption workers to verify
+fresh text, HTML and binary attachment bytes with exactly one signing callback
+and one decapsulation callback. Native PIN entry and physical key protection
+are not simulated as hardware evidence by these software tests.
+
+The live PIN-free preflight read the connected Level 3 card's signed current
+bundle and all 24 PIV slots through the new native shared-parser path; all ten
+mapped public keys matched and PIN retries remained 3/3. The signed IWA and
+extension were updated to 0.16.0 with unchanged origins, permissions and existing
+PKCS#11 binaries. The installed **0.16.0 physical test passed** on a Level 3
+YubiKey: one hybrid signing operation, exact recipient matching, one hybrid
+decryption operation, and exact text/HTML/64-byte attachment verification. Both
+complete native audits matched. An independent snapshot also confirmed all 24
+slot records, ten occupied public keys, PIN/touch policies, 3/3 PIN retries and
+protected PKCS#11/configuration files unchanged. No email or card write occurred.
+The JSON report exported successfully from the IWA. This local round trip tests
+the new controller; it does not replace the earlier two-way external Sequoia
+interoperability tests.
+
+To exercise the new components without a YubiKey, from the repository root
+using Rust 1.88 or newer and the previously built WASM assets. These commands
+assume no `CARGO_TARGET_DIR` override; otherwise adjust `fixture_bin`:
+
+```sh
+cargo test --locked --manifest-path experiments/mac-iwa/bundle-parser/Cargo.toml
+node --test experiments/mac-iwa/tests/hardware-test.test.mjs
+cargo build --locked --release --example signing_fixture \
+  --manifest-path experiments/mac-iwa/crypto/Cargo.toml
+# Use a new directory containing only disposable software test keys.
+fixture_dir="$(mktemp -d)"
+fixture_bin="$PWD/experiments/mac-iwa/crypto/target/release/examples/signing_fixture"
+"$fixture_bin" generate "$fixture_dir"
+IWA_SIGNING_FIXTURE_BIN="$fixture_bin" \
+  node experiments/mac-iwa/tests/hardware-test-interop.mjs "$fixture_dir"
+```
+
 ## Browser-owned bundle inspection and account startup (0.15.1)
 
 The 0.15.1 implementation moves public compressed-bundle inspection into the
@@ -59,9 +143,9 @@ The WASM parser is a constrained mirror of the public format/profile rules in
 the pinned `sequoia-pqmail-piv` adapter, with independent RustCrypto verification
 and cross-implementation fixtures. The existing adapter combines its decoder
 with OpenSSL, process and filesystem dependencies and cannot currently link into
-`wasm32`. **A shared target-independent parser crate has not been extracted.**
-This duplication is a maintenance limitation: changes to supported container,
-signature or profile rules must keep both readers and their vectors aligned.
+`wasm32`. At this milestone a shared target-independent parser crate had not yet been
+extracted. Version 0.16.0 above replaces that duplicated implementation with
+one public parser used independently by both targets.
 See [the WASM implementation and reproduction command](wasm/README.md#compressed-public-bundle-inspection-0151).
 
 All native private-operation checks remain in place. Selected signing and
@@ -1096,7 +1180,7 @@ from hardware errors. That final sign-in-link UI correction has offline checks;
 the successful live authorization used the same gws link opened manually.
 The hardware-only IWA result below is a separate earlier test.
 
-## Current scope
+## Historical native test scope (initial preview)
 
 - Connection check for the explicitly configured YubiKey.
 - One fixed synthetic Level 3 hybrid signing test: ML-DSA-65 in 9c + Ed25519 in 84.
@@ -1111,7 +1195,7 @@ PKCS#11 helpers/provider/module are copied from the installed PQ Mail backend;
 the hardware runner records their hashes. There are no reset, generate, import,
 management-key, certificate-write or touch-policy commands in the test API.
 
-## Architecture and authorization
+## Historical native test architecture (initial preview)
 
 `app/` is packaged as a signed `.swbn`. `extension/` allows precisely its
 `isolated-app://` origin, and additionally checks the caller's root URL and
@@ -1203,7 +1287,10 @@ The source generalizes device-specific display text to the configured serial;
 local serial numbers, fingerprints, account data and hardware transcripts are
 not included in this repository.
 
-### Reproduce the local installation
+### Reproduce the initial native-runner installation (historical)
+
+These steps describe the original runner. For the current smaller hardware
+service, use the installation steps below.
 
 1. Build the existing [`sequoia-pqmail-piv` adapter and hardware test](https://github.com/ve7jtb/sequoia/tree/development/yubikey6-piv/piv-adapter), following that fork's prerequisites. Prepare its `PqMailInterop` Java classes and the existing PQ Mail JAR/libraries. `piv-test` can depend on a separately installed OpenSSL; inspect `otool -L` and retain those dependencies. This experiment does not build or silently replace your PKCS#11 backend.
 2. Run the build commands above. Copy `config.example.json` to ignored `private/config-input.json` and set the absolute paths, matching **public-only** v6 certificate, and explicit Level 3 serial. The test selects only 9c/84/9d/85; arbitrary slot mappings and Level 5 are not supported here.
@@ -1660,3 +1747,30 @@ transport.
 API references: [Gmail send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send),
 [Chat media upload](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload),
 [Chat media download](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/download).
+
+## Install the current hardware service (0.16.0)
+
+Build the Rust worker and baseline/wide WASM using the regression commands above,
+then build the signed IWA and native PIN prompt. Preserve existing development
+signing keys and extension identity when updating an installed preview. For a
+fresh helper, copy `config.example.json` to ignored `private/config-input.json`
+and supply the existing backend, ykman, public certificate, serial and certified
+enrollment email. No hardware keys are created by installation.
+
+```sh
+python3 install_native.py --config private/config-input.json \
+  --crypto-bin /absolute/path/to/sequoia-iwa-crypto
+```
+
+The destination must be new. To update code in an existing helper after backing
+it up and closing in-flight operations, the historical upgrade filename remains:
+
+```sh
+python3 install_chat.py --installed "/absolute/path/to/Sequoia IWA Lab" \
+  --crypto-bin /absolute/path/to/sequoia-iwa-crypto
+```
+
+No transport root or standalone CLI is required. Omitting `--email` preserves
+the fixed native enrollment exactly. Reload the matching extension and install
+the newer signed bundle through Canary's IWA developer UI. Existing origin-local
+account, vault, identities and trust remain associated with the stable IWA ID.

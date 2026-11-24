@@ -1,0 +1,22 @@
+[package]
+name = "sequoia-public-bundle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "LGPL-2.0-or-later"
+publish = false
+
+# This crate accepts public bytes only and is linked by native and wasm32
+# consumers. Its backend never depends on a smart card, OpenSSL or subprocess.
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+sha2 = "0.10"
+serde_json = "1"
+flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
+ml-dsa = { version = "=0.1.2", default-features = false, features = ["alloc"] }
+p384 = { version = "=0.13.1", default-features = false, features = ["ecdsa"] }
+sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979cf360ec0908c793d8801dd4491da2b8398d", default-features = false, features = ["crypto-rust", "compression-deflate", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }

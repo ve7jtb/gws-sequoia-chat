@@ -9,6 +9,7 @@ let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='
 let certificateReview=null,managementReview=null;
 let identityUi,ownIdentityStore,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
 let sendIdentities=[],decryptionChoice=null;
+let hardwareTestAbort=null,hardwareTestReport=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
 // Local encrypted email is staged only until the user selects its expected
 // trusted signer. It is never uploaded, cached, or treated as a provider ID.
@@ -19,6 +20,10 @@ const say=(text,error=false)=>{$('result').textContent=text;$('result').classLis
 function operationBusy(active) {
  busy=active;$('transport').disabled=active;$('busy').hidden=!active;
  document.querySelectorAll('button').forEach(b=>b.disabled=active);
+ // A test can be cancelled while its native PIN/touch attempt settles. The
+ // coordinator retains this lock and performs only a final public audit.
+ $('test-cancel').disabled=!active||!hardwareTestAbort;
+ $('test-export').disabled=active||!hardwareTestReport;
  if(!active){$('newer').disabled=page===0;$('older').disabled=!next;}
 }
 function nativeRequest(op,data={},options={}) {
@@ -85,12 +90,12 @@ function renderContacts(){for(const id of ['recipient','signer'])options(id,cont
 async function refreshCertificates(){const r=await call('chat-cert-list');contacts=r.contacts;renderContacts();renderSavedCertificates(r.certificates);}
 function identityLabel(c){return c.email+' · v6 ML-DSA-65 + Ed25519 · YubiKey '+c.serial+' · '+c.fingerprint.slice(-12);}
 async function refreshSendIdentities(){
- if(!identitySelection||!ownEmail){sendIdentities=[];options('send-identity',[],c=>c.id,identityLabel);$('send-identity-help').textContent='Configure your Google account in Account, then restore its supported public identity in Identities.';return;}
+ if(!identitySelection||!ownEmail){sendIdentities=[];for(const id of ['send-identity','test-identity'])options(id,[],c=>c.id,identityLabel);$('send-identity-help').textContent='Configure your Google account in Account, then restore its supported public identity in Identities.';return;}
  const account=ownEmail,snapshot=accountSnapshot;
  const listed=await identitySelection.list(account);
  if(account!==ownEmail||snapshot!==accountSnapshot)return;
  sendIdentities=listed.choices;
- const before=$('send-identity').value;options('send-identity',sendIdentities,c=>c.id,identityLabel);
+ const before=$('send-identity').value;for(const id of ['send-identity','test-identity'])options(id,sendIdentities,c=>c.id,identityLabel);
  // This preference contains only a public inventory identifier. It never
  // selects a native executable, slot or grant, and is revalidated on every use.
  let remembered;try{remembered=localStorage.getItem('sequoia-iwa-send-identity');}catch(_){}
@@ -105,6 +110,7 @@ $('send-identity').addEventListener('change',()=>{
 const ownIdentityUpdates=typeof BroadcastChannel==='function'?new BroadcastChannel('sequoia-iwa-own-identities'):null;
 if(ownIdentityUpdates)ownIdentityUpdates.onmessage=()=>{invalidateCertificateViews();refreshSendIdentities().catch(e=>say(e.message,true));};
 function invalidateCertificateViews(){
+ hardwareTestAbort?.abort();
  // A stored trust change must invalidate prepared sends and old green reader
  // labels, including changes made in another IWA window. An in-flight native
  // operation is never retried or unlocked by this public-storage notification.
@@ -477,7 +483,39 @@ event('trust',async()=>{
  await certificatesChanged();$('trust-panel').hidden=true;cert=null;
  say('Certificate saved in this IWA; trust granted only for the selected email and primary fingerprint.');
 });
-event('test',async()=>{if(!window.confirm('Run the fixed hardware test? Three native PIN dialogs; no key or policy changes.'))return;const r=await call('test');$('test-details').textContent=JSON.stringify(r,null,2);say(r.passed&&r.unchanged?'PASS — signing, decryption and unchanged slot records.':'Test stopped; inspect local results.',!r.passed);});
+// Test orchestration lives entirely in the IWA. It uses a reviewed saved
+// identity and the same component APIs as Compose/Read; no native test runner,
+// Java classpath, mail transport, contact mutation or provisioning is involved.
+event('test',async()=>{
+ if(busy)throw Error('An operation is already running.');
+ const account=accountSnapshot;assertAccount(account);window.vaultGate?.();
+ const choice=$('test-identity').value,selected=await identitySelection.get(choice,ownEmail);
+ if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nSigning: ML-DSA-65 (9c) + Ed25519 (84). Decryption: ML-KEM-768 (9d) + X25519 (85).\nExpect two native PIN dialogs; touch if requested. No email, keys, certificates or policies will be changed.'))return;
+ hardwareTestReport=null;$('test-details').textContent='';hardwareTestAbort=new AbortController();operationBusy(true);
+ try{
+  const {runHardwareTest}=await import('./hardware-test.js');
+  const gate=async()=>{assertAccount(account);window.vaultGate?.();if($('test-identity').value!==choice)throw Error('Test identity changed.');};
+  const result=await runHardwareTest({identity:selected,selection:identitySelection,native:nativeRequest,gate,signal:hardwareTestAbort.signal,
+   createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
+   createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'}),
+   onProgress:message=>{$('test-progress').textContent=message;say(message);}});
+  hardwareTestReport=result;
+  const unchanged=result.unchanged===true?'All 24 slot records, keys, PIN/touch policies, PIN retry counts and backend hashes unchanged.':result.unchanged===false?'Public audit changed — inspect the report before another operation.':'Unchanged status could not be confirmed — inspect the report before another operation.';
+  $('test-details').textContent=result.status+' — YubiKey '+selected.serial+'\n'+selected.fingerprint+'\n'+
+   'Hybrid signature: '+(result.signatureVerified?'verified':'not completed')+'\nHybrid decryption and exact text/HTML/attachment: '+(result.payloadVerified?'verified':'not completed')+'\n'+unchanged+'\nNo email sent; no card writes requested.';
+  $('test-progress').textContent=result.status==='PASS'?'Local hardware test complete. Independent Sequoia interoperability remains a separate test.':'Test stopped without automatic retry.';
+  say(result.status==='PASS'?'PASS — IWA signing, decryption and unchanged hardware audit.':result.status+' — review Hardware test results before trying again.',result.status!=='PASS');
+ }finally{hardwareTestAbort=null;operationBusy(false);}
+});
+event('test-cancel',()=>{hardwareTestAbort?.abort();$('test-cancel').disabled=true;$('test-progress').textContent='Cancelling. Waiting for any native attempt to settle, then checking public keys and policies. No private operation will be retried.';});
+$('test-identity').addEventListener('change',()=>hardwareTestAbort?.abort());
+event('test-export',()=>{
+ if(busy||!hardwareTestReport)throw Error('Complete a hardware test first.');
+ // Export is explicit and contains public device identifiers. The report has
+ // no PIN, private key, message payload, ciphertext or component secret.
+ const url=URL.createObjectURL(new Blob([JSON.stringify(hardwareTestReport,null,2)+'\n'],{type:'application/json'})),link=document.createElement('a');
+ link.href=url;link.download='sequoia-iwa-hardware-test-'+hardwareTestReport.id+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
 bootstrap().catch(e=>say(e.message,true));
 
 // Attachment bytes stay in browser memory and the signing worker. Only the
@@ -515,4 +553,4 @@ $('local-mail').addEventListener('change',async()=>{try{await readLocalFile($('l
 // Browser-staged ciphertext and captured verification evidence are transient.
 // Lock/exit cannot leave an actionable send ticket or a stale trust dialog.
 window.addEventListener('iwa-vault-locked',()=>{signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();});
-window.addEventListener('pagehide',()=>{readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});
+window.addEventListener('pagehide',()=>{hardwareTestAbort?.abort();readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});

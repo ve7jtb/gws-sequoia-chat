@@ -47,7 +47,7 @@ function application(savedEmail){
  // Replace only the dynamic-import expression with a dependency seam. All
  // bootstrap, account event handling, routing and invalidation code is real.
  vm.runInContext(source.replaceAll('import(','loadModule(').replace('bootstrap().catch(e=>say(e.message,true));',''),context);
- return {context,settings,storage,node,events,native,network,profiles,clears:()=>clears,reviewClears:()=>reviewClears,certificateReads:()=>certificateReads,
+ return {context,modules,settings,storage,node,events,native,network,profiles,clears:()=>clears,reviewClears:()=>reviewClears,certificateReads:()=>certificateReads,
   click:async id=>node(id).listeners.get('click')(),start:()=>context.bootstrap()};
 }
 test('empty and saved IWA settings both start without native or Google calls',async()=>{
@@ -88,4 +88,27 @@ test('changed storage blocks calls before the storage event and then clears acco
  a.events.get('storage')({key:accountModule.ACCOUNT_SETTINGS_KEY});await new Promise(resolve=>setImmediate(resolve));
  assert.equal(a.clears(),1);assert.ok(a.reviewClears()>0);assert.equal(a.node('reader').hidden,true);
  assert.match(a.node('account').textContent,/other@example.invalid/);assert.equal(a.native.length,0);
+});
+
+// Exercise the real Hardware test button, selection and lock/export controls;
+// cryptographic orchestration is tested separately with the shipped workers.
+test('hardware test UI selects a saved identity and runs only the browser coordinator',async()=>{
+ const a=application('sender@example.invalid'),selected={id:'saved',serial:'123456',email:'sender@example.invalid',fingerprint:'A'.repeat(64)};
+ a.modules['./identities/selection.js']={createIdentitySelection:()=>({list:async()=>({choices:[selected]}),get:async(id,email)=>{assert.equal(id,selected.id);assert.equal(email,selected.email);return selected;}})};
+ let calls=0;
+ a.modules['./hardware-test.js']={runHardwareTest:async options=>{
+  calls++;await options.gate();assert.equal(options.identity,selected);assert.equal(a.node('test-cancel').disabled,false);assert.equal(a.node('test-export').disabled,true);
+  options.onProgress('Synthetic step');assert.equal(a.node('test-progress').textContent,'Synthetic step');
+  return {id:'public-test',status:'PASS',unchanged:true,signatureVerified:true,payloadVerified:true};
+ }};
+ await a.start();assert.equal(a.node('test-identity').value,selected.id);await a.click('test');
+ assert.equal(calls,1);assert.equal(a.native.length,0);assert.equal(a.network.length,0);
+ assert.match(a.node('test-details').textContent,/All 24 slot records/);assert.equal(a.node('test-export').disabled,false);assert.equal(a.node('test-cancel').disabled,true);
+ assert.equal(a.node('test-identity').value,selected.id);assert.equal(a.node('send-identity').value,selected.id);
+});
+test('locked vault blocks Hardware test before metadata, confirmation or private work',async()=>{
+ const a=application('sender@example.invalid');let confirmed=false;
+ a.context.window.vaultGate=()=>{throw Error('Unlock the vault first');};a.context.window.confirm=()=>{confirmed=true;return true;};
+ await a.start();await a.click('test');assert.match(a.node('result').textContent,/Unlock the vault/);
+ assert.equal(confirmed,false);assert.equal(a.native.length,0);assert.equal(a.network.length,0);
 });
