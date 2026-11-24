@@ -25,6 +25,10 @@ const { createHardwareTransport } = ctx;
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
     async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemShare: 'CC==', x25519Share: 'DD==' }; },
+    async readPublicSnapshotViaSmartCard(serial, includeBundle) {
+      pivCalls.push('snapshot:' + serial + ':' + includeBundle);
+      return { format: 'sequoia-iwa-public-snapshot', version: 1, serial: serial || '41088108', slots: [], warnings: [], ...(includeBundle ? { bundle: 'UFFNWklQMDE=', generation: 4 } : {}) };
+    },
     async readVaultMaterialViaSmartCard() {
       pivCalls.push('vault-material');
       return { serial: '41088108', classical: { serial: '41088108', slot: '9d', algorithm: 'ECDH-P256', public: 'SPKI==', fingerprint: 'fp1' }, classicalSlots: [] };
@@ -48,6 +52,17 @@ const { createHardwareTransport } = ctx;
   assert.equal(st.connected, true);
   assert.equal(st.serial, '41088108');
   assert.equal(nativeCalls.length, 1); // native was NOT called again
+
+  // Device discovery returns strict {serial}-only objects required by identities/devices.js
+  const devs = await t.dispatch('chat-identity-devices', {}, {}, nativeRequest);
+  assert.equal(JSON.stringify(devs), JSON.stringify({ devices: [{ serial: '41088108' }] }));
+  assert.equal(Object.keys(devs.devices[0]).join(), 'serial');
+
+  // Bundle read & key snapshot via smartcard
+  const bsnap = await t.dispatch('chat-identity-bundle-read', { serial: '41088108' }, {}, nativeRequest);
+  assert.equal(bsnap.generation, 4);
+  const ksnap = await t.dispatch('chat-identity-key-snapshot', { serial: '41088108' }, {}, nativeRequest);
+  assert.equal(ksnap.format, 'sequoia-iwa-public-snapshot');
 
   // Non-PIV extension ops still pass through
   const prf = await t.dispatch('vault-prf', { name: 'test' }, {}, nativeRequest);

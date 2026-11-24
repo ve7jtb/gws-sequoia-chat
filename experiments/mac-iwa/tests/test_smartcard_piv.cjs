@@ -106,5 +106,16 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
     assert.equal(imported.type, 'public');
   }
 
+  // pivMetadataToSpki for ML-DSA-65 (0xE3, tag 0x87), ML-KEM-768 (0xE6, tag 0x88), Ed25519 (0xE0, tag 0x86)
+  const mlDsaSpki = piv.pivMetadataToSpki({ algorithmId: 0xE3, algorithm: 'ML-DSA-65', publicKeyBytes: piv.encodeBerTlv(0x87, new Uint8Array(1952).fill(0x11)) });
+  assert.equal(mlDsaSpki[0], 0x30);
+  assert.ok(mlDsaSpki.length > 1965);
+  const mlKemSpki = piv.pivMetadataToSpki({ algorithmId: 0xE6, algorithm: 'ML-KEM-768', publicKeyBytes: piv.encodeBerTlv(0x88, new Uint8Array(1184).fill(0x22)) });
+  assert.equal(mlKemSpki[0], 0x30);
+  assert.ok(mlKemSpki.length > 1195);
+  const edSpki = piv.pivMetadataToSpki({ algorithmId: 0xE0, algorithm: 'Ed25519', publicKeyBytes: piv.encodeBerTlv(0x86, new Uint8Array(32).fill(0x33)) });
+  assert.equal(edSpki.length, 44);
+  assert.deepEqual(Array.from(piv.buildGetDataApdu(0x5F5000)), [0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0x50, 0x00, 0x00]);
+
   console.log('PASS smartcard-piv APDU, TLV, PIN, command chaining, SPKI, and GET RESPONSE tests');
 })();

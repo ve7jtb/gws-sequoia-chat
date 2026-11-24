@@ -134,7 +134,18 @@ function createHardwareTransport(deps = {}){
 
     if(op === 'chat-identity-devices'){
       const devices = await piv.listYubiKeys();
-      return {devices: devices.map(d=>({serial: d.serial, version: d.version, reader: d.reader}))};
+      const serials = [...new Set(devices.map(d=>String(d.serial)).filter(s=>/^[1-9][0-9]{0,9}$/.test(s)))].sort();
+      return {devices: serials.map(serial=>({serial}))};
+    }
+
+    if(op === 'chat-identity-bundle-read'){
+      ctx.say?.('Reading public certificate bundle and all 24 PIV slots via Web Smart Card (no PIN required)…');
+      return piv.readPublicSnapshotViaSmartCard(data.serial || null, true);
+    }
+
+    if(op === 'chat-identity-key-snapshot'){
+      ctx.say?.('Reading all 24 PIV public keys via Web Smart Card (no PIN required)…');
+      return piv.readPublicSnapshotViaSmartCard(data.serial || null, false);
     }
 
     if(op === 'chat-hardware-audit'){

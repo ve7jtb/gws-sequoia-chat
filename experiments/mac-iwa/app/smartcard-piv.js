@@ -34,8 +34,21 @@ const SPKI_P384_PREFIX = new Uint8Array([
 const ALGO_NAMES = {
   0x06:'RSA-1024', 0x07:'RSA-2048', 0x05:'RSA-3072', 0x16:'RSA-4096',
   0x11:'ECCP256', 0x14:'ECCP384', 0xE0:'Ed25519', 0xE1:'X25519',
-  0xE3:'ML-DSA-65', 0xE6:'ML-KEM-768',
+  0xE3:'ML-DSA-65', 0xE4:'ML-DSA-87', 0xE6:'ML-KEM-768', 0xE7:'ML-KEM-1024',
 };
+const SPKI_ALGID_DER = {
+  0x11: new Uint8Array([0x30,0x13,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07]),
+  0x14: new Uint8Array([0x30,0x10,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,0x06,0x05,0x2B,0x81,0x04,0x00,0x22]),
+  0xE0: new Uint8Array([0x30,0x05,0x06,0x03,0x2B,0x65,0x70]),
+  0xE1: new Uint8Array([0x30,0x05,0x06,0x03,0x2B,0x65,0x6E]),
+  0xE3: new Uint8Array([0x30,0x0B,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x12]),
+  0xE4: new Uint8Array([0x30,0x0B,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x13]),
+  0xE6: new Uint8Array([0x30,0x0B,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x04,0x02]),
+  0xE7: new Uint8Array([0x30,0x0B,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x04,0x03]),
+};
+const PRIMARY_BUNDLE_BANK = 0x5F5000;
+const MAX_PUBLIC_BUNDLE = 65536;
+const MAX_SAFE_GEN = 9007199254740991;
 const PIN_POLICY = {1:'never', 2:'once', 3:'always', 4:'match-once', 5:'match-always'};
 const TOUCH_POLICY = {1:'never', 2:'always', 3:'cached'};
 const ORIGIN_NAME = {1:'generated', 2:'imported'};
@@ -275,6 +288,56 @@ function ecUncompressedPointToSpki(point, algId){
   if(algId === 0x11 && p.length === 65) return concatBytes(SPKI_P256_PREFIX, p);
   if(algId === 0x14 && p.length === 97) return concatBytes(SPKI_P384_PREFIX, p);
   throw Error('Unsupported EC algorithm or point length for SPKI');
+}
+
+function pivMetadataToSpki(parsed){
+  const algDer = SPKI_ALGID_DER[parsed.algorithmId];
+  if(!algDer) throw Error('Unsupported PIV algorithm for SPKI: ' + parsed.algorithm);
+  let tlv = parseBerTlv(parsed.publicKeyBytes || new Uint8Array(0));
+  if(tlv.has(0x7F49)) tlv = parseBerTlv(tlv.get(0x7F49));
+  const raw = tlv.get(0x86) || tlv.get(0x87) || tlv.get(0x88);
+  if(!raw || !raw.length) throw Error('Missing raw public key in PIV metadata');
+  const bitString = encodeBerTlv(0x03, concatBytes(new Uint8Array([0x00]), raw));
+  return encodeBerTlv(0x30, concatBytes(algDer, bitString));
+}
+
+function buildGetDataApdu(tag24){
+  const b2 = (tag24 >> 16) & 0xFF;
+  const b1 = (tag24 >> 8) & 0xFF;
+  const b0 = tag24 & 0xFF;
+  return new Uint8Array([0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, b2, b1, b0, 0x00]);
+}
+
+async function readPivDataObject(conn, tag24){
+  const res = await transmitChained(conn, buildGetDataApdu(tag24));
+  if(res.sw === 0x6A82 || res.sw === 0x6A88) return null;
+  if(res.sw !== 0x9000) throw Error(`GET DATA 0x${tag24.toString(16)} failed: SW=0x${res.sw.toString(16)}`);
+  const tlv = parseBerTlv(res.data);
+  return tlv.get(0x53) ?? res.data;
+}
+
+function readU64BeNumber(bytes, offset){
+  let n = 0n;
+  for(let i = 0; i < 8; i++) n = (n << 8n) | BigInt(bytes[offset + i]);
+  if(n > BigInt(MAX_SAFE_GEN)) throw Error('Public bundle generation exceeds safe integer limit');
+  return Number(n);
+}
+
+function readU32Be(bytes, offset){
+  return (((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]);
+}
+
+function asciiPrefix(bytes, len){
+  let s = '';
+  for(let i = 0; i < len && i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+}
+
+function bytesEqual(a, b){
+  if(a === b) return true;
+  if(!a || !b || a.length !== b.length) return false;
+  for(let i = 0; i < a.length; i++) if(a[i] !== b[i]) return false;
+  return true;
 }
 
 function parseVersion(bytes){
@@ -541,6 +604,100 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
   });
 }
 
+async function readPublicSnapshotViaSmartCard(serial, includeBundle){
+  return withPivSession(serial || null, async(conn, info)=>{
+    const observed = new Map();
+    let stored = null;
+    if(includeBundle){
+      const manifest = await readPivDataObject(conn, PRIMARY_BUNDLE_BANK);
+      if(!manifest) throw Error('Current public bundle absent on YubiKey.');
+      if(manifest.length !== 52 || asciiPrefix(manifest, 8) !== 'PQMIDX01'){
+        throw Error('Invalid public bundle index on YubiKey.');
+      }
+      const generation = readU64BeNumber(manifest, 8);
+      const size = readU32Be(manifest, 16);
+      if(generation < 1 || size < 1 || size > MAX_PUBLIC_BUNDLE){
+        throw Error('Public bundle index limits exceeded.');
+      }
+      const expectedDigest = toHex(manifest.subarray(20, 52));
+      observed.set(PRIMARY_BUNDLE_BANK, manifest);
+      const chunks = [];
+      const count = Math.ceil(size / 2048);
+      for(let i = 0; i < count; i++){
+        const tag = PRIMARY_BUNDLE_BANK + 1 + i;
+        const chunk = await readPivDataObject(conn, tag);
+        if(!chunk) throw Error('Incomplete current public bundle on YubiKey.');
+        const expectedLen = 20 + Math.min(2048, size - i * 2048);
+        if(chunk.length !== expectedLen || asciiPrefix(chunk, 8) !== 'PQMCHK01'){
+          throw Error('Invalid public bundle chunk on YubiKey.');
+        }
+        if(readU64BeNumber(chunk, 8) !== generation || readU32Be(chunk, 16) !== i){
+          throw Error('Stale public bundle chunk on YubiKey.');
+        }
+        chunks.push(chunk.subarray(20));
+        observed.set(tag, chunk);
+      }
+      const bundleBytes = concatBytes(...chunks);
+      const actualDigest = await sha256Hex(bundleBytes);
+      if(actualDigest !== expectedDigest){
+        throw Error('Public bundle transport digest mismatch.');
+      }
+      if(asciiPrefix(bundleBytes, 8) !== 'PQMZIP01'){
+        throw Error('Current compressed public bundle (PQMZIP01) required.');
+      }
+      stored = {generation, bundle: toBase64(bundleBytes)};
+    }
+
+    const readSlotsOnce = async()=>{
+      const out = [];
+      for(const slot of ALL_24_SLOTS){
+        const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
+        if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
+          out.push({slot: slot.hex, publicKeySha256: null});
+        }else if(meta.sw === 0x9000){
+          const parsed = parseSlotMetadata(meta.data);
+          let spki;
+          try{ spki = pivMetadataToSpki(parsed); }
+          catch(_){ spki = parsed.publicKeyBytes; }
+          out.push({slot: slot.hex, publicKeySha256: spki.length ? await sha256Hex(spki) : null});
+        }else{
+          throw Error(`Slot ${slot.hex} metadata read failed: SW=0x${meta.sw.toString(16)}`);
+        }
+      }
+      return out;
+    };
+
+    const firstSlots = await readSlotsOnce();
+
+    // Double-read observed objects, all 24 slots, and serial to detect external mutation or device swap.
+    for(const [tag, expected] of observed){
+      const again = await readPivDataObject(conn, tag);
+      if(!bytesEqual(again, expected)) throw Error('Public bundle changed while reading.');
+    }
+    const secondSlots = await readSlotsOnce();
+    if(JSON.stringify(firstSlots) !== JSON.stringify(secondSlots)){
+      throw Error('Public keys changed while reading.');
+    }
+    const ser2 = await transmitChained(conn, new Uint8Array([0x00,0xF8,0x00,0x00]));
+    if(ser2.sw !== 0x9000 || String(parseSerial(ser2.data)) !== String(info.serial)){
+      throw Error('Device changed during public snapshot.');
+    }
+
+    const reply = {
+      format: 'sequoia-iwa-public-snapshot',
+      version: 1,
+      serial: String(info.serial),
+      slots: firstSlots,
+      warnings: [],
+    };
+    if(stored){
+      reply.bundle = stored.bundle;
+      reply.generation = stored.generation;
+    }
+    return reply;
+  });
+}
+
 async function readClassicalVaultSlots(conn, serial){
   const found = [];
   for(const slot of VAULT_ECDH_SLOTS){
@@ -690,12 +847,15 @@ const api = {
   extractEcUncompressedPointFromSpki,
   extractEcPointFromPivMetadataPub,
   ecUncompressedPointToSpki,
+  pivMetadataToSpki,
+  buildGetDataApdu,
   parseVersion,
   parseSerial,
   listYubiKeys,
   hardwareAuditViaSmartCard,
   signDigestViaSmartCard,
   decapsulateComponentsViaSmartCard,
+  readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,
   ecdhViaSmartCard,
   inspectPivViaSmartCard,
