@@ -118,7 +118,11 @@ export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked
     return await profile(expected);
    }
    await new Promise((resolve,reject)=>{
-    let done=false;const p=connect();port=p;
+    let done=false;
+    let p;
+    try{p=connect();}catch(_){return reject(Error('Companion extension is unavailable. Switch Google OAuth mode to "Direct Sockets loopback PKCE" in the Google browser test tab (and enter your Desktop OAuth client ID).'));}
+    if(!p)return reject(Error('Companion extension is unavailable. Switch Google OAuth mode to "Direct Sockets loopback PKCE" in the Google browser test tab.'));
+    port=p;
     const finish=e=>{if(done)return;done=true;clearTimeout(wait);e?reject(e):resolve();};
     const wait=setTimeout(()=>finish(Error('Google sign-in expired.')),600000);
     p.onDisconnect.addListener(()=>{void globalThis.chrome?.runtime?.lastError;finish(Error('Google sign-in closed.'));});
