@@ -620,8 +620,11 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
       recipientKey: request.recipientKey,
       mlkemCiphertext: request.mlkemCiphertext,
       x25519Ephemeral: request.x25519Ephemeral,
-      mlkemShare: toBase64(mlkemShare),
-      x25519Share: toBase64(x25519Share),
+      // Use the same component-response schema as the native adapter. WASM
+      // rejects unknown/missing fields before combining, and the coordinator
+      // drops these exact Secret-named properties after worker handoff.
+      mlkemSecret: toBase64(mlkemShare),
+      x25519Secret: toBase64(x25519Share),
     };
   });
 }

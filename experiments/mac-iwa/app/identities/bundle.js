@@ -9,6 +9,24 @@ const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const serial=value=>typeof value==='string'&&/^[1-9][0-9]{0,9}$/.test(value)&&Number(value)<=0x7fffffff;
 const SLOTS=['9a','9c','9d','9e',...Array.from({length:20},(_,i)=>(0x82+i).toString(16))];
 
+/** Bind a selected canonical certificate to a freshly authenticated card bundle.
+ * Bundle previews contain ASCII armor, while the identity store deliberately
+ * saves canonical packet bytes. Compare both through the same WASM inspector:
+ * comparing their transport strings rejects legitimate restores. Do not reduce
+ * this check to the primary fingerprint: changed subkeys or bindings may retain
+ * that fingerprint. The complete canonical certificate and its hash must match,
+ * in addition to the exact signed bundle hash and freshly matched hardware keys.
+ */
+export async function assertSelectedCardIdentity(fresh,selected,inspect){
+ const reject=()=>{throw Error('Card bundle differs from selected identity.');};
+ if(!fresh?.bundleSignatureVerified||!fresh.liveKeysMatched||fresh.serial!==selected?.serial||fresh.bundleHash!==selected.bundleHash)reject();
+ for(const entry of fresh.certificates){
+  const canonical=await inspect(entry.certificate);
+  if(canonical.certificate===selected.certificate&&canonical.certificateHash===selected.certificateHash&&canonical.fingerprint===selected.fingerprint)return;
+ }
+ reject();
+}
+
 /** Validate a complete fixed-slot snapshot; missing entries are not empty slots.
  * A null hash means that the native public reader positively found no key.
  * Require all 24 slots and reject duplicate/unknown entries so partial reads

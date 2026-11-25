@@ -4,6 +4,15 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.20.15 fixes the direct Web Smart Card mail path and makes Enter
+submit FIDO PIN dialogs.** A Chromebook Gmail self-test passed on 2026-11-25:
+v6 ML-DSA-65 + Ed25519 signing, ML-KEM-768 + X25519 encryption, Gmail delivery,
+and decryption with trusted-signature verification. The successful receive
+retry used 0.20.14; 0.20.15 adds the regression-tested FIDO keyboard behavior.
+No YubiKey keys or touch policies were changed. See the
+[validation and fixes](experiments/mac-iwa/README.md#chromebook-gmail-validation-and-web-smart-card-fixes-02015)
+and [signed preview download](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.15).
+
 **IWA 0.20.11 adds direct CTAP2 PRF vault access and previewSign diagnostics
 through Web Smart Card.** The FIDO tests tab includes a ten-key ARKG-P256
 OpenPGP certificate/message test with Sequoia verification and public downloads.

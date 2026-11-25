@@ -5,7 +5,10 @@ import init,{inspect_identity,match_recipients,inspect_bundle,companion_inspect,
 self.onmessage=async({data})=>{
  try{
   if(!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).sort().join(',')!=='op,value')throw Error();
-  const functions={'inspect':inspect_identity,'match':match_recipients,'bundle':inspect_bundle,'companion':companion_inspect,smartcard_signing_input},operation=functions[data.op];
+  // Wire operation names belong to the JavaScript client protocol; they need
+  // not equal Rust export identifiers. Keep this alias explicit so the public
+  // external-mu calculation reaches WASM before any PIV authorization prompt.
+  const functions={'inspect':inspect_identity,'match':match_recipients,'bundle':inspect_bundle,'companion':companion_inspect,'smartcard-signing-input':smartcard_signing_input},operation=functions[data.op];
   if(typeof operation!=='function'||!Object.hasOwn(functions,data.op))throw Error();
   // The outer worker limit is separate from Rust's packet/count bounds. No
   // attacker-selected URL, script or backend is accepted by either boundary.

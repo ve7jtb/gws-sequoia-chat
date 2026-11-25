@@ -52,9 +52,15 @@ function promptPin({serial,rpId,retries,purpose},signal,creating=false){
  el('fido-pin-wait').hidden=true;el('fido-pin-done').hidden=true;el('fido-pin-progress').textContent='';
  el('fido-pin-detail').textContent=`Key ${serial} · RP ${rpId} · ${retries} FIDO PIN tries remaining. This is the FIDO PIN, not the PIV PIN. Touch the key after submitting.`;
  return new Promise((resolve,reject)=>{
-  const finish=(error,pin)=>{input.value='';if(error)dialog.close();else stage('Touch your YubiKey','PIN submitted. Keep the key connected and touch it when it flashes.');el('fido-pin-ok').removeEventListener('click',ok);el('fido-pin-cancel').removeEventListener('click',abort);dialog.removeEventListener('cancel',abort);signal.removeEventListener('abort',abort);if(!error){el('fido-pin-cancel').onclick=()=>{cancel();stage('Cancelling','Waiting for the card operation to stop…');};dialog.oncancel=e=>{e.preventDefault();cancel();};}error?reject(error):resolve(pin);};
+  let settled=false;
+  const finish=(error,pin)=>{if(settled)return;settled=true;input.removeEventListener('keydown',onKeyDown);input.value='';if(error)dialog.close();else stage('Touch your YubiKey','PIN submitted. Keep the key connected and touch it when it flashes.');el('fido-pin-ok').removeEventListener('click',ok);el('fido-pin-cancel').removeEventListener('click',abort);dialog.removeEventListener('cancel',abort);signal.removeEventListener('abort',abort);if(!error){el('fido-pin-cancel').onclick=()=>{cancel();stage('Cancelling','Waiting for the card operation to stop…');};dialog.oncancel=e=>{e.preventDefault();cancel();};}error?reject(error):resolve(pin);};
   const abort=()=>finish(Error('FIDO PIN entry cancelled. No retry.'));
   const ok=()=>{if(signal.aborted)return abort();finish(null,input.value);};
+  // Enter follows the same authorization path as the visible button for every
+  // FIDO use (vault, enrollment and previewSign). Ignore IME composition and
+  // held-key repeats; remove the listener before waiting for authenticator touch.
+  const onKeyDown=e=>{if(e.key==='Enter'&&!e.isComposing&&!e.repeat){e.preventDefault();ok();}};
+  input.addEventListener('keydown',onKeyDown);
   el('fido-pin-ok').addEventListener('click',ok);el('fido-pin-cancel').addEventListener('click',abort);dialog.addEventListener('cancel',abort);signal.addEventListener('abort',abort,{once:true});
   if(signal.aborted)return abort();el('fido-pin-cancel').onclick=null;dialog.oncancel=null;input.value='';if(!dialog.open)dialog.showModal();input.focus();
  });

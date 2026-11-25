@@ -24,7 +24,7 @@ const { createHardwareTransport } = ctx;
     async listYubiKeys() { pivCalls.push('listYubiKeys'); return [{ serial: '41088108', version: '0.0.1', reader: 'YubiKey' }]; },
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
-    async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemShare: 'CC==', x25519Share: 'DD==' }; },
+    async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemSecret: 'CC==', x25519Secret: 'DD==' }; },
     async readPublicSnapshotViaSmartCard(serial, includeBundle) {
       pivCalls.push('snapshot:' + serial + ':' + includeBundle);
       return { format: 'sequoia-iwa-public-snapshot', version: 1, serial: serial || '41088108', slots: [], warnings: [], ...(includeBundle ? { bundle: 'UFFNWklQMDE=', generation: 4 } : {}) };
@@ -86,7 +86,7 @@ const { createHardwareTransport } = ctx;
   // Decapsulation ticket + decapsulate flow via smartcard
   const dmat = await t.dispatch('chat-selected-decryption-material', { identity: id }, {}, nativeRequest);
   const shares = await t.dispatch('chat-decapsulate-components', { review: dmat.review, requestId: '2'.repeat(64), recipientKey:id.recipientKey }, {}, nativeRequest);
-  assert.equal(shares.mlkemShare, 'CC==');
+  assert.equal(shares.mlkemSecret, 'CC==');
 
   // Vault material + classical ECDH via smartcard
   const vmat = await t.dispatch('chat-vault-material', {}, {}, nativeRequest);

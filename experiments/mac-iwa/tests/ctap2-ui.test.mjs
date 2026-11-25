@@ -31,3 +31,21 @@ test('failure is explicit and never displayed as successful vault unlock',()=>{
 });
 
 test('preflight failures open an explicit result dialog without a PIN request',()=>{const h=harness();h.run("complete('Enter the expected YubiKey serial.',false)");assert.equal(h.el('fido-pin-dialog').open,true);assert.match(h.el('fido-pin-progress').textContent,/serial/);assert.equal(h.el('fido-pin-entry').hidden,true);});
+
+// Keyboard authorization must submit exactly once and must not retain handlers
+// after submission/cancellation, particularly while the touch UI remains open.
+test('Enter authorizes FIDO PIN and removes the handler before touch',async()=>{
+ const h=harness();h.run('globalThis.controller=new AbortController();');
+ const pending=h.run("promptPin({serial:'123',rpId:'package',retries:8},controller.signal)");
+ const input=h.el('fido-pin-input');input.value='test-only';
+ const key=(extra={})=>Object.assign(new Event('keydown',{cancelable:true}),{key:'Enter',...extra});
+ for(const extra of [{repeat:true},{isComposing:true}]){input.dispatchEvent(key(extra));assert.equal(input.value,'test-only');}
+ const enter=key();input.dispatchEvent(enter);assert.equal(enter.defaultPrevented,true);
+ assert.equal(await pending,'test-only');assert.equal(input.value,'');
+ assert.match(h.el('fido-pin-title').textContent,/Touch/);
+ const again=key();input.dispatchEvent(again);assert.equal(again.defaultPrevented,false);
+ // Reopening and cancelling must also remove the keyboard handler.
+ const cancelled=h.run("promptPin({serial:'123',rpId:'package',retries:8},controller.signal)");
+ h.run('controller.abort()');await assert.rejects(cancelled,/cancelled/);
+ const after=key();input.dispatchEvent(after);assert.equal(after.defaultPrevented,false);
+});

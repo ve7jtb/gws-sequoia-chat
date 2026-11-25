@@ -30,6 +30,44 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Chromebook Gmail validation and Web Smart Card fixes (0.20.15)
+
+On 2026-11-25, the Google Eve Chromebook completed the existing-credential
+FIDO PRF vault unlock and Google loopback OAuth sign-in. A synthetic Gmail
+self-message was signed using the existing Level 3 v6 ML-DSA-65 + Ed25519
+identity (PIV slots 9c/84), encrypted with ML-KEM-768 + X25519, sent and received.
+With 0.20.14 installed, the received message decrypted using slots 9d/85 and the
+IWA reported **“Gmail decryption and signature verification passed using IWA
+trust.”** These operations used Web Smart Card and Sequoia WASM, without the Mac
+native helper or PKCS#11. No new message was sent during the successful receive
+retry, and no keys, card certificates or touch policies were changed. This was
+not a separate before/after audit of every card slot or policy.
+
+The fixes retained all live-card, signed-bundle, ciphertext-binding and trust
+checks:
+
+- Normalize armored bundle certificates with the same WASM inspector used by
+  saved identities before comparing full certificate bytes, hash and fingerprint.
+- Route the client’s `smartcard-signing-input` operation to the corresponding
+  WASM export before requesting the PIV PIN.
+- Return `mlkemSecret` and `x25519Secret` from Web Smart Card, matching the strict
+  WASM component-response schema and its reference cleanup. The previous Share
+  field names caused rejection after card operations. This is a shared-code
+  defect, not a ChromeOS-specific cryptographic or transport limitation.
+- In 0.20.15, Enter submits FIDO PIN dialogs for vault access, enrollment and
+  previewSign just like the authorization button. Held-key repeats and IME
+  composition are ignored, handlers are removed on completion/cancellation, and
+  touch/progress/result dialogs remain visible. This keyboard change has local
+  regression coverage; the Chromebook hardware success above used 0.20.14.
+
+All 42 targeted regression tests passed with no skips. Coverage includes the actual Web Smart Card response passed to the
+shipped WASM decoder with a synthetic Sequoia fixture, plaintext recovery and
+signature verification, plus rejection of changed bindings/secrets/trust and
+cancelled or duplicate operations. Earlier APDU mocks alone did not cover this
+adapter-to-WASM boundary. Existing successful native-helper mail tests and FIDO
+PRF/ARKG tests exercise different paths and did not establish direct PIV message
+decryption on the Mac.
+
 ## Install the preview on ChromeOS
 
 These instructions target **ChromeOS with Chrome 143 or later**, using the
@@ -42,7 +80,7 @@ ChromeOS alone does not enable unsupported app profiles.
 
 1. Update ChromeOS and check the Chrome version at `chrome://version`.
 2. Download `sequoia-lab.swbn` and `SHA256SUMS.txt` from the
-   [0.20.11 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.11).
+   [0.20.15 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.15).
    Use the release bundle, not GitHub's source-code ZIP. If a checksum tool is
    available, compare the downloaded bundle with the published SHA-256.
 3. Open `chrome://flags/#enable-isolated-web-app-dev-mode`, enable **Isolated
@@ -166,8 +204,9 @@ working on ChromeOS. FIDO PRF and previewSign are separate diagnostic/vault path
 
 For Google sign-in without the native bridge, choose **Google browser test →
 Google OAuth mode → Direct Sockets loopback PKCE**. The shared Desktop client is
-bundled. Gmail API transport runs in the IWA, but ChromeOS end-to-end OAuth/mail
-validation is still pending. Chat attachment transfers currently depend on the
+bundled. ChromeOS Gmail sign-in, signed/encrypted sending, and trusted-signature
+verification after decryption passed as described above. Chat attachment transfers
+currently depend on the
 project's extension broker; the Smart Card Connector does not replace it. Installing
 this bundle alone is not a claim of complete extension-free Chat support.
 

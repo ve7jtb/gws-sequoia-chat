@@ -67,10 +67,10 @@ function hardwareRequest(op,data={},options={}) {
     const {choices}=await hardwareIdentitySelection.list(ownEmail);
     const selected=choices.find(c=>c.serial===ref?.serial&&c.fingerprint===ref?.fingerprint&&c.certificateHash===ref?.certificateHash&&c.bundleHash===ref?.bundleHash);
     if(!selected)throw Error('Select a current saved hardware identity.');
-    const {parseCardBundle}=await import('./identities/bundle.js');
-    const {inspectBundle}=await import('./identities/client.js');
+    const {parseCardBundle,assertSelectedCardIdentity}=await import('./identities/bundle.js');
+    const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
     const fresh=await parseCardBundle(await window.SequoiaSmartCardPiv.readPublicSnapshotViaSmartCard(selected.serial,true),inspectBundle);
-    if(fresh.bundleHash!==selected.bundleHash||!fresh.certificates.some(c=>c.certificate===selected.certificate))throw Error('Card bundle differs from selected identity.');
+    await assertSelectedCardIdentity(fresh,selected,inspectIdentity);
     await hardwareIdentitySelection.assert(selected);
     return {...selected,slots:fresh.slots};
    },
