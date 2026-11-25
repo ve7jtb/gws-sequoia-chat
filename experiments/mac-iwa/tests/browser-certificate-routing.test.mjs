@@ -272,3 +272,27 @@ test('software provider disappearing after review cannot fall back to native har
  await a.matchedShown;a.context.window.softwareIdentities=undefined;await a.chooseMatched();await rejected;
  assert.equal(a.decryptions.length,0);assert.equal(a.softwareCalls.length,0);assert.equal(a.native.length,0);
 });
+
+test('Drive download stages ciphertext locally and reuses trusted recipient matching',async()=>{
+ for(const software of [false,true]){
+  const a=application({software});a.node('drive-files-list').value='synthetic_file';
+  a.context.driveArg={download:async id=>{assert.equal(id,'synthetic_file');return 'c3ludGhldGljIGNpcGhlcg==';},clear(){}};
+  vm.runInContext('driveClient=driveArg;',a.context);
+  await a.context.driveDownload(true);
+  assert.equal(a.pendingLocal().cipher,'c3ludGhldGljIGNpcGhlcg==');assert.equal(a.node('open').open,true);
+  assert.equal(a.native.length,0);assert.equal(a.softwareCalls.length,0);
+  assert.match(a.node('open-title').textContent,/Drive/);
+ }
+});
+test('Drive download completion after lock cannot display or stage ciphertext',async()=>{
+ const a=application(),pending=deferred();a.node('drive-files-list').value='synthetic_file';
+ a.context.driveArg={download:()=>pending.promise,clear(){}};vm.runInContext('driveClient=driveArg;',a.context);
+ const opening=a.context.driveDownload(true);await Promise.resolve();a.lock();pending.resolve('c3ludGhldGljIGNpcGhlcg==');
+ await assert.rejects(opening);assert.equal(a.pendingLocal(),null);assert.equal(a.node('open').open,false);assert.equal(a.native.length,0);
+});
+
+test('Drive requires a truly unlocked vault even when no vault has been created',()=>{
+ const a=application();assert.throws(()=>a.context.driveVaultGate(),/Create and unlock/);
+ a.context.window.vaultIsUnlocked=()=>true;assert.doesNotThrow(()=>a.context.driveVaultGate());
+ a.lock();assert.throws(()=>a.context.driveVaultGate(),/locked/);
+});

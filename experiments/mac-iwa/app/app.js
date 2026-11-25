@@ -2,9 +2,10 @@
 // HTML, scripts, images or links execute. Imported software-key passwords are
 // cleared from the form immediately and stored only inside the encrypted vault.
 const $=id=>document.getElementById(id);
-const isMail=()=>$("transport").value==="mail";
-const service=()=>isMail()?"Gmail":"Chat";
-const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
+const isDrive=()=>$("transport").value==="drive";
+const isMail=()=>$("transport").value!=="chat";
+const service=()=>isDrive()?"Drive":isMail()?"Gmail":"Chat";
+const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-drive-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
 let ownEmail="";
 let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount,legacyAccountEmail;
 let certificateReview=null,managementReview=null;
@@ -260,7 +261,7 @@ event('migration-import',async()=>{
 // Service labels are derived together so hidden controls and dialogs cannot
 // retain wording from the previously selected transport.
 function serviceLabels(){
- const mail=isMail(),name=service();
+ const mail=isMail(),name=service(),drive=isDrive();
  $('service-title').textContent='Sequoia '+name+' Lab';
  $('service-lead').textContent=name+' transport. Hardware or vault-protected software identities. Encrypted and verified by Sequoia.';
  $('login').textContent='Sign in to '+name;
@@ -278,8 +279,23 @@ function serviceLabels(){
  $('send-title').textContent='Send encrypted '+name+(mail?' email?':' bundle?');
  $('send-help').textContent=mail?'Gmail sends encrypted PGP/MIME. Subject, text and attachments stay inside encryption.':'Chat sends linked bundle/certificate messages. Subject, text and attachments stay inside encryption.';
  $('send').textContent='Send via '+name;
- $('save-encrypted').hidden=!mail;
- $('open-title').textContent='Decrypt and verify '+name+(mail?' email':' bundle');
+ // Reset shared reader controls on every service switch; Drive has no mail inbox.
+ $('load').textContent=drive?'Browse encrypted Drive files':'Load messages';
+ for(const id of ['local-mail','local-mail-label','newer','older'])$(id).hidden=drive;
+ $('clear-reader').textContent=drive?'Clear file':'Clear message';
+ $('save-encrypted').hidden=!mail||isDrive();
+ $('send').hidden=isDrive();$('drive-upload').hidden=!isDrive();
+ if(isDrive()){
+  $('inbox-tab').textContent='Decrypted files';$('inbox-title').textContent='Decrypted Drive files';
+  $('mail-query').hidden=true;$('mail-query-label').hidden=true;
+  $('compose-title').textContent='Sign and encrypt files for Drive';
+  $('compose-help').textContent='Attach files and choose a trusted recipient. The selected software or YubiKey identity signs locally; only a .pgp ciphertext is uploaded.';
+  $('compose-destination').textContent='Google Drive — new encrypted file';
+  $('prepare').textContent='Sign and prepare encrypted files…';
+  $('send-title').textContent='Upload signed and encrypted files to Drive?';
+  $('send-help').textContent='Only the .pgp ciphertext is uploaded. Google sharing permissions remain unchanged. No email or Chat message is sent.';
+ }
+ $('open-title').textContent=drive?'Decrypt and verify Drive file':'Decrypt and verify '+name+(mail?' email':' bundle');
  $('open-help').textContent=(mail?'Verify against the selected trusted sender certificate.':'The attached certificate must match this trusted contact.')+' Choose the matching hardware or unlocked software identity next.';
  $('decrypt').textContent='Decrypt '+name;
 }
@@ -367,8 +383,8 @@ async function bootstrap(){
  await refreshAccount();await softwareUi.refresh();
  say(ownEmail?'Ready. Local certificates and account settings are available; unlock the vault and sign in to Google.':'Ready. Configure your Google account in Account. Contacts, saved identities and the existing vault are available.');tab(ownEmail?'inbox':'account-settings');
 }
-async function loadSpaces(token=''){if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
-async function messages(token=''){const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openRemoteMessage(m.name);});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}
+async function loadSpaces(token=''){if(isDrive()){tab('drive-files');return driveList();}if(isMail()){const a=await call('chat-mail-connect');say('Gmail connected: '+a.account);pages=[''];page=0;await messages();return;}const r=await call('chat-spaces',{page:token});spaces=token?[...spaces,...r.spaces]:r.spaces;spaceNext=r.next;options('space',spaces,s=>s.name,s=>s.title);$('more-spaces').hidden=!spaceNext;say('Chat connected. Select a conversation to read messages.');}
+async function messages(token=''){if(isDrive()){tab('drive-files');return driveList();}const r=await call(isMail()?'chat-mail-list':'chat-messages',isMail()?{page:token,query:$('mail-query').value}:{space:$('space').value,page:token});next=r.next;$('messages').replaceChildren();for(const m of r.messages){const b=document.createElement('button');b.textContent=(m.encrypted?'🔒 Encrypted bundle · ':'')+m.time+'\n'+m.text;b.addEventListener('click',()=>{if(isMail()&&!m.encrypted){readOrdinary(m.name).catch(e=>say(e.message,true));return;}if(!m.encrypted){say('This is a Google Chat text/certificate message, not an encrypted bundle.');return;}if(!contacts.length){say('Import and trust the sender’s certificate first.',true);tab('contacts');return;}openRemoteMessage(m.name);});$('messages').append(b);}$('newer').disabled=page===0;$('older').disabled=!next;say(service()+' messages loaded. Encrypted content is decrypted only when opened.');}
 function openRemoteMessage(name){
  // Each provider selection owns a fresh dialog. In particular, a local file
  // dismissed with Escape must not win over this newly selected message ID.
@@ -431,6 +447,7 @@ function showOrdinary(r,message){
  say('Gmail message opened — not encrypted; signature: '+r.signatureStatus+'; certificate trust: '+r.certificateTrust+'.');
 }
 event('login',async()=>{
+ if(isDrive())return driveConnect();
  const snapshot=accountSnapshot;assertAccount(snapshot);
  await window.googleTransport.login(snapshot.email);assertAccount(snapshot);
  say('Google connected directly. Access lasts until expiry or vault lock.');await loadSpaces();
@@ -463,7 +480,7 @@ event('prepare',async()=>{
   await certificateStore.assertContact(selected);await assertSender();
   compose.attachments=await attachmentData();
   // This metadata-only route does not receive MIME or prompt for a PIN.
-  const material=await dispatchRequest(mail?'chat-mail-prepare':'chat-prepare',{
+  const material=await dispatchRequest(isDrive()?'chat-drive-prepare':mail?'chat-mail-prepare':'chat-prepare',{
    ...(!mail?{space}:{}),contact:recipient.id,subject:compose.subject,identity:senderChoice,compatibilityConfirmed});
   prepared=material.review;
   const {signAndEncrypt}=await import('./signing-session.js');
@@ -476,7 +493,7 @@ event('prepare',async()=>{
    {createWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),signal:signingAbort.signal});
   await assertSender();const r=await composeReviews.complete(material.review,encrypted.cipher);
   review=r.review;$('send-details').textContent='Send as: '+r.sender+' · '+custodyLabel(sender)+'\nSigning certificate: '+r.senderFingerprint+'\nSubject: '+r.subject+'\n'+(mail?'Service: ':'Chat conversation: ')+r.space+'\nRecipient: '+r.recipient+'\nFingerprint: '+r.fingerprint+(r.compatibilityWarnings?.length?'\n\n'+r.compatibilityWarnings.join('\n'):'');
-  $('confirm-send').showModal();say((mail?'Gmail':'Chat')+' signature constructed and verified in WASM; encrypted message ready for review.');
+  $('confirm-send').showModal();say(service()+' signature constructed and verified in WASM; encrypted message ready for review.');
  } catch(e){if(prepared)composeReviews.cancel(prepared);throw e;}
  finally {signingAbort=null;operationBusy(false);}
 });
@@ -537,7 +554,7 @@ async function decryptSelected(){
  // Capture a local envelope before clearing the pending dialog. A late lock,
  // tab change or trust update still changes readerGeneration and blocks both
  // PIN submission and display; no fallback to a remote message ID is allowed.
- const local=localEncrypted,name=openMessage,generation=beginReading();$('read-certificates').replaceChildren();
+ const local=localEncrypted,name=openMessage,fromDrive=localEncrypted?.source==='Drive',generation=beginReading();$('read-certificates').replaceChildren();
  if(!local&&!name)throw Error('Open an encrypted message first.');
  const selectedService=local?'Gmail':service(),selectedContact=$('signer').value;
  const selected=await certificateStore.trustedContact(selectedContact);
@@ -566,7 +583,7 @@ async function decryptSelected(){
  $('verified').textContent='Encryption: Encrypted (decrypted) with '+custodyLabel(recipient)+' · Signature: Valid · Certificate trust: Trusted '+r.sender+'\n'+r.signatures[0].fingerprint+' · '+(r.signatures[0].algorithm||'')+(r.warning?'\n'+r.warning:'');
  $('read-body').textContent=r.text;$('toggle-html').hidden=!r.html;renderSafeHtml($('read-html'),r.html||'');
  $('read-html').hidden=true;$('read-body').hidden=false;renderFiles(r.attachments);$('reader').hidden=false;
- say((local?'Local email':selectedService)+' decryption and signature verification passed using IWA trust.');
+ say((fromDrive?'Drive file':local?'Local email':selectedService)+' decryption and signature verification passed using IWA trust.');
 }
 event('decrypt',decryptSelected);
 event('clear-reader',()=>{readerGeneration++;readerEvidence=null;clearPendingOpen();$('read-certificates').replaceChildren();$('reader').hidden=true;$('read-html').replaceChildren();$('read-files').replaceChildren();$('read-subject').textContent=$('read-body').textContent=$('verified').textContent='';});
@@ -659,11 +676,71 @@ $('local-mail').addEventListener('change',async()=>{try{await readLocalFile($('l
 // Browser-staged ciphertext and captured verification evidence are transient.
 // Lock/exit cannot leave an actionable send ticket or a stale trust dialog.
 window.addEventListener('iwa-vault-locked',()=>{
- signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();identityListGeneration++;
+ clearDrive();signingAbort?.abort();decryptionAbort?.abort();invalidateCertificateViews();identityListGeneration++;
  // Hide software choices synchronously. A delayed older inventory read cannot
  // repopulate them after locking, even if its public validation was in flight.
  sendIdentities=sendIdentities.filter(c=>c.provider!=='software');options('send-identity',sendIdentities,c=>c.id,identityLabel);updateIdentityHelp();
  refreshSendIdentities().catch(e=>say(e.message,true));
 });
 for(const event of ['iwa-vault-unlocked','iwa-software-identities-changed'])window.addEventListener(event,()=>{invalidateCertificateViews();refreshSendIdentities().catch(e=>say(e.message,true));});
-window.addEventListener('pagehide',()=>{softwareTestAbort?.abort();hardwareTestAbort?.abort();readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});
+window.addEventListener('pagehide',()=>{clearDrive();softwareTestAbort?.abort();hardwareTestAbort?.abort();readerGeneration++;signingAbort?.abort();decryptionAbort?.abort();composeReviews?.clear();readerEvidence=null;clearPendingOpen();certificateUpdates?.close();ownIdentityUpdates?.close();});
+
+// Drive is a separate, least-privilege session. It does not reuse Gmail/Chat
+// bearer tokens or persist OAuth material. The public review is consumed before
+// uploading so a failure can never silently re-send or fall back to email.
+let driveClient=null,drivePage='',driveAuth=null;
+function driveVaultGate(){window.vaultGate();if(!window.vaultIsUnlocked?.())throw Error('Create and unlock the credential vault first (Vault tab).');}
+async function driveTransport(){
+ if(!driveClient){const {createDriveFiles}=await import('./drive-files.js');driveClient=createDriveFiles({gate:driveVaultGate});}
+ return driveClient;
+}
+function clearDrive(){driveAuth?.abort();driveAuth=null;driveClient?.clear();drivePage='';$('drive-auth').hidden=true;$('drive-files-list').replaceChildren();$('drive-status').textContent='Drive disconnected; temporary access token cleared.';}
+async function driveConnect(){
+ if(busy)throw Error('An operation is already running.');driveVaultGate();clearDrive();
+ const auth=new AbortController();driveAuth=auth;operationBusy(true);
+ try{
+  const {runLoopbackPkceOAuth,getLoopbackClientId,getLoopbackClientSecret}=await import('./google-loopback-oauth.js');
+  const {DRIVE_SCOPE}=await import('./drive-files.js'),clientId=getLoopbackClientId();
+  const session=await runLoopbackPkceOAuth({clientId,clientSecret:getLoopbackClientSecret(clientId),scopes:[DRIVE_SCOPE],signal:auth.signal,
+   onAuthUrl:url=>{$('drive-auth').href=url;$('drive-auth').hidden=false;}});
+  window.vaultGate();if(driveAuth!==auth||auth.signal.aborted)throw Error('Drive sign-in cancelled');
+  (await driveTransport()).connect(session);$('drive-auth').hidden=true;
+  $('drive-status').textContent='Drive connected with drive.file only. No files uploaded. Select the intended Google account in consent; storage account may differ from signing identity.';
+ }finally{operationBusy(false);}
+}
+async function driveList(more=false){
+ const result=await (await driveTransport()).list(more?drivePage:'');
+ if(!more)$('drive-files-list').replaceChildren();
+ for(const file of result.files||[]){const option=document.createElement('option');option.value=file.id;option.textContent=file.name+' · '+file.modifiedTime;$('drive-files-list').append(option);}
+ drivePage=result.nextPageToken||'';$('drive-status').textContent='App-created encrypted files loaded. '+(drivePage?'More files available.':'End of list.');
+}
+event('drive-connect',driveConnect);event('drive-disconnect',clearDrive);
+event('drive-list',()=>driveList());event('drive-more',()=>{if(drivePage)return driveList(true);});
+event('drive-upload',async()=>{
+ if(busy)throw Error('An operation is already running.');
+ const rid=review,snapshot=accountSnapshot;review=null;$('confirm-send').close();
+ if(!rid||!isDrive())throw Error('Prepare a new Drive file first.');operationBusy(true);
+ try{
+  const output=await composeReviews.exportPgp(rid,ownEmail,true);window.vaultGate();assertAccount(snapshot);
+  const result=await (await driveTransport()).upload(output.cipher);
+  say('Encrypted file uploaded to Drive: '+result.name+'. No email sent.');$('drive-status').textContent='Upload complete: '+result.name;
+ }catch(error){throw Error(error.message+' Upload outcome may be uncertain if a request reached Google. Check the Drive list before preparing another upload.');}
+ finally{operationBusy(false);}
+});
+async function driveDownload(open){
+ if(busy)throw Error('An operation is already running.');
+ const generation=readerGeneration,snapshot=accountSnapshot,file=$('drive-files-list').value;operationBusy(true);
+ try{
+  const cipher=await (await driveTransport()).download(file);assertReading(generation);assertAccount(snapshot);window.vaultGate();
+  if(!open){
+   const raw=Uint8Array.from(atob(cipher),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([raw],{type:'application/pgp-encrypted'})),a=document.createElement('a');
+   a.href=url;a.download='encrypted-file.pgp';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+   say('Encrypted .pgp downloaded. Its signature has not yet been verified.');return;
+  }
+  if(!contacts.length)throw Error('Import and trust the expected sender certificate before decrypting.');
+  tab('inbox');beginReading();localEncrypted={encrypted:true,cipher,source:'Drive'};
+  $('open-title').textContent='Decrypt and verify Drive file';$('open-help').textContent='Select the expected trusted signer. The matching software or YubiKey recipient identity will be selected before decryption. Nothing is saved or trusted automatically.';
+  $('decrypt').textContent='Decrypt and verify';$('open').showModal();say('Encrypted Drive file downloaded; choose its trusted signer.');
+ }finally{operationBusy(false);}
+}
+event('drive-open',()=>driveDownload(true));event('drive-save',()=>driveDownload(false));

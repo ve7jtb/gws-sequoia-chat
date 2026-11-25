@@ -274,3 +274,10 @@ test('media replies are bounded, validated and never expose arbitrary broker err
   await assert.rejects(pending,error=>{assert.match(error.message,/HTTP 401/);assert.doesNotMatch(error.message,/SENSITIVE/);return true;});assert.throws(s.gate,/Sign in/);
  }finally{s.clear();}
 });
+
+test('Drive preparation selects a Drive-only review without requesting mail scopes or making network calls',async()=>{
+ const identity=selectedIdentity(),transport=createTransport({profile:()=>assert.fail('No Gmail/Chat access'),request:()=>assert.fail('No network during preparation')});
+ const context={account:identity.email,identitySelection:identitySelection(identity),certificateStore:{trustedContact:async()=>({email:'recipient@example.invalid'})},composeReviews:{prepare:async(_own,_peer,options)=>options}};
+ const result=await transport.call('chat-drive-prepare',{identity:identity.id,contact:'trusted',subject:'Encrypted file'},async(_op,data)=>({identity:data.identity}),context);
+ assert.equal(result.service,'Drive');assert.equal(result.space,'Drive');assert.equal(result.account,identity.email);
+});

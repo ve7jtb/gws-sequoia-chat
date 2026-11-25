@@ -2472,3 +2472,107 @@ No transport root or standalone CLI is required. Omitting `--email` preserves
 the fixed native enrollment exactly. Reload the matching extension and install
 the newer signed bundle through Canary's IWA developer UI. Existing origin-local
 account, vault, identities and trust remain associated with the stable IWA ID.
+
+### Development installation conversion limitation (2026-11-25)
+
+On the tested Chromebook, fetching the public update manifest offered 0.20.15,
+but installing it over the existing development installation returned **App is
+already installed**. **Perform update now** opened a local `.swbn` picker; it
+did not subscribe the app to the manifest. The existing FIDO PRF vault enrollment
+and saved Level 3 v6/v4 public identities remained present. No uninstall or data
+clearing was performed, and this is not an automatic-update success claim.
+
+Chromium's `GetUpdateOptionsIfAllowed` explicitly excludes developer-mode apps
+from automatic updates. Its `CheckCanBeInstalled` rejects an installation from
+the same management source, and both the developer UI and graphical installer
+map to `kIwaUserInstalled`. Merely adding an update URL or using the graphical
+installer therefore cannot convert this existing installation in place.
+
+The build now embeds `update_manifest_url` for future normal unmanaged installs.
+This source change is not retroactive to published 0.20.15 bundles. A future
+release needs a new version and the same signing key/package ID.
+
+Do **not** uninstall to convert until a complete migration backup is verified.
+The current **Export encrypted vault** contains the sealed vault and its unlock
+wrappers, but own identities and contact/trust records reside in separate
+IndexedDB databases. Those must also be backed up and validated on restore,
+along with account/transport settings. An encrypted vault export alone is not
+a complete application backup. Never copy Chrome's internal registration database
+or alter its development-mode marker manually.
+
+References: [Chrome version management](https://developer.chrome.com/docs/iwa/version-management),
+[update manager](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_manager.cc),
+[install command](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.cc),
+and [source mapping](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/web_applications/web_app_install_utils.cc).
+
+### Google Drive encrypted files (0.20.18, local preview)
+
+Select **Google Drive files** in Service, then **Drive files → Connect Google
+Drive**. The shared Desktop OAuth registration uses loopback PKCE and requests
+only `https://www.googleapis.com/auth/drive.file`. Enable Drive API in that
+registration's project. This session is separate from Gmail/Chat. Its access
+token remains in memory until expiry, vault lock, exit or disconnect; no new
+refresh token is persisted. Select the intended storage account during consent.
+
+In **Compose**, choose a trusted recipient and your software or YubiKey identity,
+enter a subject/body, attach files, and prepare the encrypted message. Review,
+then choose **Upload encrypted files to Drive**. The standard binary `.pgp`
+contains signed multipart MIME: text, optional HTML, and attachments. Original
+filenames and subject are encrypted; Drive sees a neutral outer filename, size,
+time and account metadata. Upload creates a new file, sends no email, and does
+not grant sharing permissions. Select your own recipient certificate for files
+you want to decrypt yourself: only the selected recipient receives the file key.
+
+**Refresh encrypted files** lists this app's marked OpenPGP files. **Download,
+decrypt and verify** asks for the expected trusted signer, matches the recipient
+to a saved software or YubiKey identity, then uses the existing WASM decryption
+and signature verification. Nothing is imported or trusted automatically.
+**Download encrypted .pgp** saves ciphertext without claiming verification.
+Share the public signer certificate separately for Sequoia CLI verification.
+
+Preview limits: 128 KiB total attachments, 256 KiB encrypted packets; MIME
+encoding overhead can reduce usable capacity. There is no arbitrary Drive file
+browser, large-file resume, overwrite/delete, or automatic retry. A failed POST
+may have reached Google; check the file list before uploading again.
+
+Tests cover exact binary transport, neutral metadata, fixed API origin, redirect
+rejection, drive.file scope, size limits, expiry/lock, one-use trusted reviews,
+and rejection of late UI results. A real software/WASM message passed through
+in-memory Drive HTTP upload/download and was decrypted and signature-verified
+independently by native Sequoia, including exact text, HTML and attachment bytes.
+Sequoia's reply also decrypted and verified in WASM. Live Drive consent, upload, download, software decryption and trusted hybrid
+signature verification passed in Chromium IWA Lab with a disposable Level 3
+identity. Physical YubiKey Drive operations and independent native Sequoia
+verification of that live download remain pending. No hardware keys, certificates or policies were changed.
+
+### Complete authenticator-protected backup (local preview)
+
+**Vault → Complete encrypted backup / restore and Google Drive** captures the
+sealed vault, own identities, public certificates/trust and local settings.
+It encrypts with the existing random AES-256 vault key, fresh nonce and distinct
+associated data; there is no backup password. The recovery header contains the
+encrypted vault and existing authenticator wrappers, including public wrapper
+names/identifiers. Restore requires the same signed IWA origin and an enrolled
+authenticator. The separate restore page currently supports FIDO PRF unlock
+through Web Smart Card; other wrapper types are preserved but cannot yet unlock
+that page.
+
+Restore refuses conflicting destination data, supports an interrupted identical
+restore, and checks all records by readback. A pending marker blocks ordinary
+startup until restore completes. Close other app windows before capture. The
+Drive backup list is separate from OpenPGP files and accepts only encrypted
+backup envelopes. In-memory drafts/tokens are excluded. Automated tests cover
+restoration, wrong authenticator, tampering, conflicts and interrupted recovery;
+**real second-instance restoration is not yet validated**. Do not uninstall the
+Chromebook's existing app until that validation completes.
+
+The live Chromium IWA Lab check found and fixed a Trusted Types bootstrap error;
+script loading now accepts only a fixed list of signed-bundle assets. Startup
+and navigation were verified in installed 0.20.17. Version 0.20.18 additionally
+requires an actually unlocked vault for Drive, including a new empty instance.
+The current automated run reports 315 passed, one optional skip, zero failures.
+
+Version 0.20.18 uses file-specific Drive compose, review and result labels, and
+hides email import and inbox paging in Drive mode. The signed preview is
+available through the update manifest; existing vault and identity storage
+remain under the same signed application ID.

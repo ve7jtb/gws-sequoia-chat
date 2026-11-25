@@ -18,7 +18,7 @@ function encoded(value,limit,label){
  return bytes;
 }
 function destination(service,space){
- if(service==='Gmail'&&space==='Gmail')return space;
+ if((service==='Gmail'||service==='Drive')&&space===service)return space;
  if(service==='Chat'&&typeof space==='string'&&/^spaces\/[A-Za-z0-9_-]+$/.test(space))return space;
  throw Error('Invalid review destination');
 }
@@ -47,7 +47,7 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
   if(!item||item.stage!==stage||age<0||age>TTL){pending.delete(id);throw Error('Compose review expired or consumed');}
   return item;
  }
- async function consume(id,service,confirmed,account){
+ async function consume(id,service,confirmed,account,pgpOnly=false){
   const generation=current(),item=lookup(id,'ready');
   // Sending and explicit ciphertext export share one authorization. Consume it
   // before asynchronous checks so export cannot leave a second sendable copy.
@@ -56,7 +56,7 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
   await certificateStore.assertContact(item.contact);unchanged(generation);
   if(identitySelection){await identitySelection.assert(item.identity);unchanged(generation);}
   if(now()-item.created<0||now()-item.created>TTL)throw Error('Compose review expired');
-  return structuredClone(item.outgoing);
+  return structuredClone(pgpOnly?{cipher:item.cipher}:item.outgoing);
  }
  return {
   async prepare(nativeMaterial,contact,{account,subject,service,space,identity,compatibilityConfirmed=false}){
@@ -96,15 +96,22 @@ export function createComposeReviews({certificateStore,identitySelection,now=()=
     // Ciphertext comes only from the fixed signing worker after its independent
     // signature verification and encryption. This layer validates framing and
     // current trust; it cannot prove plaintext equality without recipient keys.
-    const outgoing=item.material.service==='Gmail'?{raw:gmailEnvelope(item.account,item.contact.email,cipher)}:
+    const outgoing=item.material.service==='Drive'?{cipher}:item.material.service==='Gmail'?{raw:gmailEnvelope(item.account,item.contact.email,cipher)}:
      {space:item.space,cipher,certificate:item.material.senderCertificate};
-    unchanged(generation);item.outgoing=outgoing;item.stage='ready';
+    unchanged(generation);item.outgoing=outgoing;item.cipher=cipher;item.stage='ready';
     return {review:id,subject:item.material.subject,recipient:item.contact.email,fingerprint:item.contact.fingerprint,space:item.space,service:item.material.service,...(item.material.compatibilityWarnings?{compatibilityWarnings:item.material.compatibilityWarnings}:{}),
      ...(item.identity?{sender:item.identity.email,serial:item.identity.serial,senderFingerprint:item.identity.fingerprint}:{})};
    }catch(error){pending.delete(id);throw error;}
   },
   async take(id,service,confirmed,account){
    return consume(id,service,confirmed,account);
+  },
+  async exportPgp(id,account,confirmed){
+   // Drive consumes the same trust/identity-bound one-use review as email.
+   // Only the verified worker's encrypted packet is released; never MIME or keys.
+   const generation=current(),item=lookup(id,'ready');
+   const output=await consume(id,item.material.service,confirmed,account,true);
+   unchanged(generation);return output;
   },
   async exportEmail(id,account,confirmed){
    // This exports the already encrypted PGP/MIME envelope only. It does not

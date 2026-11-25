@@ -1,7 +1,7 @@
 import {createSession} from './google-session.js';
 import {b64,bytes64,envelope,LIMIT} from './message-mime.js';
 const GMAIL='https://gmail.googleapis.com',CHAT='https://chat.googleapis.com';
-const routes=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
+const routes=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-drive-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
 const query=o=>new URLSearchParams(Object.entries(o).filter(([,v])=>v!=='')).toString();
 function resource(value,kind){const re=kind==='space'?/^spaces\/[A-Za-z0-9_-]+$/:/^spaces\/[A-Za-z0-9_-]+\/messages\/[A-Za-z0-9_.~-]+$/;if(typeof value!=='string'||!re.test(value))throw Error('Invalid Chat resource');return value;}
 function mailId(value){if(typeof value!=='string'||! /^[a-fA-F0-9]{1,64}$/.test(value))throw Error('Invalid Gmail message');return value;}
@@ -42,9 +42,9 @@ export function createTransport(session){
   // Preparation is entirely local: the selected restored identity binds the sender,
   // IWA trust binds the recipient, and the vault gates the private operation.
   // Requiring OAuth here would prevent explicit offline encrypted-file export.
-  if(op==='chat-mail-prepare'||op==='chat-prepare'){
-   const service=op==='chat-mail-prepare'?'Gmail':'Chat';
-   const space=service==='Gmail'?'Gmail':resource(d.space,'space');
+  if(op==='chat-mail-prepare'||op==='chat-drive-prepare'||op==='chat-prepare'){
+   const service=op==='chat-drive-prepare'?'Drive':op==='chat-mail-prepare'?'Gmail':'Chat';
+   const space=service==='Chat'?resource(d.space,'space'):service;
    // Resolve current recipient trust and own-identity revision independently.
    // The browser supplies a public identity binding; native preparation checks
    // its live signed card bundle and derives supported slots itself.

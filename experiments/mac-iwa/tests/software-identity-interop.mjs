@@ -86,7 +86,28 @@ if(process.env.IWA_MESSAGE_ORACLE_BIN){
   assert.equal(response.status,0,'Independent software fixture oracle failed');
   return JSON.parse(response.stdout);
  };
- const nativeOpened=oracle('software-open',artifact.cipher);assert.equal(nativeOpened.verified,true);
+ // Pass the real signed/encrypted file through the Drive transport's binary
+ // multipart upload and bounded download before independent Sequoia opens it.
+ // HTTP is in-memory here: this is not a claim of a live Google Drive transfer.
+ const {createDriveFiles,DRIVE_SCOPE}=await import('../app/drive-files.js');
+ let uploaded;
+ const drive=createDriveFiles({fetcher:async(url,options)=>{
+  if(options.method==='POST'){
+   const body=Buffer.from(await options.body.arrayBuffer());
+   const boundary=options.headers['Content-Type'].split('boundary=')[1];
+   const marker=Buffer.from('Content-Type: application/pgp-encrypted\r\n\r\n');
+   const start=body.indexOf(marker)+marker.length;
+   assert(start>=marker.length);uploaded=body.subarray(start,body.length-Buffer.byteLength('\r\n--'+boundary+'--\r\n'));
+   assert.deepEqual(uploaded,Buffer.from(artifact.cipher,'base64'));
+   return Response.json({id:'synthetic_file',name:'encrypted.pgp'});
+  }
+  if(url.endsWith('alt=media'))return new Response(uploaded);
+  return Response.json({id:'synthetic_file',appProperties:{sequoiaOpenPgp:'1'},size:uploaded.length});
+ }});
+ drive.connect({token:'synthetic-test-token',scope:DRIVE_SCOPE,expiresIn:60});
+ await drive.upload(artifact.cipher);const downloaded=await drive.download('synthetic_file');drive.clear();
+ assert.equal(downloaded,artifact.cipher);
+ const nativeOpened=oracle('software-open',downloaded);assert.equal(nativeOpened.verified,true);
  const raw=Buffer.from(nativeOpened.data,'base64'),mail=await parse(raw);
  assert.equal(mail.subject,artifact.compose.subject);assert.equal(mail.text,artifact.compose.body);assert.equal(mail.html,artifact.compose.html);
  assert.equal(mail.attachments.length,1);assert.equal(mail.attachments[0].filename,artifact.compose.attachments[0].name);assert.equal(mail.attachments[0].content,artifact.compose.attachments[0].data);
@@ -102,7 +123,7 @@ if(process.env.IWA_MESSAGE_ORACLE_BIN){
  assert.equal(reopened.signatures[0].fingerprint,selected.fingerprint);assert.equal(reopened.subject,reply.subject);assert.equal(reopened.text,reply.body);assert.equal(reopened.html,reply.html);
  assert.equal(reopened.attachments.length,1);assert.equal(reopened.attachments[0].data,reply.attachments[0].data);
  fs.writeFileSync(path.join(directory,variant+'-native-reply.pgp'),Buffer.from(sealed.data,'base64'),{mode:0o600});
- report.independentSequoia={outgoingDecryptedAndVerified:true,incomingDecryptedAndVerified:true};
+ report.independentSequoia={outgoingDecryptedAndVerified:true,incomingDecryptedAndVerified:true,driveBinaryTransport:'in-memory HTTP; exact ciphertext round trip'};
 }
 assert.equal(workers,terminated,'Every worker must be terminated after its operation');
 // These are synthetic ciphertext, public certificate and expected MIME fields

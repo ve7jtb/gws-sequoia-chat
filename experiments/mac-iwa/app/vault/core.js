@@ -45,6 +45,21 @@ export class Vault {
    }catch(e){key.fill(0);throw e;}
   }finally{wrap?.fill(0);}
  }
+ // Backup cryptography stays inside the vault object; callers receive only
+ // ciphertext or authenticated snapshots, never the raw content key. Locking
+ // during WebCrypto work invalidates the result through the usual epoch guard.
+ async sealBackup(snapshot,header){
+  if(!this.unlocked)throw Error('Unlock the vault first');
+  const epoch=this.epoch,key=this.key,record=this.record;
+  const box=await seal(key,snapshot,['Sequoia IWA complete backup',2,header]);
+  this.assertLive(epoch,key,record);return box;
+ }
+ async openBackup(box,header){
+  if(!this.unlocked)throw Error('Unlock the backup vault first');
+  const epoch=this.epoch,key=this.key,record=this.record;
+  const value=await open(key,box,['Sequoia IWA complete backup',2,header]);
+  this.assertLive(epoch,key,record);return value;
+ }
  async add(w,secret){
   if(!this.unlocked)throw Error('Unlock the vault before enrolling another method.');
   if(this.record.wrappers.length>=16||this.record.wrappers.some(x=>x.type===w.type&&JSON.stringify(x.binding)===JSON.stringify(w.binding)))throw Error('Unlock method already enrolled or limit reached.');
