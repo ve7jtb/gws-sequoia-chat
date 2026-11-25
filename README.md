@@ -8,7 +8,9 @@ This is an experimental integration, not an official Google or Sequoia product. 
 submit FIDO PIN dialogs.** A Chromebook Gmail self-test passed on 2026-11-25:
 v6 ML-DSA-65 + Ed25519 signing, ML-KEM-768 + X25519 encryption, Gmail delivery,
 and decryption with trusted-signature verification. The successful receive
-retry used 0.20.14; 0.20.15 adds the regression-tested FIDO keyboard behavior.
+retry used 0.20.14. On the same Chromebook, the 0.20.15 update also passed
+the FIDO PIN Enter-key test: Enter submitted the PIN, touching the existing
+YubiKey completed PRF authentication, and the IWA displayed “Vault unlocked.”
 No YubiKey keys or touch policies were changed. See the
 [validation and fixes](experiments/mac-iwa/README.md#chromebook-gmail-validation-and-web-smart-card-fixes-02015)
 and [signed preview download](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.15).

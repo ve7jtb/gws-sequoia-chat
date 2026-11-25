@@ -58,7 +58,24 @@ checks:
   previewSign just like the authorization button. Held-key repeats and IME
   composition are ignored, handlers are removed on completion/cancellation, and
   touch/progress/result dialogs remain visible. This keyboard change has local
-  regression coverage; the Chromebook hardware success above used 0.20.14.
+  regression coverage and passed the Chromebook hardware test below.
+
+### Chromebook FIDO PIN Enter-key and PRF unlock test
+
+On 2026-11-25, ChromeOS confirmed **“Update to version 0.20.15 successful”**
+for the existing installation. After reopening the app, the existing vault was
+locked and its saved **“My YubiKey · FIDO PRF”** method remained selected.
+The FIDO PIN dialog identified the expected key and the IWA package RP.
+The tester entered the PIN locally, confirmed that **Enter submitted the dialog**
+without clicking Authorize, and touched the YubiKey. The observed result was
+**“Vault unlocked”** and **“Unlocked — auto-locks after five minutes of inactivity.”**
+This verifies the keyboard submission and existing-credential PRF unlock through
+Web Smart Card on the Chromebook, beyond the local keyboard regression test.
+
+No credentials were created or replaced, and no PIV keys or PIN/touch policies
+were changed. This was an existing-credential assertion, which may advance the
+normal FIDO signature counter; it was not a full before/after audit of all slots
+and policies. The update preserved the existing vault and saved identities.
 
 All 42 targeted regression tests passed with no skips. Coverage includes the actual Web Smart Card response passed to the
 shipped WASM decoder with a synthetic Sequoia fixture, plaintext recovery and
