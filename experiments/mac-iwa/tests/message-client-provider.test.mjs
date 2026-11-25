@@ -6,7 +6,7 @@ const source=fs.readFileSync(new URL('../app/message-client.js',import.meta.url)
 function harness(){
  const calls=[],states=[],workers=[];
  const context={Error,AbortController,setTimeout,clearTimeout,busy:false,decryptionAbort:null,
-  operationBusy:active=>states.push(active),nativeRequest:async()=>{calls.push('native');return {hardware:true};},
+  operationBusy:active=>states.push(active),hardwareRequest:async()=>{calls.push('native');return {hardware:true};},
   Worker:class{constructor(url,options){workers.push({url,options});}},
   loadModule:async path=>{assert.equal(path,'./decryption-session.js');calls.push('load');return {decryptWithHardware:async options=>{options.createWorker();return options.native('component',{});}};}};
  vm.createContext(context);vm.runInContext(source.replaceAll('import(','loadModule('),context);
@@ -21,6 +21,6 @@ test('software decryption uses its explicit provider and cleans up on refusal wi
  assert.equal(attempts,1);assert.deepEqual(h.calls,['load']);assert.deepEqual(h.states,[true,false]);assert.equal(h.context.decryptionAbort,null);
  assert.equal(h.workers[0].url,'/decryption-worker.js');assert.equal(h.workers[0].options.type,'module');
 });
-test('legacy hardware coordinator retains its explicit native path',async()=>{
+test('legacy hardware coordinator uses the selected hardware transport',async()=>{
  const h=harness(),result=await h.run({identity:{serial:'123'}});assert.equal(result.hardware,true);assert.deepEqual(h.calls,['load','native']);assert.deepEqual(h.states,[true,false]);
 });

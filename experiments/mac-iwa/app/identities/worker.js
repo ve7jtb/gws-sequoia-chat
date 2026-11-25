@@ -1,11 +1,11 @@
 // Public own-identity inspection and recipient matching run in a disposable
 // worker. It has no native bridge, PIN, private-key API or storage mutation.
-import init,{inspect_identity,match_recipients,inspect_bundle,companion_inspect} from '../wasm/sequoia_iwa_verify.js';
+import init,{inspect_identity,match_recipients,inspect_bundle,companion_inspect,smartcard_signing_input} from '../wasm/sequoia_iwa_verify.js';
 
 self.onmessage=async({data})=>{
  try{
   if(!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).sort().join(',')!=='op,value')throw Error();
-  const functions={'inspect':inspect_identity,'match':match_recipients,'bundle':inspect_bundle,'companion':companion_inspect},operation=functions[data.op];
+  const functions={'inspect':inspect_identity,'match':match_recipients,'bundle':inspect_bundle,'companion':companion_inspect,smartcard_signing_input},operation=functions[data.op];
   if(typeof operation!=='function'||!Object.hasOwn(functions,data.op))throw Error();
   // The outer worker limit is separate from Rust's packet/count bounds. No
   // attacker-selected URL, script or backend is accepted by either boundary.

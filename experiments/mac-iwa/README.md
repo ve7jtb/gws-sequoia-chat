@@ -1,5 +1,130 @@
 # Sequoia Chat Lab — experimental Mac IWA
 
+The top-level **FIDO tests** tab contains GetInfo diagnostics, cancellation and
+public results. It also provides explicit one-time **previewSign** setup and
+a repeatable synthetic signing test (experimental ARKG-P256, -65539). Setup
+creates a separate non-discoverable credential with UP+UV; it never adds the
+extension to or replaces the PRF vault credential. Public descriptors and opaque
+handles stay locally; no PIN/private keys are saved. Verification checks both
+the FIDO assertion and the derived-key signature, including a negative test
+with altered message bytes. The single-message hardware test passed on the connected Beta0 key. The ten-key batch hardware run remains pending. The implementation
+is checked against Yubico’s ARKG reference vector. See [Yubico previewSign](https://developers.yubico.com/Passkeys/Passkey_concepts/Security_key_capabilities/Signing_Extension_Preview.html).
+The **Test 10 ARKG OpenPGP certificates and messages** action derives ten distinct
+P-256 public keys, self-certifies ten v4 OpenPGP certificates, and signs ten
+individual synthetic messages. Each certificate and message is checked with
+Sequoia WASM, including rejection of altered messages. Public `.pgp` files and a
+JSON report can be downloaded; nothing is mailed or added to trust stores.
+There are twenty PIN/touch operations, labelled with the key and purpose.
+Software regression tests validate all ten outputs with Sequoia WASM and native
+`sq verify --message --signer-file`; the packet stream includes a one-pass
+signature, literal data, and signature. No PIV keys or policies are modified.
+
+After installing an update in Chromium, use **View → Force Reload This Page**
+if a new button does not respond: an older loaded module can otherwise remain
+active alongside the updated HTML. Current publication checks: 31 targeted tests
+passed, including native Sequoia verification of all ten software test messages.
+The ten-key hardware batch is not yet claimed as passed.
+
+**Vault** retains enrollment settings, credential creation and
+lock/unlock controls.
+
+## Direct CTAP2 vault support and release signing (0.20.8)
+
+The Web Smart Card transport can select the YubiKey FIDO application after
+checking the expected serial through PIV in the same PC/SC transaction. Vault
+controls provide PIN-free GetInfo and existing-credential PRF assertions using
+PIN/UV protocol 2, RP-scoped GetAssertion permission, and WebAuthn PRF salt
+processing. No extension/native helper is used for those operations. A separate
+masked FIDO PIN dialog distinguishes this PIN from the PIV PIN. Explicit creation uses a fresh random 32-byte user handle, `rk=true`, scoped
+MakeCredential permission and `hmac-secret-mc` to evaluate PRF during creation.
+It only targets the signed package RP. Existing-credential enrollment never
+falls back to creation. There is no reset, PIN-change or credential-management
+path, and PIN errors
+are never retried automatically. Successful assertions can advance the card's
+FIDO signature counter; they do not replace keys or change policies.
+
+New direct-FIDO vault bindings default to the **full IWA origin (`isolated-app://<signed-web-bundle-id>`, no trailing slash)** as
+RP ID. This is an application-defined direct CTAP scope, not a claim that every
+browser WebAuthn API uses that default. Existing bare-ID, extension or website wrappers
+retain their original RP and salt. Merely changing the default cannot migrate a
+credential to another RP. A local PIV-only vault must first be unlocked before
+an existing FIDO credential can be added as another local wrapper. Multiple
+discoverable matches require an imported wrapper's exact credential ID; this
+preview does not silently select among them. This is a vault PRF client, not a
+general-purpose WebAuthn assertion verifier: authenticated vault decryption
+checks that the recovered PRF secret is the enrolled secret.
+
+Recovery journals are scoped by RP; a prior bare-ID attempt never gets relabeled
+as a URL-scoped credential. Creation keeps a public-only recovery journal (RP, serial, salt, user handle and,
+once returned, credential ID). If enrollment fails after creation, it can resume
+with the exact credential. An uncertain creation outcome blocks another creation
+rather than silently generating duplicates. The existing vault wrapper remains.
+Package-scoped credentials currently require Web Smart Card: the helper's
+extension-origin WebAuthn path cannot use that RP. A native CTAP2 helper path is
+needed before the same credential can be used through both transports.
+
+Release packaging accepts `PQ_MAIL_IWA_KEY_FILE` pointing to the publisher's PEM
+key; an explicit missing/invalid key fails instead of generating another app ID.
+The private key remains in ignored local storage. The original development key
+is retained separately. The build embeds `IWA_BUNDLE_ID` in generated app config
+and the direct FIDO UI derives its default from that value.
+
+Validation: 26 targeted CTAP2, vault, PIV and OAuth tests passed, including an
+independent Node-crypto peer checking PIN/UV protocol 2, encrypted salt, PRF
+output, command restrictions, APDU chaining and cancellation before submission.
+The creation update passed 19 CTAP2/vault tests, including independent
+MakeCredential PRF exchange and recovery-ID delivery. Chromium accepted the
+release-key 0.20.5 update in place. Direct GetInfo passed
+on the Level 3 test key, advertising FIDO 2.3 and hmac-secret. Subsequent package-origin PRF enrollment and a separate lock/unlock test passed
+with interactive FIDO PIN/touch. These operations issued no PIV writes.
+
+## Shared Desktop OAuth defaults (0.20.2)
+
+The installed IWA includes the shared Google Desktop client ID and client secret
+for loopback PKCE. Leave the secret override blank to use the bundled registration.
+Custom client IDs never inherit the shared secret. Custom secrets remain in memory
+and are cleared from the form after use. Account tokens are not build inputs and
+retain the existing vault gate and memory-only lifetime.
+
+Packagers set `PQ_MAIL_DESKTOP_OAUTH_JSON` to the downloaded Desktop client JSON
+when running `node build.mjs`. Only `installed.client_id` and
+`installed.client_secret` are included in the ignored generated `app/config.js`.
+These installed-app configuration values are extractable from the signed bundle;
+they are not a confidentiality boundary. No account refresh tokens are bundled.
+All 33 targeted OAuth regression tests passed.
+
+## Web Smart Card and loopback OAuth integration (0.20.1)
+
+Optional direct Web Smart Card reads devices, all 24 slot records and the current
+compressed bundle. Native PKCS#11 remains the default and supports Level 5,
+v4/v5 and companions. Direct private operations currently support native Level 3
+v6 only; unsupported profiles stop without silently changing transports.
+
+The IWA authenticates a fresh bundle in WASM, matches the selected certificate,
+and checks live keys again inside the PIN transaction. One-use tickets bind each
+operation. ML-DSA external mu uses PIV tag 0x88, ML-KEM ciphertext uses tag 0x86,
+and each component gets its own PIN verification for PIN Always. Private-operation
+failures are not retried on another reader. Direct mode uses a masked browser PIN
+dialog; PINs are not saved, but JavaScript strings cannot be reliably zeroized.
+Native mode retains the existing native PIN boundary.
+
+Optional Google loopback OAuth uses Direct Sockets, authorization code + PKCE,
+random state and an ephemeral 127.0.0.1 listener. Access tokens remain in memory;
+refresh tokens are not persisted. The Desktop OAuth client is separate from the
+extension client. Secret input is cleared after capture. Extension OAuth and the
+bounded Chat attachment broker remain available.
+
+Browser support for these IWA APIs is required; a feature flag alone is not proof
+of platform support. CTAP2 over PC/SC is not implemented. Mock APDU and OAuth tests
+do not establish a physical-card or live Google authorization result.
+
+Integration validation: 307 JavaScript tests passed (one optional skip),
+139 Python tests passed, and 63 Rust tests passed. The signed 0.20.1 update
+opened with existing account/identity data and both selectors visible. The
+installed Chrome Canary reported Web Smart Card unavailable; no physical-card
+private operation or live loopback consent was attempted during this update.
+
+
 A signed Isolated Web App uses Sequoia WebAssembly for message cryptography and
 browser REST APIs for Gmail/Google Chat. Chat attachments use a bounded extension
 HTTPS broker. A scoped extension also connects it to native

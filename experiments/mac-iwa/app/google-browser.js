@@ -1,5 +1,6 @@
 // Experimental browser-only Gmail transport. Access token is closure memory
 // only; never rendered, logged, exported, sent to helper, or persisted.
+import {getOAuthMode,setOAuthMode,getLoopbackClientId,getLoopbackClientSecret,setLoopbackClientId,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
 export const AUTH_ORIGIN='https://ve7jtb.github.io';
 export function validReply(e,source,nonce,deadline,now=Date.now()){
  return e.origin===AUTH_ORIGIN&&e.source===source&&!!e.data&&e.data.nonce===nonce&&now<deadline;
@@ -54,6 +55,42 @@ if(typeof document!=='undefined'){
   }
  });
  $('google-browser-clear').onclick=()=>{clear();say('Google access token and authorization frame cleared.');};
+ const modeEl=$('google-oauth-mode'),clientEl=$('google-loopback-client'),secretEl=$('google-loopback-secret'),loopbackBtn=$('google-loopback-start'),loopbackLink=$('google-loopback-link');
+ if(modeEl){
+  modeEl.value=getOAuthMode();
+  modeEl.addEventListener('change',()=>{setOAuthMode(modeEl.value);say('Google OAuth mode set to '+(modeEl.value==='loopback-pkce'?'Direct Sockets loopback PKCE (no extension / no helper).':'Extension (chrome.identity).'));});
+ }
+ if(clientEl){
+  clientEl.value=getLoopbackClientId();
+  clientEl.addEventListener('change',()=>{try{setLoopbackClientId(clientEl.value);}catch(e){say(e.message);}});
+ }
+ if(loopbackBtn){
+  let loopbackAbort=null;
+  window.addEventListener("iwa-vault-locked",()=>loopbackAbort?.abort());
+  loopbackBtn.onclick=async()=>{
+   try{
+    gate();clear();loopbackAbort?.abort();loopbackAbort=new AbortController();
+    const current=epoch;
+    const cid=setLoopbackClientId(clientEl?.value||'');
+    if(!cid)throw Error('Enter a Google Desktop OAuth client ID first.');
+    const csec=getLoopbackClientSecret(cid,secretEl?.value||'');if(secretEl)secretEl.value='';
+    say('Listening on ephemeral 127.0.0.1 loopback port (Direct Sockets PKCE). Complete sign-in in the browser tab…');
+    const result=await runLoopbackPkceOAuth({
+     clientId:cid,
+     clientSecret:csec,
+     scopes:['https://www.googleapis.com/auth/gmail.readonly'],
+     signal:loopbackAbort.signal,
+     onAuthUrl:url=>{if(loopbackLink){loopbackLink.href=url;loopbackLink.hidden=false;}},
+    });
+    if(loopbackLink){loopbackLink.hidden=true;loopbackLink.removeAttribute('href');}
+    if(current!==epoch)return;
+    acceptToken(result);
+   }catch(e){
+    if(loopbackLink){loopbackLink.hidden=true;loopbackLink.removeAttribute('href');}
+    say(e.message);
+   }
+  };
+ }
  $('google-browser-profile').onclick=async()=>{
   try{gate();if(!token||Date.now()>=expires)throw Error('Reconnect Google first.');
    const current=epoch;request=new AbortController();

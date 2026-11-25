@@ -256,3 +256,6 @@ pub fn unwrap_vault_key(input:&str)->Result<String,JsValue>{
 
 #[cfg(test)]
 mod profile_tests;
+
+mod smartcard;
+pub use smartcard::smartcard_signing_input;

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
 function app(){
- const nodes=new Map(),native=[],google=[],buttons=[{}];let unlocked=true;
+ const nodes=new Map(),native=[],google=[],buttons=[{closest(){return null;}}];let unlocked=true;
  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:id==='transport'?'mail':'',classList:{toggle(){}}});return nodes.get(id);};
  const context={Promise,Error,document:{getElementById:node,querySelectorAll:()=>buttons},EXTENSION_ID:'test-extension',
   window:{vaultGate(){if(!unlocked)throw Error('Locked vault');}},chrome:{runtime:{connect(){

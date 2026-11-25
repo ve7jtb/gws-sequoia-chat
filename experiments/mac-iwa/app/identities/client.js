@@ -45,3 +45,6 @@ export function matchRecipients({cipher,candidates},options){return request('mat
 /** Verify the signed public envelope of a still-encrypted companion in WASM.
  * This worker receives no wrapping secret, PIN, or plaintext private material. */
 export function inspectCompanion(descriptor,options){return request('companion',descriptor,options);}
+
+// Public FIPS 204 prehash only; no native operation or PIN is exposed.
+export function smartcardSigningInput(value,options){return request("smartcard-signing-input",value,options);}

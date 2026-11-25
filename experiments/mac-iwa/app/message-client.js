@@ -13,7 +13,7 @@ async function decryptInIwa(options){
   const {decryptWithHardware}=await import('./decryption-session.js');
   // The selected identity fixes the component provider. A software failure must
   // never fall back to a hardware request (or the reverse).
-  return await decryptWithHardware({...options,native:options.native||nativeRequest,signal:decryptionAbort.signal,
+  return await decryptWithHardware({...options,native:options.native||hardwareRequest,signal:decryptionAbort.signal,
    createWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'})});
  }finally{decryptionAbort=null;operationBusy(false);}
 }
