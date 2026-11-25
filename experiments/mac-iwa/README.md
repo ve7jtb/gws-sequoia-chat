@@ -2593,3 +2593,11 @@ Return to app link; disabled buttons no longer imply work with a wait cursor.
 A separate-profile restore in Chromium IWA Lab reported every record read back
 identically. Post-restore signing/decryption validation remains pending.
 Validation: 315 automated tests passed, one optional skip.
+
+### 0.20.20 OAuth default
+
+Profiles without a saved Google OAuth choice now default to Direct Sockets
+loopback PKCE, rather than Extension. Explicit saved choices remain unchanged.
+Drive authorization already used loopback independently. The user confirmed
+Gmail/Chat authorization worked after selecting loopback in the restored profile.
+Regression tests cover missing settings and persistence of both explicit modes.

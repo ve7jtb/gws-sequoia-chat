@@ -1,3 +1,6 @@
+// These broker tests explicitly exercise extension authorization, independent
+// of the production default (loopback); no browser storage is involved.
+globalThis.localStorage={getItem:key=>key==='sequoia_google_oauth_mode'?'extension':null};
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createSession,SCOPES} from '../app/google-session.js';

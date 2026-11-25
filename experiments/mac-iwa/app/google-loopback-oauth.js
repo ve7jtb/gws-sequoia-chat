@@ -102,7 +102,9 @@ export function getOAuthMode(storage = globalThis.localStorage) {
     const v = storage?.getItem?.(STORAGE_MODE_KEY);
     if (v === 'loopback-pkce' || v === 'extension') return v;
   } catch (_) {}
-  return 'extension';
+  // New/restored profiles without a saved choice use the IWA's own OAuth
+  // listener. Preserve an explicit extension choice; never silently fall back.
+  return 'loopback-pkce';
 }
 
 export function setOAuthMode(mode, storage = globalThis.localStorage) {
