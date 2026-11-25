@@ -2576,3 +2576,10 @@ Version 0.20.18 uses file-specific Drive compose, review and result labels, and
 hides email import and inbox paging in Drive mode. The signed preview is
 available through the update manifest; existing vault and identity storage
 remain under the same signed application ID.
+
+Distribution check (0.20.18): Chromium IWA Lab fetched the public HTTPS update
+manifest and selected 0.20.18. The downloaded GitHub asset matched the local
+signed bundle byte-for-byte. Using Install against the existing developer
+installation returned “App is already installed”; this is not evidence of an
+automatic update or a conversion to unmanaged installation. Applying that
+web-downloaded bundle through Update and checking retained data is pending.
