@@ -7,7 +7,7 @@ creates a separate non-discoverable credential with UP+UV; it never adds the
 extension to or replaces the PRF vault credential. Public descriptors and opaque
 handles stay locally; no PIN/private keys are saved. Verification checks both
 the FIDO assertion and the derived-key signature, including a negative test
-with altered message bytes. The single-message hardware test passed on the connected Beta0 key. The ten-key batch hardware run remains pending. The implementation
+with altered message bytes. The single-message hardware test passed on the connected Beta0 key. The ten-key hardware batch and independent native Sequoia CLI checks passed. The implementation
 is checked against Yubico’s ARKG reference vector. See [Yubico previewSign](https://developers.yubico.com/Passkeys/Passkey_concepts/Security_key_capabilities/Signing_Extension_Preview.html).
 The **Test 10 ARKG OpenPGP certificates and messages** action derives ten distinct
 P-256 public keys, self-certifies ten v4 OpenPGP certificates, and signs ten
@@ -23,7 +23,9 @@ After installing an update in Chromium, use **View → Force Reload This Page**
 if a new button does not respond: an older loaded module can otherwise remain
 active alongside the updated HTML. Current publication checks: 31 targeted tests
 passed, including native Sequoia verification of all ten software test messages.
-The ten-key hardware batch is not yet claimed as passed.
+The ten-key hardware batch passed, followed by native Sequoia CLI verification
+of all ten exported messages, exact payload recovery, altered-message rejection
+and wrong-certificate rejection. See the [hardware interoperability report](../../docs/arkg-openpgp-interop.md).
 
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.

@@ -9,8 +9,10 @@ through Web Smart Card.** The FIDO tests tab includes a ten-key ARKG-P256
 OpenPGP certificate/message test with Sequoia verification and public downloads.
 Thirty-one targeted regression tests passed, including native Sequoia verification
 of ten software-generated packet streams. Single-message previewSign hardware
-verification and PRF lock/unlock passed; the ten-key hardware batch remains
-pending. After updating Chromium, use **View → Force Reload This Page** if a new
+verification and PRF lock/unlock passed. The ten-key hardware batch and native
+Sequoia CLI checks also passed: all ten signatures verified with exact payload
+recovery; all ten altered messages and wrong-certificate checks were rejected.
+See the [ARKG interoperability report](docs/arkg-openpgp-interop.md). After updating Chromium, use **View → Force Reload This Page** if a new
 button is unresponsive because an older script remains loaded. See
 [FIDO tests and setup](experiments/mac-iwa/README.md).
 
