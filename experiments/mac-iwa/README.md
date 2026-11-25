@@ -1,4 +1,4 @@
-# Sequoia Chat Lab — experimental Mac IWA
+# Sequoia Chat Lab — experimental IWA
 
 The top-level **FIDO tests** tab contains GetInfo diagnostics, cancellation and
 public results. It also provides explicit one-time **previewSign** setup and
@@ -29,6 +29,89 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
+
+## Install the preview on ChromeOS
+
+These instructions target **ChromeOS with Chrome 143 or later**, using the
+browser's IWA development installation path. ChromeOS hardware testing of this
+release has not yet been performed; the recorded hardware results are from the
+Mac Chromium build. Updating ChromeOS alone does not enable unsupported app
+profiles.
+
+### Install the signed bundle
+
+1. Update ChromeOS and check the Chrome version at `chrome://version`.
+2. Download `sequoia-lab.swbn` and `SHA256SUMS.txt` from the
+   [0.20.11 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.11).
+   Use the release bundle, not GitHub's source-code ZIP. If a checksum tool is
+   available, compare the downloaded bundle with the published SHA-256.
+3. Open `chrome://flags/#enable-isolated-web-app-dev-mode`, enable **Isolated
+   Web App developer mode**, and relaunch Chrome. This is a **browser flag**, not
+   Chromebook device Developer Mode: these instructions do not require disabling
+   verified boot, a Powerwash, or installing Linux/Crostini.
+4. Open `chrome://web-app-internals`. In **Isolated Web Apps**, select **Install
+   IWA from Signed Web Bundle** and choose the downloaded `.swbn`. On newer
+   builds that expose `chrome://iwa-dev/`, use its **Install** action instead.
+5. Launch **Sequoia Chat Lab** from the installed-app entry or ChromeOS launcher.
+   Confirm the package ID is
+   `aj2ncwirtvyf4zn2hxc2c2gqps6cmcap77dpanzkgh2tlfj7inkqaaic`.
+
+Google documents the development installation flow in its
+[IWA guide](https://developer.chrome.com/docs/iwa/introduction) and
+[ChromeOS developer-mode tutorial](https://chromeos.dev/en/tutorials/getting-started-with-isolated-web-apps/1).
+A managed Chromebook can block these controls; ask its administrator rather
+than changing device security settings. Managed deployment also has separate
+[Google IWA allowlist requirements](https://developer.chrome.com/docs/iwa/allowlist)
+and update-manifest/policy configuration. This GitHub preview does not establish
+that this package is approved for enterprise deployment.
+
+### Connect the YubiKey
+
+1. Install Google's **Smart Card Connector** extension from its
+   [official Chrome Web Store listing](https://chrome.google.com/webstore/detail/smart-card-connector/khpfeaanjngmcnplbdlpegiifgpfgdco).
+   This supplies ChromeOS's PC/SC service; it is distinct from this project's
+   optional native-bridge extension. The
+   [Web Smart Card setup guide](https://github.com/WICG/web-smart-card/blob/main/HOWTO.md)
+   documents ChromeOS 143+ and this prerequisite.
+2. Connect the YubiKey by USB with CCID/PIV enabled. Keep it connected to ChromeOS;
+   do not pass it through to a Linux VM. No NFC workflow is claimed here.
+3. In the app, choose **Hardware transport → Web Smart Card
+   (navigator.smartCard)** and approve the expected reader-access prompt.
+4. For FIDO diagnostics, set the expected YubiKey serial in **Vault → FIDO
+   enrollment settings**, then choose **FIDO tests → Read FIDO GetInfo — no PIN**.
+   This checks discovery before any private operation. PRF/previewSign also need
+   a key with the corresponding FIDO capabilities; ordinary YubiKeys need not
+   support experimental previewSign.
+5. Use the normal vault enrollment or restore flow. FIDO operations ask for the
+   **FIDO PIN**; PIV operations ask for the **PIV PIN**. Follow touch prompts and
+   wait for the completion result before removing the key. Existing credentials
+   must match their original RP; new IWA credentials use the full package-origin
+   RP, as described below.
+
+### Available paths and limitations
+
+The direct path uses Web Smart Card and bundled WASM, without the Mac native
+helper, PKCS#11 installation, Java, or `ykman`. In this release direct PIV private
+operations support **native Level 3 v6**; Level 5, v4/v5 hardware operations and
+companion restoration still require the native path and are not advertised as
+working on ChromeOS. FIDO PRF and previewSign are separate diagnostic/vault paths.
+
+For Google sign-in without the native bridge, choose **Google browser test →
+Google OAuth mode → Direct Sockets loopback PKCE**. The shared Desktop client is
+bundled. Gmail API transport runs in the IWA, but ChromeOS end-to-end OAuth/mail
+validation is still pending. Chat attachment transfers currently depend on the
+project's extension broker; the Smart Card Connector does not replace it. Installing
+this bundle alone is not a claim of complete extension-free Chat support.
+
+For updates, save drafts and use the installed application's **Update** action
+(or **Dev Mode App Updates** on older internals pages) with a newer signed bundle
+of the same package ID. Do not uninstall to update: local vault and app data may
+be lost. If new buttons appear but do nothing, use Chrome's **Reload / bypass
+cache** action (typically Ctrl+Shift+R) and reopen the app. If readers are absent,
+check Smart Card Connector, USB connection, CCID, and administrator policy before
+attempting PIN entry. Consult Google's
+[smart-card deployment guide](https://support.google.com/chrome/a/answer/7014520)
+for managed-device setup.
 
 ## Direct CTAP2 vault support and release signing (0.20.8)
 
