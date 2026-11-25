@@ -47,7 +47,8 @@ SCP11b is classical transport protection, not post-quantum encryption or host
 attestation. Revocation is not checked online. Beta devices with unrecognized
 chains are rejected rather than implicitly trusted.
 
-All 67 targeted software tests passed with no skips, including independent
+After integrating the 0.20.20 Drive/backup/OAuth changes, all 98 targeted
+software tests passed with no skips, including independent
 OpenSSL MAC/encryption checks, certificate and receipt rejection, secure applet
 reselection, and refusal before PIN prompting. Physical SCP11b PIV and FIDO validation is
 still pending. Existing 0.20.15 Chromebook results below did not enable SCP.
