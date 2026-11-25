@@ -1,6 +1,6 @@
 // Experimental browser-only Gmail transport. Access token is closure memory
 // only; never rendered, logged, exported, sent to helper, or persisted.
-import {getOAuthMode,setOAuthMode,getLoopbackClientId,setLoopbackClientId,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
+import {getOAuthMode,setOAuthMode,getLoopbackClientId,setLoopbackClientId,getDefaultLoopbackClientId,getDefaultLoopbackClientSecret,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
 export const AUTH_ORIGIN='https://ve7jtb.github.io';
 export function validReply(e,source,nonce,deadline,now=Date.now()){
  return e.origin===AUTH_ORIGIN&&e.source===source&&!!e.data&&e.data.nonce===nonce&&now<deadline;
@@ -64,15 +64,19 @@ if(typeof document!=='undefined'){
   clientEl.value=getLoopbackClientId();
   clientEl.addEventListener('change',()=>{try{setLoopbackClientId(clientEl.value);}catch(e){say(e.message);}});
  }
+ if(secretEl&&getDefaultLoopbackClientSecret()){
+  secretEl.placeholder='Using bundled default client secret (enter to override)';
+ }
  if(loopbackBtn){
   let loopbackAbort=null;
   loopbackBtn.onclick=async()=>{
    try{
     gate();clear();loopbackAbort?.abort();loopbackAbort=new AbortController();
     const current=epoch;
-    const cid=setLoopbackClientId(clientEl?.value||'');
+    const cid=setLoopbackClientId(clientEl?.value||'')||getDefaultLoopbackClientId();
     if(!cid)throw Error('Enter a Google Desktop OAuth client ID first.');
-    const csec=secretEl?.value?.trim()||'';
+    const typedSecret=secretEl?.value?.trim()||'';
+    const csec=typedSecret||(cid===getDefaultLoopbackClientId()?getDefaultLoopbackClientSecret():'');
     say('Listening on ephemeral 127.0.0.1 loopback port (Direct Sockets PKCE). Complete sign-in in the browser tab…');
     const result=await runLoopbackPkceOAuth({
      clientId:cid,

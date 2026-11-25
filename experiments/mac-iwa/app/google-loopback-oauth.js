@@ -97,11 +97,26 @@ export function buildLoopbackHttpResponse(status, title, bodyText) {
   return out;
 }
 
+export function getDefaultLoopbackClientId() {
+  return typeof globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_ID === 'string'
+    ? globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_ID.trim()
+    : '';
+}
+
+export function getDefaultLoopbackClientSecret() {
+  return typeof globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_SECRET === 'string'
+    ? globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_SECRET.trim()
+    : '';
+}
+
 export function getOAuthMode(storage = globalThis.localStorage) {
   try {
     const v = storage?.getItem?.(STORAGE_MODE_KEY);
     if (v === 'loopback-pkce' || v === 'extension') return v;
   } catch (_) {}
+  if (getDefaultLoopbackClientId() && typeof globalThis.TCPServerSocket === 'function') {
+    return 'loopback-pkce';
+  }
   return 'extension';
 }
 
@@ -114,7 +129,11 @@ export function setOAuthMode(mode, storage = globalThis.localStorage) {
 }
 
 export function getLoopbackClientId(storage = globalThis.localStorage) {
-  try { return storage?.getItem?.(STORAGE_CLIENT_ID_KEY) || ''; } catch (_) { return ''; }
+  try {
+    const saved = storage?.getItem?.(STORAGE_CLIENT_ID_KEY);
+    if (saved) return saved;
+  } catch (_) {}
+  return getDefaultLoopbackClientId();
 }
 
 export function setLoopbackClientId(clientId, storage = globalThis.localStorage) {

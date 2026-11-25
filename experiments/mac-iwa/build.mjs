@@ -18,7 +18,16 @@ const extensionId=crypto.createHash('sha256').update(pub).digest('hex').slice(0,
 // Restrict the host to Chat; the broker further restricts methods and paths.
 fs.writeFileSync('extension/manifest.json',JSON.stringify({manifest_version:3,name:'Sequoia IWA native bridge (experiment)',version:'0.19.2',key:pub.toString('base64'),permissions:['nativeMessaging','identity'],host_permissions:['https://chat.googleapis.com/*'],background:{service_worker:'background.js'},externally_connectable:{matches:[origin+'/*']}},null,2));
 fs.writeFileSync('extension/config.js','const IWA_ORIGIN = '+JSON.stringify(origin)+';\n');
-fs.writeFileSync('app/config.js','const EXTENSION_ID = '+JSON.stringify(extensionId)+';\n');
+let googleOAuth={clientId:'',clientSecret:''};
+if(fs.existsSync('private/google-oauth.json')){
+ const parsed=JSON.parse(fs.readFileSync('private/google-oauth.json','utf8'));
+ googleOAuth={clientId:String(parsed.clientId||'').trim(),clientSecret:String(parsed.clientSecret||'').trim()};
+}
+fs.writeFileSync('app/config.js',
+ 'const EXTENSION_ID = '+JSON.stringify(extensionId)+';\n'+
+ 'globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_ID = '+JSON.stringify(googleOAuth.clientId)+';\n'+
+ 'globalThis.DEFAULT_GOOGLE_LOOPBACK_CLIENT_SECRET = '+JSON.stringify(googleOAuth.clientSecret)+';\n'
+);
 fs.writeFileSync('app/.well-known/manifest.webmanifest',JSON.stringify({id:'/',name:'Sequoia Chat Lab',short_name:'Sequoia Lab',version:'0.19.2',start_url:'/',scope:'/',display:'standalone',permissions_policy:{'smart-card':['self'],'cross-origin-isolated':['self'],'direct-sockets':['self'],'direct-sockets-private':['self']},icons:[{src:'/icon.svg',sizes:'any',type:'image/svg+xml',purpose:'any'}]},null,2));
 fs.writeFileSync('app/icon.svg','<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" rx="50" fill="#00566c"/><path d="M60 50h136v90q0 45-68 72-68-27-68-72z" fill="#9bcd35"/><text x="128" y="143" text-anchor="middle" font-size="58" font-family="sans-serif" font-weight="bold" fill="#00566c">SQ</text></svg>');
 // Fail early instead of shipping a diagnostic button with missing assets.

@@ -1,7 +1,7 @@
 // Access tokens live only in this closure. No refresh token, storage, native
 // callback, arbitrary URL or retry path is available to the transport layer.
 import {accountEmail} from './account-settings.js';
-import {getOAuthMode,getLoopbackClientId,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
+import {getOAuthMode,getLoopbackClientId,getDefaultLoopbackClientId,getDefaultLoopbackClientSecret,runLoopbackPkceOAuth} from './google-loopback-oauth.js';
 export const SCOPES=['gmail.readonly','gmail.send','chat.spaces.readonly','chat.messages.readonly','chat.messages.create'].map(s=>'https://www.googleapis.com/auth/'+s);
 export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked?.(),connect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-services'}),mediaConnect=()=>chrome.runtime.connect(EXTENSION_ID,{name:'google-chat-media'}),clock=()=>Date.now(),mediaTimeoutMs=45000}={}){
  let token=null,expires=0,epoch=0,port=null,timer=null,account='',pending=false;
@@ -108,7 +108,8 @@ export function createSession({fetcher=fetch,unlocked=()=>window.vaultIsUnlocked
   try{
    if(getOAuthMode()==='loopback-pkce'){
     const clientId=getLoopbackClientId()||globalThis.document?.getElementById?.('google-loopback-client')?.value?.trim()||'';
-    const clientSecret=globalThis.document?.getElementById?.('google-loopback-secret')?.value?.trim()||'';
+    const typedSecret=globalThis.document?.getElementById?.('google-loopback-secret')?.value?.trim()||'';
+    const clientSecret=typedSecret||(clientId&&clientId===getDefaultLoopbackClientId()?getDefaultLoopbackClientSecret():'');
     const c=new AbortController();controllers.add(c);
     try{
      const d=await runLoopbackPkceOAuth({clientId,clientSecret,scopes:SCOPES,fetcher,signal:c.signal});
