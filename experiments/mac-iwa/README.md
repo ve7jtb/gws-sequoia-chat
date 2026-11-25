@@ -30,6 +30,10 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Secure-channel startup correction (0.20.22)
+
+The Chromebook check of 0.20.21 stopped with “Secure-channel policy is not ready” before any card operation or PIN request. Its application bootstrap omitted the secure-channel UI module. Version 0.20.22 loads that module before the hardware and vault entry points, with a production-loader regression test. Hardware SCP validation remains pending; the application never silently falls back to plaintext.
+
 ## Secure YubiKey connection preview (0.20.21)
 
 The optional **Secure YubiKey connection (SCP11b; Web Smart Card only)** toggle

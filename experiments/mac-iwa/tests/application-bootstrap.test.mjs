@@ -17,3 +17,14 @@ test('IWA bootstrap uses only allowlisted TrustedScriptURL assets in order',asyn
 test('partial restoration redirects before loading any mail or vault code',async()=>{
  const f=run('pending-digest');await f.done;assert.equal(f.redirect(),'/backup.html');assert.deepEqual(f.loaded,[]);assert.equal(f.policy(),undefined);
 });
+
+// Exercise the actual production loader: isolated secure-channel unit tests
+// cannot detect a module that was accidentally omitted from startup.
+test('secure-channel policy loads before every card operation entry point',async()=>{
+ const f=run(null);await f.done;
+ const secure=f.loaded.indexOf('/secure-channel-ui.js');assert(secure>=0);
+ for(const entry of ['/app.js','/ctap2-ui.js','/vault-ui.js','/smartcard-piv.js','/hardware-transport.js']){
+  assert(f.loaded.indexOf(entry)>secure,entry+' must wait for secure-channel policy');
+ }
+ assert.match(source,/"src": "\/secure-channel-ui.js", "module": true/);
+});
