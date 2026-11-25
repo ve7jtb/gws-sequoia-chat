@@ -65,6 +65,32 @@ than changing device security settings. Managed deployment also has separate
 and update-manifest/policy configuration. This GitHub preview does not establish
 that this package is approved for enterprise deployment.
 
+### Update manifest and preserving local data
+
+The public [preview update manifest](https://raw.githubusercontent.com/ve7jtb/gws-sequoia-chat/main/experiments/mac-iwa/update-manifest.json)
+points to the release-signed bundle. Where Chrome offers **Install IWA from
+Update Manifest**, paste that URL and fetch the available versions. The default
+channel is **Preview**, initially version **0.20.11**.
+
+On the tested ChromeOS 150 build,
+`chrome://flags/#enable-isolated-web-app-unmanaged-install` exposes **Enable
+Isolated Web App unmanaged installation**. Availability does not yet establish
+that the existing development installation can be converted to automatic updates;
+that conversion is still under test. Do not uninstall a working installation to
+switch installation methods.
+
+Updates must retain package ID
+`aj2ncwirtvyf4zn2hxc2c2gqps6cmcap77dpanzkgh2tlfj7inkqaaic` and use the same release
+signing key. Save drafts before restarting Chrome. Do not clear app data or
+uninstall the app: the vault, saved identities and trust are local to that app
+origin. Publishing a manifest alone does not attach an existing development
+installation to its update feed. Confirm the update source in Chrome before
+relying on automatic updates.
+
+For maintainers: upload and verify the signed release bundle first, then add its
+exact version and immutable release URL to `update-manifest.json`. Keep previous
+entries available; do not replace an existing version with different bytes.
+
 ### Connect the YubiKey
 
 1. Install Google's **Smart Card Connector** extension from its
