@@ -102,5 +102,16 @@ const { createHardwareTransport } = ctx;
     /requires the Native helper/
   );
 
+  // Requiring SCP forbids the unprotected native path and native FIDO PRF,
+  // while unrelated Google API brokerage still works.
+  ctx.SequoiaSecureChannel={isRequired:()=>true};
+  t.setMode('native');
+  const before=nativeCalls.length;
+  await assert.rejects(t.dispatch('chat-vault-ecdh',{}, {},nativeRequest),/requires Web Smart Card/);
+  await assert.rejects(t.dispatch('vault-prf',{}, {},nativeRequest),/requires Web Smart Card/);
+  assert.equal(nativeCalls.length,before);
+  await t.dispatch('google-oauth-test',{}, {},nativeRequest);
+  assert.equal(nativeCalls.length,before+1);
+
   console.log('PASS hardware-transport dual-mode routing, ticket single-use, and no-fallback tests');
 })();

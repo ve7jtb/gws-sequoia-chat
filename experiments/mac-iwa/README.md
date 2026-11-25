@@ -30,6 +30,30 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Secure YubiKey connection preview (0.20.21)
+
+The optional **Secure YubiKey connection (SCP11b; Web Smart Card only)** toggle
+requires an authenticated, encrypted card session for direct PIV and CTAP2.
+It defaults off; when enabled it never silently falls back to plaintext or the
+native helper. The existing serial/public-key checks still identify the intended
+key. Failure of the manufacturer chain, handshake receipt, response MAC or
+padding ends the operation before further commands.
+
+The independent [secure-channel module](app/secure-channel/README.txt) can be
+reused by other IWAs. Its pinned Yubico Attestation Root 1 and bundled SD
+intermediates are offline signed application assets. Discovery and applet SELECT
+are public; application traffic is protected after the SCP11b handshake.
+SCP11b is classical transport protection, not post-quantum encryption or host
+attestation. Revocation is not checked online. Beta devices with unrecognized
+chains are rejected rather than implicitly trusted.
+
+All 67 targeted software tests passed with no skips, including independent
+OpenSSL MAC/encryption checks, certificate and receipt rejection, secure applet
+reselection, and refusal before PIN prompting. Physical SCP11b PIV and FIDO validation is
+still pending. Existing 0.20.15 Chromebook results below did not enable SCP.
+Enabling the toggle changes only an application preference, not key material,
+PINs, touch policies or Security Domain configuration on the YubiKey.
+
 ## Chromebook Gmail validation and Web Smart Card fixes (0.20.15)
 
 On 2026-11-25, the Google Eve Chromebook completed the existing-credential

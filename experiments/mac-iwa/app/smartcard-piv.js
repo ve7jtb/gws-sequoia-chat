@@ -370,6 +370,7 @@ async function withPivSession(expectedSerial, fn){
   let lastError = null;
   for(const reader of ordered){
     let conn = null;
+    let secured = null;
     let pivSelected = false;
     let operationStarted = false;
     try{
@@ -379,19 +380,25 @@ async function withPivSession(expectedSerial, fn){
       let result;
       let matched = true;
       await conn.startTransaction(async()=>{
-        const sel = await transmitChained(conn, buildSelectPivApdu());
+        // Establish manufacturer trust before PIV selection or any PIN/private
+        // operation. The wrapper renews SCP on the later CTAP applet SELECT.
+        // Raw connection ownership stays here for transaction/disconnect APIs.
+        if(!global.SequoiaSecureChannel && global.document?.getElementById('secure-yubikey-connection'))throw Error('Secure-channel policy is not ready');
+        secured = await global.SequoiaSecureChannel?.acquire(conn);
+        const channel = secured?.connection || conn;
+        const sel = await transmitChained(channel, buildSelectPivApdu());
         if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
         pivSelected = true;
-        const ver = await transmitChained(conn, new Uint8Array([0x00,0xFD,0x00,0x00]));
+        const ver = await transmitChained(channel, new Uint8Array([0x00,0xFD,0x00,0x00]));
         const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
-        const ser = await transmitChained(conn, new Uint8Array([0x00,0xF8,0x00,0x00]));
+        const ser = await transmitChained(channel, new Uint8Array([0x00,0xF8,0x00,0x00]));
         const serial = ser.sw === 0x9000 ? String(parseSerial(ser.data)) : null;
         if(expectedSerial && serial !== String(expectedSerial)){
           matched = false;
           return 'leave';
         }
         operationStarted = true;
-        result = await fn(conn, {reader, allReaders: readers, activeProtocol: opened.activeProtocol, state: st.state, atr: toHex(st.answerToReset), version, serial});
+        result = await fn(channel, {reader, allReaders: readers, activeProtocol: opened.activeProtocol, state: st.state, atr: toHex(st.answerToReset), version, serial});
         return 'leave';
       });
       if(matched) return result;
@@ -399,8 +406,9 @@ async function withPivSession(expectedSerial, fn){
       lastError = e;
       // Never scan another reader or obscure an error after selecting the
       // requested device: PIN rejection/private operations must not be retried.
-      if(operationStarted || (pivSelected && !expectedSerial)) throw e;
+      if(global.SequoiaSecureChannel?.isRequired() || operationStarted || (pivSelected && !expectedSerial)) throw e;
     }finally{
+      secured?.close();
       if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
     }
   }
@@ -411,6 +419,9 @@ async function withPivSession(expectedSerial, fn){
 }
 
 async function listYubiKeys(){
+  if(global.SequoiaSecureChannel?.isRequired()){
+    return withPivSession(null,async(_conn,info)=>[{reader:info.reader,serial:info.serial,version:info.version}]);
+  }
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
   }
@@ -541,10 +552,7 @@ async function signDigestViaSmartCard(request, identity, promptPin){
   const muBytes = fromBase64(request.mu);
   if(muBytes.length!==64)throw Error('ML-DSA external mu required.');
   if(digestBytes.length !== 64) throw Error('Exactly one 64-byte SHA-512 digest required.');
-  const pin = await promptPin({
-    title: 'PIV PIN — Sign message',
-    detail: `YubiKey ${serial || '(connected)'} · slots 9C (ML-DSA-65) + 84 (Ed25519). Touch if requested.`,
-  });
+
   return withPivSession(serial, async(conn)=>{
     await checkLiveKeys(conn,identity);
     const meta9c = await transmitChained(conn, buildGetMetadataApdu(0x9C));
@@ -554,6 +562,12 @@ async function signDigestViaSmartCard(request, identity, promptPin){
     if(meta84.sw !== 0x9000) throw Error('Signing slot 84 metadata unavailable: SW=0x' + meta84.sw.toString(16));
     const alg84 = parseSlotMetadata(meta84.data).algorithmId;
     if(alg9c !== 0xE3 || alg84 !== 0xE0) throw Error('Unable to determine PIV signing slot algorithms.');
+
+    // Authenticate the device/channel and live key before asking for its PIN.
+    const pin = await promptPin({
+      title: 'PIV PIN — Sign message',
+      detail: `YubiKey ${serial || '(connected)'} · slots 9C (ML-DSA-65) + 84 (Ed25519). Touch if requested.`,
+    });
 
     await verifyPinOnConnection(conn, pin);
 
@@ -585,10 +599,7 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
   if(mlkemCt.length !== 1088) throw Error('Invalid ML-KEM-768 ciphertext size.');
   if(x25519Eph.length !== 32 || !x25519Eph.some(b=>b !== 0)) throw Error('Invalid X25519 ephemeral public key.');
 
-  const pin = await promptPin({
-    title: 'PIV PIN — Decrypt',
-    detail: `YubiKey ${serial || '(connected)'} · slots 9D (ML-KEM-768) + 85 (X25519). Touch if requested.`,
-  });
+
   return withPivSession(serial, async(conn)=>{
     await checkLiveKeys(conn,identity);
     const meta9d = await transmitChained(conn, buildGetMetadataApdu(0x9D));
@@ -598,6 +609,12 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
     if(meta85.sw !== 0x9000) throw Error('Decryption slot 85 metadata unavailable: SW=0x' + meta85.sw.toString(16));
     const alg85 = parseSlotMetadata(meta85.data).algorithmId;
     if(alg9d !== 0xE6 || alg85 !== 0xE1) throw Error('Unable to determine PIV decryption slot algorithms.');
+
+    // Authenticate the device/channel and live key before asking for its PIN.
+    const pin = await promptPin({
+      title: 'PIV PIN — Decrypt',
+      detail: `YubiKey ${serial || '(connected)'} · slots 9D (ML-KEM-768) + 85 (X25519). Touch if requested.`,
+    });
 
     await verifyPinOnConnection(conn, pin);
 
@@ -787,14 +804,17 @@ async function ecdhViaSmartCard(request, slotHex, serial, promptPin){
   const slotId = parseInt(targetSlotHex, 16);
   const peerPoint = extractEcUncompressedPointFromSpki(fromBase64(request.peer));
   const algId = peerPoint.length === 65 ? 0x11 : 0x14;
-  const pin = await promptPin({
-    title: 'PIV PIN — Unlock vault (ECDH)',
-    detail: `YubiKey ${targetSerial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
-  });
+
   return withPivSession(targetSerial, async(conn,info)=>{
     const keys=await readClassicalVaultSlots(conn,info.serial);
     if(!keys.some(k=>k.slot===targetSlotHex&&k.fingerprint===request.fingerprint&&k.algorithm===(algId===0x11?'ECDH-P256':'ECDH-P384')))
       throw Error('Vault public key changed; PIN not submitted.');
+    // Authenticate the device/channel and live key before asking for its PIN.
+    const pin = await promptPin({
+      title: 'PIV PIN — Unlock vault (ECDH)',
+      detail: `YubiKey ${targetSerial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
+    });
+
     await verifyPinOnConnection(conn, pin);
     const ga = await transmitCommandChained(conn, 0x87, algId, slotId, buildGeneralAuthenticateData(0x85, peerPoint));
     if(ga.sw !== 0x9000) throw Error('PIV ECDH failed: SW=0x' + ga.sw.toString(16));

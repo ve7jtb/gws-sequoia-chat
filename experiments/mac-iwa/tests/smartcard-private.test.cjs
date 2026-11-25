@@ -1,9 +1,10 @@
 // Emulate only card APDUs. No native host, device, real PIN or key material.
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,createHash}=require('node:crypto');
-function harness({rejectPin=false,wrongKey=false,shares=null}={}){
+function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false}={}){
  const events=[],sent=[],alg={0x9c:0xe3,0x84:0xe0,0x9d:0xe6,0x85:0xe1};let connections=0;
  const ctx={Uint8Array,Array,Map,Set,Error,TextEncoder,TextDecoder,crypto:webcrypto,atob,btoa};ctx.globalThis=ctx;
+ if(secureFailure)ctx.SequoiaSecureChannel={isRequired:()=>true,acquire:async()=>{throw Error("Untrusted SCP chain");}};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(__dirname+'/../app/smartcard-piv.js','utf8'),ctx);
  const p=ctx.SequoiaSmartCardPiv,tlv=p.encodeBerTlv;
  const metadata=slot=>new Uint8Array([...tlv(1,new Uint8Array([alg[slot]])),...tlv(4,tlv(0x86,new Uint8Array(32).fill(slot)))]);
@@ -68,4 +69,10 @@ test('Web Smart Card response decrypts and verifies with shipped WASM',
  const verified=JSON.parse(wasm.verify_detached(JSON.stringify({payload:opened.raw,signature:opened.signature,certificates:[f.certificate]})));
  assert.equal(verified.signatures[0].status,'valid');
  assert.ok(!h.sent.some(a=>[0x47,0xfe,0xff,0xdb].includes(a[1])),'No provisioning or policy APDUs');
+});
+
+test('required SCP failure stops before PIN, private APDUs or another reader',async()=>{
+ const h=harness({secureFailure:true});let prompts=0;
+ await assert.rejects(h.p.signDigestViaSmartCard({digest:Buffer.alloc(64).toString('base64'),mu:Buffer.alloc(64).toString('base64')},h.identity,async()=>{prompts++;return '123456';}),/Untrusted SCP chain/);
+ assert.equal(prompts,0);assert.equal(h.sent.length,0);assert.equal(h.connections(),1);assert.ok(h.events.includes('disconnect'));
 });

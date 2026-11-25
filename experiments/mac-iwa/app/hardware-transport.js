@@ -248,6 +248,10 @@ function createHardwareTransport(deps = {}){
 
   function dispatch(op, data = {}, options = {}, nativeRequest, ctx = {}){
     const mode = getMode();
+    if(!global.SequoiaSecureChannel && global.document?.getElementById('secure-yubikey-connection'))return Promise.reject(Error('Secure-channel policy is not ready'));
+    // Secure mode must not silently route card work through an unprotected
+    // native implementation. Google-only broker operations are unaffected.
+    if(global.SequoiaSecureChannel?.isRequired() && (op==='vault-prf' || mode==='native' && !EXTENSION_PASSTHROUGH_OPS.has(op)))return Promise.reject(Error('Secure YubiKey connection requires Web Smart Card; native SCP is not implemented.'));
     if(options.signal?.aborted) return Promise.reject(Error('Operation cancelled; no retry.'));
     if(mode === 'native' || EXTENSION_PASSTHROUGH_OPS.has(op)){
       return nativeRequest(op, data, options);
