@@ -2583,3 +2583,13 @@ signed bundle byte-for-byte. Using Install against the existing developer
 installation returned “App is already installed”; this is not evidence of an
 automatic update or a conversion to unmanaged installation. Applying that
 web-downloaded bundle through Update and checking retained data is pending.
+
+### 0.20.19 backup feedback
+
+Unlock reports **No YubiKey found** with the expected serial when no PC/SC reader
+is detected, without retrying a PIN operation. Connected keys proceed directly
+to the normal PIN flow. Restore now shows a prominent completion panel and
+Return to app link; disabled buttons no longer imply work with a wait cursor.
+A separate-profile restore in Chromium IWA Lab reported every record read back
+identically. Post-restore signing/decryption validation remains pending.
+Validation: 315 automated tests passed, one optional skip.
