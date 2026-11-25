@@ -16,6 +16,16 @@ See the [ARKG interoperability report](docs/arkg-openpgp-interop.md). After upda
 button is unresponsive because an older script remains loaded. See
 [FIDO tests and setup](experiments/mac-iwa/README.md).
 
+**Chromebook validation passed on 2026-11-25:** the published IWA 0.20.11
+installed on Google Eve (Chrome 150.0.7871.289). Google’s **Smart Card Connector**
+enabled Web Smart Card reader access and CTAP2 GetInfo. An existing IWA PRF
+credential successfully protected the local vault, followed by a verified
+lock/unlock with FIDO PIN and touch. The Chromebook’s ten-key ARKG batch also
+passed: ten distinct public keys, ten self-certified OpenPGP certificates and
+ten signed messages; Sequoia WASM verified all and rejected all altered messages.
+See [ChromeOS installation, Smart Card Connector setup and test details](experiments/mac-iwa/README.md#install-the-preview-on-chromeos).
+The Chromebook batch has not separately been checked with the native CLI.
+
 **IWA 0.19 adds manifest-bound hardware Level 5 and v4/v5 compatibility
 selection, and encrypted on-key companion restore.** Read-only discovery chooses
 an inserted YubiKey by serial without changing the vault’s default hardware

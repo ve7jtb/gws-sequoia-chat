@@ -33,10 +33,10 @@ lock/unlock controls.
 ## Install the preview on ChromeOS
 
 These instructions target **ChromeOS with Chrome 143 or later**, using the
-browser's IWA development installation path. ChromeOS hardware testing of this
-release has not yet been performed; the recorded hardware results are from the
-Mac Chromium build. Updating ChromeOS alone does not enable unsupported app
-profiles.
+browser's IWA development installation path. Installation, Web Smart Card,
+existing-credential FIDO PRF vault lock/unlock and the ten-key ARKG test passed
+on a Google Eve Chromebook on 2026-11-25; see the results below. Updating
+ChromeOS alone does not enable unsupported app profiles.
 
 ### Install the signed bundle
 
@@ -69,6 +69,10 @@ that this package is approved for enterprise deployment.
 
 1. Install Google's **Smart Card Connector** extension from its
    [official Chrome Web Store listing](https://chrome.google.com/webstore/detail/smart-card-connector/khpfeaanjngmcnplbdlpegiifgpfgdco).
+   Open this listing **on the Chromebook**, click **Add to Chrome**, then
+   **Add extension**, and wait for the installation confirmation. Return to
+   Sequoia Chat Lab and click **Check YubiKey**. At the reader permission prompt,
+   **Allow this time** is sufficient for the test.
    This supplies ChromeOS's PC/SC service; it is distinct from this project's
    optional native-bridge extension. The
    [Web Smart Card setup guide](https://github.com/WICG/web-smart-card/blob/main/HOWTO.md)
@@ -87,6 +91,44 @@ that this package is approved for enterprise deployment.
    wait for the completion result before removing the key. Existing credentials
    must match their original RP; new IWA credentials use the full package-origin
    RP, as described below.
+
+### Verified Chromebook results — 2026-11-25
+
+Tested the published **0.20.11** signed bundle on a **Google Eve Chromebook**,
+Chrome **150.0.7871.289**, ChromeOS platform **16700.70.0**, LTS channel:
+
+- **Installation passed:** `chrome://web-app-internals` installed the release
+  bundle and the ChromeOS launcher opened Sequoia Chat Lab. `chrome://iwa-dev/`
+  returned `ERR_INVALID_URL` on this build; use the working internals page.
+- **Web Smart Card passed:** initially the app reported **No smart card service
+  available in the system**. Installing Google's Smart Card Connector and
+  allowing reader access resolved this. The app identified the expected Beta0
+  YubiKey, and **CTAP2 GetInfo** passed without a PIN, including `hmac-secret`
+  capability discovery.
+- **PRF vault enrollment and lock/unlock passed:** with the expected serial set
+  in **Vault → FIDO enrollment settings** and **IWA package** selected as the RP,
+  **Create software-only vault with FIDO PRF** used the existing discoverable
+  credential. The app reported **Unlock method verified and saved**. After
+  **Lock vault**, it reported **Vault locked**; a fresh FIDO PIN/touch assertion
+  through **Unlock vault** produced **Vault unlocked**. This created a local
+  encrypted vault, not a new authenticator credential. The separate **Create new
+  discoverable IWA PRF credential** action was not used for this test.
+- **Ten-key previewSign/ARKG test passed:** the user subsequently ran the FIDO
+  ARKG tests. The displayed batch result confirmed **10 distinct ARKG public
+  keys, 10 self-certified OpenPGP certificates and 10 signed messages**.
+  **Sequoia WASM verified all; all altered messages were rejected.** Public
+  certificate/message files and `previewSign-openpgp-report.json` were offered
+  for download. These are the Chromebook's in-app results; the independent
+  native Sequoia CLI checks documented above were from the earlier Mac run,
+  not a separate CLI verification of this Chromebook batch.
+
+The connection and vault tests used public reads and existing-credential
+assertions, with no PIV key, certificate or PIN/touch-policy writes and no new
+FIDO credential creation. Assertions may advance the FIDO signature counter.
+This is a record of the operations performed, not a complete before/after card
+inventory audit. The ARKG test is separate: its explicit previewSign setup can
+create a non-discoverable test credential; the batch reuses that credential.
+No ChromeOS restart-persistence or Gmail/Chat transport test is claimed here.
 
 ### Available paths and limitations
 
