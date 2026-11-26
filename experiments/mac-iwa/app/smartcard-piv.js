@@ -843,6 +843,22 @@ async function readVaultDeviceInfo(readPage,serial){
   }
   return vaultDeviceInfoFromFields(fields,serial);
 }
+// The beta firmware may answer with an unauthenticated 6982 when a
+// private operation is refused. Keep SCP failed closed and treat missed
+// touch as a possible cause only after PIN verification has succeeded.
+async function level5VaultPrivateCommand(conn, algorithm, slot, tag, input){
+  const message = `YubiKey did not authorize vault unlock in slot ${slot.toString(16).toUpperCase()} (SW=6982). If the key flashed and you missed the touch, restart Unlock vault and touch promptly when it flashes.`;
+  try{
+    const result = await transmitCommandChained(conn,0x87,algorithm,slot,buildGeneralAuthenticateData(tag,input));
+    if(result.sw === 0x6982)throw Error(message);
+    return result;
+  }catch(error){
+    if(/^Missing SCP response MAC \(SW=6982\)$/i.test(error.message))
+      throw Error(message+' The secure card response could not be authenticated.',{cause:error});
+    throw error;
+  }
+}
+
 // Level 5 vault wrapping uses the native PIV keys independently of OpenPGP.
 async function level5VaultKeys(conn){
   const meta = await transmitChained(conn, buildGetMetadataApdu(0x9d));
@@ -873,7 +889,7 @@ async function openLevel5VaultViaSmartCard(binding, promptPin){
     });
     const derive = async (algorithm, slot, tag, input, length)=>{
       await verifyPinOnConnection(conn, pin);
-      const result = await transmitCommandChained(conn, 0x87, algorithm, slot, buildGeneralAuthenticateData(tag,input));
+      const result = await level5VaultPrivateCommand(conn,algorithm,slot,tag,input);
       if(result.sw !== 0x9000) throw Error('Level 5 vault operation failed: SW=0x'+result.sw.toString(16));
       const secret = parseGeneralAuthenticateResponse(result.data);
       if(secret.length !== length || !secret.some(Boolean)){

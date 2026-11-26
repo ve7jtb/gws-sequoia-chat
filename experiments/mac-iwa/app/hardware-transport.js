@@ -49,7 +49,7 @@ function createHardwareTransport(deps = {}){
     }
   }
 
-  function promptPinInBrowser({title, detail}){
+  function promptPinInBrowser({title, detail}, onSubmitted){
     if(deps.promptPin) return deps.promptPin({title, detail});
     const dialog = document.getElementById('smartcard-pin-dialog');
     const titleEl = document.getElementById('smartcard-pin-title');
@@ -64,22 +64,29 @@ function createHardwareTransport(deps = {}){
     detailEl.textContent = detail || '';
     inputEl.value = '';
     return new Promise((resolve, reject)=>{
-      const cleanup = ()=>{
+      const cleanup = (close=true)=>{
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
         dialog.removeEventListener('cancel', onCancel);
         inputEl.removeEventListener('keydown', onKeyDown);
         inputEl.value = '';
-        if(dialog.open) dialog.close();
+        if(close && dialog.open) dialog.close();
       };
       const onOk = ()=>{
         const pin = inputEl.value;
-        cleanup();
         if(!/^[\x20-\x7e]{6,8}$/.test(pin)){
+          cleanup();
           reject(Error('PIV PIN must be 6 to 8 printable ASCII characters.'));
           return;
         }
-        resolve(pin);
+        cleanup(!onSubmitted);
+        try{
+          onSubmitted?.();
+          resolve(pin);
+        }catch(error){
+          if(dialog.open)dialog.close();
+          reject(error);
+        }
       };
       const onKeyDown = (ev)=>{
         if(ev.key === 'Enter'){ ev.preventDefault(); onOk(); }
@@ -111,9 +118,9 @@ function createHardwareTransport(deps = {}){
 
   // Recheck account/vault/revision after the asynchronous PIN dialog and before
   // submitting PIN bytes. Locking while a dialog is open revokes the operation.
-  function checkedPrompt(identity, ctx){
+  function checkedPrompt(identity, ctx, onSubmitted){
     return async details => {
-      const pin = await promptPinInBrowser(details);
+      const pin = await promptPinInBrowser(details,onSubmitted);
       if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
       await ctx.assertIdentity(identity);
       return pin;
@@ -123,31 +130,51 @@ function createHardwareTransport(deps = {}){
   // The main login screen and vault enrollment share these card operations.
   // Show the same touch guidance in both paths after the PIN field is cleared.
   async function withVaultTouch(serial, ctx, perform){
-    const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault});
-    const dialog = global.document?.getElementById('smartcard-touch-dialog');
-    const status = global.document?.getElementById('smartcard-touch-status');
-    // A card command already in progress cannot be cancelled safely from
-    // this dialog. Keep the touch instruction visible until it settles.
+    const doc = global.document;
+    const dialog = doc?.getElementById('smartcard-pin-dialog');
+    const entry = doc?.getElementById('smartcard-pin-entry');
+    const waiting = doc?.getElementById('smartcard-pin-wait');
+    const status = doc?.getElementById('smartcard-pin-status');
+    const title = doc?.getElementById('smartcard-pin-title');
+    let showing = false;
+    // Keep the PIN dialog open. Replacing it with a second modal can leave
+    // the login screen visible while the browser changes modal focus.
     const preventCancel = event => event.preventDefault();
+    const submitted = dialog && entry && waiting && status && title ? ()=>{
+      const key = serial ? `YubiKey SN# ${serial}` : 'your YubiKey';
+      dialog.addEventListener('cancel',preventCancel);
+      showing = true;
+      entry.hidden = true;
+      waiting.hidden = false;
+      title.textContent = 'Waiting for YubiKey';
+      status.textContent = `PIN submitted. Touch ${key} promptly when it flashes. Keep it connected until the operation finishes.`;
+      waiting.focus();
+    } : undefined;
+    const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault},submitted);
     try{
       return await perform(async details=>{
         const pin = await prompt(details);
-        const instruction = serial ? `Touch YubiKey SN# ${serial}` : 'Touch your YubiKey';
-        if(dialog && status){
-          status.textContent = `${instruction} promptly when it flashes. Keep it connected until the operation finishes.`;
-          dialog.addEventListener('cancel',preventCancel);
-          dialog.showModal();
-          // Allow a paint before the card starts waiting for touch.
-          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-        }
+        // Give the visible document a chance to paint. The timer also lets
+        // the operation proceed if Chromium throttles animation frames.
+        if(showing)await new Promise(resolve=>{
+          const timer = setTimeout(resolve,100);
+          requestAnimationFrame(()=>requestAnimationFrame(()=>{
+            clearTimeout(timer);
+            resolve();
+          }));
+        });
         if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
         await ctx.assertVault();
         return pin;
       });
     }finally{
-      dialog?.removeEventListener('cancel',preventCancel);
-      if(dialog?.open)dialog.close();
-      if(status)status.textContent='';
+      if(showing){
+        dialog.removeEventListener('cancel',preventCancel);
+        if(dialog.open)dialog.close();
+        status.textContent='';
+        waiting.hidden=true;
+        entry.hidden=false;
+      }
     }
   }
 

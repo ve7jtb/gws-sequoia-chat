@@ -124,5 +124,38 @@ const { createHardwareTransport } = ctx;
   await t.dispatch('google-oauth-test',{}, {},nativeRequest);
   assert.equal(nativeCalls.length,before+1);
 
+  // Exercise the production PIN dialog through its actual submission handler.
+  // The modal must stay open with a cleared PIN all the way into the card call.
+  const elements = new Map();
+  for(const id of ['dialog','entry','wait','status','title','detail','input','ok','cancel']){
+    elements.set('smartcard-pin-'+id,Object.assign(new EventTarget(),{
+      hidden:id==='wait',open:false,value:'',focus(){},
+      showModal(){this.open=true;},close(){this.open=false;},
+    }));
+  }
+  const element=id=>elements.get('smartcard-pin-'+id);
+  ctx.document={getElementById:id=>elements.get(id)};
+  Object.assign(ctx,{setTimeout,clearTimeout,requestAnimationFrame:cb=>queueMicrotask(cb)});
+  const browserTransport=createHardwareTransport({storage,piv:{
+    async openLevel5VaultViaSmartCard(data,prompt){
+      const submitted=prompt({title:'PIV PIN',detail:'Test'});
+      assert.equal(element('dialog').open,true);
+      element('input').value='123456';
+      element('ok').dispatchEvent(new Event('click'));
+      assert.equal(await submitted,'123456');
+      assert.equal(element('dialog').open,true);
+      assert.equal(element('input').value,'');
+      assert.equal(element('entry').hidden,true);
+      assert.equal(element('wait').hidden,false);
+      assert.match(element('status').textContent,/Touch YubiKey SN# 123/);
+      throw Error('card operation stopped');
+    },
+  }});
+  browserTransport.setMode('smartcard');
+  await assert.rejects(browserTransport.dispatch('chat-vault-level5-open',{serial:'123'},{},nativeRequest,{assertVault(){}}),/card operation stopped/);
+  assert.equal(element('dialog').open,false);
+  assert.equal(element('entry').hidden,false);
+  assert.equal(element('wait').hidden,true);
+
   console.log('PASS hardware-transport dual-mode routing, ticket single-use, and no-fallback tests');
 })();
