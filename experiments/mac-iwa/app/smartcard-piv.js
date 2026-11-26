@@ -808,9 +808,28 @@ async function readClassicalVaultSlots(conn, serial, preferredSlot=null){
   return found;
 }
 
+// Beta applets may deliberately report 0.0.1. Read the same Management
+// version qualifier used by YubiKit, inside a newly authenticated SCP session.
+// No configuration writes or serial-to-model lookup table are involved.
+function parseVaultDeviceInfo(data,expectedSerial){
+  if(!data.length||data[0]!==data.length-1)throw Error('Invalid device information length');
+  const fields=parseBerTlv(data.slice(1));
+  if(String(parseSerial(fields.get(2)))!==String(expectedSerial))throw Error('Management serial mismatch');
+  let version=parseVersion(fields.get(5));
+  const qualifier=fields.get(0x19);
+  if(qualifier){const q=parseBerTlv(qualifier);version=parseVersion(q.get(1));}
+  if(!version)throw Error('Missing authenticated device version');
+  return {serial:String(expectedSerial),version};
+}
 async function readVaultMaterialViaSmartCard(options = {}){
   return withPivSession(options.serial || null, async(conn, info)=>{
-    if(options.capabilitiesOnly)return {serial:info.serial,version:info.version};
+    if(options.capabilitiesOnly){
+      const selected=await transmitChained(conn,new Uint8Array([0,0xa4,4,0,8,0xa0,0,0,5,0x27,0x47,0x11,0x17]));
+      if(selected.sw!==0x9000)throw Error('Management application unavailable');
+      const read=await transmitChained(conn,new Uint8Array([0,0x1d,0,0]));
+      if(read.sw!==0x9000)throw Error('Device information unavailable');
+      return parseVaultDeviceInfo(read.data,info.serial);
+    }
     const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
     const classicalSlots = await readClassicalVaultSlots(conn, info.serial, preferredSlot);
     const classical = preferredSlot
@@ -952,6 +971,7 @@ const api = {
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,
+  parseVaultDeviceInfo,
   ecdhViaSmartCard,
   inspectPivViaSmartCard,
   formatPivReport,

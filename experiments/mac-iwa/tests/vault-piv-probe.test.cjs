@@ -20,3 +20,9 @@ function fixture(fail=false){
 test('PIV wrapping probe stops at first authenticated EC key',async()=>{const {p,reads}=fixture();const r=await p.readVaultMaterialViaSmartCard({serial:'1'});assert.equal(r.classical.slot,'82');assert.deepEqual(reads,[0x9d,0x82]);});
 test('explicit wrapping slot avoids scanning unrelated slots',async()=>{const {p,reads}=fixture();await p.readVaultMaterialViaSmartCard({serial:'1',slot:'82'});assert.deepEqual(reads,[0x82]);});
 test('missing response MAC still fails closed',async()=>{const {p}=fixture(true);await assert.rejects(p.readVaultMaterialViaSmartCard({serial:'1'}),/Missing SCP response MAC/);});
+
+test('beta management qualifier supplies actual version and binds serial',()=>{
+ const {p}=fixture();const body=new Uint8Array([2,4,0,0,0,1,5,3,0,0,1,0x19,11,1,3,6,0,0,2,1,1,3,1,0]);
+ const data=new Uint8Array([body.length,...body]);assert.equal(p.parseVaultDeviceInfo(data,'1').version,'6.0.0');
+ assert.throws(()=>p.parseVaultDeviceInfo(data,'2'),/serial mismatch/);
+});
