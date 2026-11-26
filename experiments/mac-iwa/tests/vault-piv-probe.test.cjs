@@ -26,3 +26,13 @@ test('beta management qualifier supplies actual version and binds serial',()=>{
  const data=new Uint8Array([body.length,...body]);assert.equal(p.parseVaultDeviceInfo(data,'1').version,'6.0.0');
  assert.throws(()=>p.parseVaultDeviceInfo(data,'2'),/serial mismatch/);
 });
+
+test('management pagination obtains beta version from the second page',async()=>{
+ const {p}=fixture(),seen=[];
+ const pages=[[2,4,0,0,0,1,5,3,0,0,1,0x10,1,1],[0x19,11,1,3,6,0,0,2,1,1,3,1,0]];
+ const result=await p.readVaultDeviceInfo(async page=>{seen.push(page);return new Uint8Array([pages[page].length,...pages[page]]);},'1');
+ assert.equal(result.version,'6.0.0');assert.deepEqual(seen,[0,1]);
+});
+test('management pagination rejects an unbounded continuation',async()=>{
+ const {p}=fixture();await assert.rejects(p.readVaultDeviceInfo(async()=>new Uint8Array([3,0x10,1,1]),'1'),/Too many/);
+});

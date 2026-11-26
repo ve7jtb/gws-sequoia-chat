@@ -813,7 +813,9 @@ async function readClassicalVaultSlots(conn, serial, preferredSlot=null){
 // No configuration writes or serial-to-model lookup table are involved.
 function parseVaultDeviceInfo(data,expectedSerial){
   if(!data.length||data[0]!==data.length-1)throw Error('Invalid device information length');
-  const fields=parseBerTlv(data.slice(1));
+  return vaultDeviceInfoFromFields(parseBerTlv(data.slice(1)),expectedSerial);
+}
+function vaultDeviceInfoFromFields(fields,expectedSerial){
   if(String(parseSerial(fields.get(2)))!==String(expectedSerial))throw Error('Management serial mismatch');
   let version=parseVersion(fields.get(5));
   const qualifier=fields.get(0x19);
@@ -821,14 +823,36 @@ function parseVaultDeviceInfo(data,expectedSerial){
   if(!version)throw Error('Missing authenticated device version');
   return {serial:String(expectedSerial),version};
 }
+// Management information spans pages on newer devices. Follow TAG_MORE_DATA
+// exactly as YubiKit does, retaining authenticated fields across pages. Bound
+// the total so a malformed device cannot keep a vault operation running forever.
+async function readVaultDeviceInfo(readPage,serial){
+  const fields=new Map();let remaining=1;
+  for(let page=0;remaining>0;page++){
+    if(page>=16)throw Error('Too many device information pages');
+    remaining--;
+    const data=await readPage(page);
+    if(!data.length||data[0]!==data.length-1)throw Error('Invalid device information length');
+    const current=parseBerTlv(data.slice(1));
+    if(current.has(0x10)){
+      const count=current.get(0x10);
+      if(count.length!==1)throw Error('Invalid device information page count');
+      remaining=count[0];current.delete(0x10);
+    }
+    for(const [tag,value] of current)fields.set(tag,value);
+  }
+  return vaultDeviceInfoFromFields(fields,serial);
+}
 async function readVaultMaterialViaSmartCard(options = {}){
   return withPivSession(options.serial || null, async(conn, info)=>{
     if(options.capabilitiesOnly){
       const selected=await transmitChained(conn,new Uint8Array([0,0xa4,4,0,8,0xa0,0,0,5,0x27,0x47,0x11,0x17]));
       if(selected.sw!==0x9000)throw Error('Management application unavailable');
-      const read=await transmitChained(conn,new Uint8Array([0,0x1d,0,0]));
-      if(read.sw!==0x9000)throw Error('Device information unavailable');
-      return parseVaultDeviceInfo(read.data,info.serial);
+      return readVaultDeviceInfo(async page=>{
+        const read=await transmitChained(conn,new Uint8Array([0,0x1d,page,0]));
+        if(read.sw!==0x9000)throw Error('Device information unavailable');
+        return read.data;
+      },info.serial);
     }
     const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
     const classicalSlots = await readClassicalVaultSlots(conn, info.serial, preferredSlot);
@@ -972,6 +996,7 @@ const api = {
   readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,
   parseVaultDeviceInfo,
+  readVaultDeviceInfo,
   ecdhViaSmartCard,
   inspectPivViaSmartCard,
   formatPivReport,
