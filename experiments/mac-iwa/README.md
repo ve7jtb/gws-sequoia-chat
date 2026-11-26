@@ -2837,3 +2837,26 @@ The post-test read-only audit on the Mac exactly matched the saved
 baseline for all 24 PIV slots, including public keys, key metadata, PIN
 and touch policies, and PIN retry counts. The recorded FIDO settings and
 credential capacity also matched.
+
+### Level 5 vault unlock validation (0.20.40)
+
+On 2026-11-26, the signed Testing build unlocked a vault from the main
+login screen on macOS Chromium over Web Smart Card with SCP11b. It used
+the existing ML-KEM-1024 key in slot 9D and P-384 key in slot 82 on a
+YubiKey 6 Beta 0. After entering the PIV PIN, the tester saw **Waiting
+for YubiKey**, touched the key when it flashed, and reached **Vault
+unlocked**. Level 5 hybrid PIV was the default and FIDO PRF remained
+enrolled as an alternative.
+
+A separate missed-touch test reported `INS=87 P1=E7 P2=9D, final
+command, SW=6982`. This identifies the final ML-KEM-1024 decapsulation
+command. The response lacked an SCP response MAC, so the app closed the
+secure session and advised starting a fresh unlock and touching promptly
+if the flash had been missed. The test circumstances point to a missed
+touch. The unauthenticated status is a generic security refusal and
+cannot establish a touch timeout by itself.
+
+The post-test read-only audit exactly matched the saved baseline across
+all 24 PIV slots, including public keys, PIN and touch policies, and PIN
+retry counts. The recorded FIDO settings and credential capacity also
+matched.
