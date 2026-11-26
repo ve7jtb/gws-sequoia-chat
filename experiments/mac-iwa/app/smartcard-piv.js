@@ -843,6 +843,54 @@ async function readVaultDeviceInfo(readPage,serial){
   }
   return vaultDeviceInfoFromFields(fields,serial);
 }
+// Level 5 vault wrapping uses the native PIV keys independently of OpenPGP.
+async function level5VaultKeys(conn){
+  const meta = await transmitChained(conn, buildGetMetadataApdu(0x9d));
+  if(meta.sw !== 0x9000) throw Error('Vault KEM slot 9D is unavailable.');
+  const parsed = parseSlotMetadata(meta.data);
+  if(parsed.algorithmId === 0xe6) return null;
+  if(parsed.algorithmId !== 0xe7) throw Error('Unsupported vault KEM in slot 9D.');
+  const spki = parseBerTlv(parseBerTlv(pivMetadataToSpki(parsed)).get(0x30));
+  const bitString = spki.get(3);
+  if(bitString?.length !== 1569 || bitString[0] !== 0) throw Error('Invalid ML-KEM-1024 public key.');
+  const [ec] = await readClassicalVaultSlots(conn, null, '82');
+  if(ec?.algorithm !== 'ECDH-P384') throw Error('Level 5 vault requires P-384 in slot 82.');
+  return {kemPublic:toBase64(bitString.slice(1)), ecPublic:ec.public};
+}
+
+async function openLevel5VaultViaSmartCard(binding, promptPin){
+  if(!/^\d+$/.test(binding.serial)) throw Error('Missing vault YubiKey serial.');
+  const ciphertext = fromBase64(binding.kemCiphertext);
+  const peer = extractEcUncompressedPointFromSpki(fromBase64(binding.ecEphemeral));
+  if(ciphertext.length !== 1568 || peer.length !== 97) throw Error('Invalid Level 5 vault encapsulation.');
+  return withPivSession(binding.serial, async conn=>{
+    const keys = await level5VaultKeys(conn);
+    if(keys?.kemPublic !== binding.kemPublic || keys?.ecPublic !== binding.ecPublic)
+      throw Error('Vault public keys changed; PIN not submitted.');
+    const pin = await promptPin({
+      title:'PIV PIN — Unlock vault (ML-KEM-1024 + P-384)',
+      detail:`YubiKey · SN# ${binding.serial} · slots 9D (ML-KEM-1024) + 82 (P-384). Touch if requested.`,
+    });
+    const derive = async (algorithm, slot, tag, input, length)=>{
+      await verifyPinOnConnection(conn, pin);
+      const result = await transmitCommandChained(conn, 0x87, algorithm, slot, buildGeneralAuthenticateData(tag,input));
+      if(result.sw !== 0x9000) throw Error('Level 5 vault operation failed: SW=0x'+result.sw.toString(16));
+      const secret = parseGeneralAuthenticateResponse(result.data);
+      if(secret.length !== length || !secret.some(Boolean)){
+        secret.fill(0);
+        throw Error('Invalid Level 5 vault shared secret.');
+      }
+      return secret;
+    };
+    const kem = await derive(0xe7,0x9d,0x86,ciphertext,32);
+    try{
+      const ec = await derive(0x14,0x82,0x85,peer,48);
+      try{return {kemSecret:toBase64(kem),ecSecret:toBase64(ec)};}
+      finally{ec.fill(0);}
+    }finally{kem.fill(0);}
+  });
+}
+
 async function readVaultMaterialViaSmartCard(options = {}){
   return withPivSession(options.serial || null, async(conn, info)=>{
     if(options.capabilitiesOnly){
@@ -854,6 +902,7 @@ async function readVaultMaterialViaSmartCard(options = {}){
         return read.data;
       },info.serial);
     }
+    if(options.level5Only)return level5VaultKeys(conn);
     const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
     const classicalSlots = await readClassicalVaultSlots(conn, info.serial, preferredSlot);
     const classical = preferredSlot
@@ -995,6 +1044,7 @@ const api = {
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,
+  openLevel5VaultViaSmartCard,
   parseVaultDeviceInfo,
   readVaultDeviceInfo,
   ecdhViaSmartCard,

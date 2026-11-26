@@ -12,5 +12,5 @@ export async function discoverOrCreate({assertExisting,createNew,confirmCreate})
 // Finding arbitrary signing certificates alone does not establish a usable
 // vault unlock key: require the existing wrapping material as well.
 export function hasMatchingPiv(material,serial){
- return String(material?.serial)===String(serial)&&!!(material?.certificate||material?.classical);
+ return String(material?.serial)===String(serial)&&!!(material?.certificate||material?.classical||material?.level5);
 }

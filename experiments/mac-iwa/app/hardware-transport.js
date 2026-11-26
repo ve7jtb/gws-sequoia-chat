@@ -233,6 +233,12 @@ function createHardwareTransport(deps = {}){
       return ctx.prepareVault(data.serial);
     }
 
+    if(op === 'chat-vault-level5-open'){
+      await ctx.assertVault();
+      if(!global.SequoiaSecureChannel?.isRequired())throw Error('Level 5 vault requires SCP11b.');
+      return piv.openLevel5VaultViaSmartCard(data,checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault}));
+    }
+
     if(op === 'chat-vault-ecdh'){
       return piv.ecdhViaSmartCard(data, data.slot || null, data.serial || null, promptPinInBrowser);
     }

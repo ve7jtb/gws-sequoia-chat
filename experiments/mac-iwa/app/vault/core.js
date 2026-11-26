@@ -23,7 +23,12 @@ async function open(key,box,aad){
 const context=(v,w)=>['Sequoia IWA vault wrap',1,v.id,w.id,w.type,w.binding];
 async function wrappingKey(v,w,secret){
  if(secret.length!==32)fail();const material=await crypto.subtle.importKey('raw',secret,'HKDF',false,['deriveBits']);
- return new Uint8Array(await crypto.subtle.deriveBits({name:'HKDF',hash:'SHA-256',salt:enc.encode(v.id),info:json(context(v,w))},material,256));
+ // The Level 5 public transcript exceeds some Web Crypto HKDF info limits.
+ // Hash its context while preserving the original derivation for old wrappers.
+ const serialized=json(context(v,w));
+ const info=w.type==='piv'&&w.binding.kind==='mlkem1024-p384-v1'
+  ?await crypto.subtle.digest('SHA-384',serialized):serialized;
+ return new Uint8Array(await crypto.subtle.deriveBits({name:'HKDF',hash:'SHA-256',salt:enc.encode(v.id),info},material,256));
 }
 export class Vault {
  constructor(){this.lock();}

@@ -13,6 +13,10 @@ export async function prepareVaultMaterial({serial,piv,inspectBundle,inspectIden
   if(material.classical?.algorithm!=='ECDH-P384')throw Error('Older YubiKey needs an existing P-384 wrapping key');
   return {...material,certificate:'',classicalAllowed:true};
  }
+ // Native Level 5 uses authenticated PIV metadata for the two vault keys.
+ // A null result means slot 9D advertises ML-KEM-768; use the existing v6 path.
+ const level5=await piv.readVaultMaterialViaSmartCard({serial:caps.serial,level5Only:true});
+ if(level5)return {serial:caps.serial,level5,classicalAllowed:false};
  // Public restoration is mandatory for YK6. Verify signature, serial, every
  // mapped live key and exact certificate profile before saving any inventory.
  const live=await piv.readPublicSnapshotViaSmartCard(caps.serial,true,inspectBundle);

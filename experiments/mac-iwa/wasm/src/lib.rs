@@ -214,6 +214,27 @@ pub fn decrypt_with_session_key(input:&str)->Result<String,JsValue>{
  run().map_err(|_|JsValue::from_str("Decryption request rejected"))
 }
 
+/// Encapsulate to an authenticated native PIV ML-KEM-1024 public key.
+#[wasm_bindgen]
+pub fn vault_mlkem1024_encapsulate(input: &str) -> Result<String, JsValue> {
+    let run = || -> Result<String> {
+        use ml_kem::{EncapsulationKey, MlKem1024, TryKeyInit};
+        use zeroize::Zeroizing;
+        ensure!(input.len() < 4096, "Request too large");
+        let request: serde_json::Value = serde_json::from_str(input)?;
+        let public = B64.decode(field(&request, "publicKey")?)?;
+        let ek = EncapsulationKey::<MlKem1024>::new_from_slice(&public)
+            .map_err(|_| anyhow::anyhow!("Invalid ML-KEM-1024 public key"))?;
+        let mut randomness = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *randomness).map_err(|_| anyhow::anyhow!("Randomness unavailable"))?;
+        let (ciphertext, mut secret) = ek.encapsulate_deterministic((&*randomness).into());
+        let result = serde_json::json!({"ciphertext":B64.encode(ciphertext),"secret":B64.encode(&secret)});
+        secret.as_mut_slice().fill(0);
+        Ok(serde_json::to_string(&result)?)
+    };
+    run().map_err(|_| JsValue::from_str("Level 5 vault encapsulation rejected"))
+}
+
 // Vault envelopes are deliberately unsigned, with an explicit purpose and
 // vault/wrapper identifiers inside authenticated encryption. This separate API
 // cannot relax the signed-message reader's signature requirement.

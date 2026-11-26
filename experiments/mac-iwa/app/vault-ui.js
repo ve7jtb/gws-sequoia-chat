@@ -1,3 +1,4 @@
+import {wrapLevel5,openLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
 import {discoverOrCreate,hasMatchingPiv} from './vault/enrollment.js';
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
@@ -55,6 +56,7 @@ const softwareIdentities=createSoftwareIdentityStore({
 window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);window.directFido?.complete(e.message,false);}finally{active=false;render();}}
 async function pivSecret(w){
+ if(w.binding.kind==='mlkem1024-p384-v1')return openLevel5(w.binding,call);
  if(w.binding.kind==='ecdh')return classicalOpen(w.binding,call);
  // Reuse the message component boundary, but authenticate a distinct unsigned
  // vault purpose inside WASM. The native helper never sees the vault envelope.
@@ -76,11 +78,18 @@ async function enroll(type,check,create=false,expectedSerial=null){
    const material=await call('chat-vault-material',selectedSerial?{serial:selectedSerial}:{});
    if(expectedSerial&&String(material.serial)!==String(expectedSerial))throw Error('Wrong YubiKey for PIV enrollment.');
    if(material.classicalAllowed){if(!material.classical)throw Error('No classical PIV vault key configured. Configure an existing public key and slot first; no keys will be generated.');if(!confirm('Classical ECDH protects this vault. Its encrypted backup is not post-quantum resistant. Continue?'))return;const result=await classicalWrap(material.classical);w.binding=result.binding;try{secret=await classicalOpen(w.binding,call);if(!secret.every((b,i)=>b===result.secret[i]))throw Error('PIV ECDH enrollment verification failed.');}finally{result.secret.fill(0);}
+   }else if(material.level5){
+    const result=await wrapLevel5(material,input=>wasm('level5-encapsulate',input));
+    w.binding=result.binding;
+    try{
+     secret=await pivSecret(w);
+     if(!secret.every((byte,index)=>byte===result.secret[index]))throw Error('Level 5 vault verification failed.');
+    }finally{result.secret.fill(0);}
    }else{
     if(!material.certificate)throw Error('No verified supported hybrid vault certificate is available. YK6 setup never falls back to classical wrapping.');
     const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
    }
-   if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint)===(w.binding.recipientKey||w.binding.fingerprint)))throw Error('This PIV key already unlocks the vault.');
+   if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint||x.binding.kemPublic)===(w.binding.recipientKey||w.binding.fingerprint||w.binding.kemPublic)))throw Error('This PIV key already unlocks the vault.');
   }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding():{})};if(create){
     // Discover first under this exact RP and serial; never turn cancellation,
     // wrong PIN, transport loss or unsupported PRF into credential creation.
@@ -127,7 +136,7 @@ window.createStartupVault=async({name,serial,method,classical=false})=>{
   catch(error){tell('FIDO vault saved. PIV availability could not be checked: '+error.message);return;}
   if(!hasMatchingPiv(material,serial))return;
   if(!confirm('This YubiKey already has a usable PIV wrapping key. Also configure PIV unlocking for this vault? No keys will be created or changed.'))return;
-  el('vault-classical').checked=!material.certificate;
+  el('vault-classical').checked=!!material.classicalAllowed;
   await enroll('piv',check,false,serial);
  });
 };
