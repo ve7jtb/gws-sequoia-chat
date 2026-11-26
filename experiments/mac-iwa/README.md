@@ -34,7 +34,16 @@ lock/unlock controls.
 
 Complete restore preserves the receiving device’s SCP requirement, temporary beta-pin selection and hardware transport. It never imports those connection settings from a backup; absent local settings retain normal defaults. Other conflicting settings, vaults, identities and certificate trust still stop restoration before writing. Readback verifies the restored records together with preserved local settings, and interrupted restore remains resumable. The backup page now loads the same SCP policy before PRF access. It does not silently bypass a required secure channel.
 
-Validation: 25 backup, startup and secure-channel tests passed, including local-policy preservation, refusal to import beta trust, conflicting certificate trust and interrupted recovery. A PIN-free live SCP check on the Chromebook passed with the temporary beta pin; live PRF restore/unlock testing is pending.
+Validation: 25 backup, startup and secure-channel tests passed, including local-policy preservation, refusal to import beta trust, conflicting certificate trust and interrupted recovery. Live Chromebook validation also passed on 2026-11-25 with signed IWA 0.20.24:
+
+- The existing FIDO PRF credential authenticated and decrypted the complete backup over required SCP11b.
+- Restore displayed **Restore complete** and verified the restored vault, certificate/contact trust store and settings by reading them back. This backup contained no saved identity-database record; the test does not claim identity restore coverage.
+- Returning to the main app showed the restored account and existing FIDO PRF unlock method. A fresh PIN-and-touch assertion displayed **Vault unlocked**.
+- Both **Secure YubiKey connection** and **Beta YubiKey 6 testing** remained checked. After the operation, the status reported that the secure session had closed and SCP11b remained required for the next operation.
+
+One unrelated public-account setting initially differed from the backup. Restore refused it before writing. The re-creatable local email/revision setting was explicitly cleared through Account, then restored from the authenticated backup; certificate trust and security preferences were not cleared. The general conflict checks remain enabled.
+
+Only existing-credential authentication and public discovery were used: no card key/credential creation, deletion, PIN change, touch-policy change or Security Domain configuration was performed. FIDO assertions may advance the signature counter. This is an observed workflow result, not a full before/after audit of every card slot and policy. The temporary beta SD pin authenticates the pinned certificate chain; the unavailable Yubico preview root has not been independently verified.
 
 ## Temporary Beta YubiKey 6 SD pin (0.20.23)
 
@@ -42,11 +51,11 @@ The opt-in “Beta YubiKey 6 testing” checkbox selects the exact bundled SD at
 
 Production-root trust remains the default. The SHA-256 certificate pin is `e4e054c35c106f51541775d04da2055ca0190c84c1647719133acc6484ea0a54`. Validity, CA/path length, key usage, SD policies, leaf signature and SCP proof-of-possession checks remain enabled. Trust selection is frozen during card transactions; there is no fallback between anchors or to plaintext. Remove the temporary mode when the independently sourced preview CA becomes available.
 
-Validation: 12 secure-channel/startup tests passed; the saved Beta0 public chain validates against the pin and a tampered leaf is rejected. Live secure-channel and PRF unlock testing remains pending. No card keys, credentials or policies were changed.
+Validation: 12 secure-channel/startup tests passed; the saved Beta0 public chain validates against the pin and a tampered leaf is rejected. Live secure-channel and PRF unlock validation subsequently passed with 0.20.24 as documented above. No card keys, credentials or policies were changed by that workflow.
 
 ## Secure-channel startup correction (0.20.22)
 
-The Chromebook check of 0.20.21 stopped with “Secure-channel policy is not ready” before any card operation or PIN request. Its application bootstrap omitted the secure-channel UI module. Version 0.20.22 loads that module before the hardware and vault entry points, with a production-loader regression test. Hardware SCP validation remains pending; the application never silently falls back to plaintext.
+The Chromebook check of 0.20.21 stopped with “Secure-channel policy is not ready” before any card operation or PIN request. Its application bootstrap omitted the secure-channel UI module. Version 0.20.22 loads that module before the hardware and vault entry points, with a production-loader regression test. Hardware SCP and PRF validation subsequently passed with 0.20.24 and the explicit beta pin (see above); the application never silently falls back to plaintext.
 
 ## Secure YubiKey connection preview (0.20.21)
 
@@ -68,8 +77,7 @@ chains are rejected rather than implicitly trusted.
 After integrating the 0.20.20 Drive/backup/OAuth changes, all 98 targeted
 software tests passed with no skips, including independent
 OpenSSL MAC/encryption checks, certificate and receipt rejection, secure applet
-reselection, and refusal before PIN prompting. Physical SCP11b PIV and FIDO validation is
-still pending. Existing 0.20.15 Chromebook results below did not enable SCP.
+reselection, and refusal before PIN prompting. Physical SCP11b FIDO PRF validation subsequently passed with 0.20.24 and the explicit beta pin (see above); PIV signing/decryption under SCP is not established by that vault test. Existing 0.20.15 Chromebook results below did not enable SCP.
 Enabling the toggle changes only an application preference, not key material,
 PINs, touch policies or Security Domain configuration on the YubiKey.
 
