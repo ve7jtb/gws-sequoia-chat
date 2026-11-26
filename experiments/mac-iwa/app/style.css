@@ -14,5 +14,5 @@
 #startup{max-width:680px;margin:30px auto}#startup h1{font-size:32px}
 #startup-connection{margin-top:24px;border-top:1px solid #dce8e9;padding-top:16px}
 #startup-connection summary{cursor:pointer;font-weight:650}
-.startup-link{display:inline-block;margin:8px 12px 8px 0;font-weight:650;color:#00566c}
+.startup-restore{display:inline}
 #startup-panel section{padding:0;box-shadow:none}#startup-setup{background:#edf4f4;padding:18px;border-radius:12px;margin-top:18px}
