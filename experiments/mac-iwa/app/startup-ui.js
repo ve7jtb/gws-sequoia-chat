@@ -54,7 +54,15 @@ export function mountStartup(doc,win){
  el('startup-back').onclick=()=>{creating=false;panel=false;el('startup-setup').hidden=true;render();};
  // Guidance opens existing reviewed forms; it never generates keys or saves
  // account settings automatically. Vault protection remains in the store layer.
- el('onboarding-account').onclick=()=>doc.querySelector('[data-tab="account-settings"]').click();
+ el('onboarding-account').onclick=()=>{
+  // Selecting the tab alone leaves its form below the tall setup/header area.
+  // Bring the actual input into view and move keyboard focus without changing
+  // the saved account or triggering its review/save operation.
+  doc.querySelector('[data-tab="account-settings"]').click();
+  const input=el('account-email');
+  input.scrollIntoView({block:'center',behavior:'instant'});
+  input.focus({preventScroll:true});
+ };
  el('onboarding-identity').onclick=()=>doc.querySelector('[data-tab="identities"]').click();
  el('onboarding-finish').onclick=()=>{creating=false;el('onboarding-next').hidden=true;doc.querySelector('[data-tab="inbox"]').click();};
  win.addEventListener('iwa-vault-state',render);

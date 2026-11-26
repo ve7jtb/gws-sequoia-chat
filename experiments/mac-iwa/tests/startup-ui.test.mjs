@@ -9,10 +9,10 @@ function fixture(initial){
  function node(id){return {id,hidden:false,value:'',children:[],parent:null,clicks:0,
   append(n){if(n.parent)n.parent.children=n.parent.children.filter(x=>x!==n);n.parent=this;this.children.push(n);},
   before(n){n.parent=this.parent;},after(n){n.parent=this.parent;},
-  replaceChildren(){this.children=[];},click(){this.clicks++;this.onclick?.();}};}
+  scrollIntoView(options){this.scrolled=options;},focus(options){this.focused=options;},replaceChildren(){this.children=[];},click(){this.clicks++;this.onclick?.();}};}
  const doc={getElementById(id){if(!nodes.has(id))nodes.set(id,node(id));return nodes.get(id);},
   createComment:()=>node('placeholder'),createElement:()=>node('option'),
-  querySelector:()=>doc.getElementById('inbox-button')};
+  querySelector:selector=>doc.getElementById(selector.includes('account-settings')?'account-button':'inbox-button')};
  const win={vaultStartupState:()=>state,addEventListener:(e,f)=>events.set(e,f)};
  mountStartup(doc,win);
  return {el:doc.getElementById,set(s){state=s;events.get('iwa-vault-state')();}};
@@ -41,4 +41,13 @@ test('unlock opens workspace once; updates preserve current view; relock hides w
 test('startup remains closed until a validated vault state is available',()=>{
  const f=fixture(undefined);assert.equal(f.el('vault-unlock').clicks,0);assert.equal(f.el('inbox-button').clicks,0);
  f.set(locked);assert.equal(f.el('workspace').hidden,true);
+});
+
+test('account setup opens its tab and visibly focuses email without saving',()=>{
+ const f=fixture({...locked,unlocked:true});
+ f.el('onboarding-account').click();
+ assert.equal(f.el('account-button').clicks,1);
+ assert.deepEqual(f.el('account-email').scrolled,{block:'center',behavior:'instant'});
+ assert.deepEqual(f.el('account-email').focused,{preventScroll:true});
+ assert.equal(f.el('account-review').clicks,0);
 });
