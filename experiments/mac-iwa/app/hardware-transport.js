@@ -190,12 +190,19 @@ function createHardwareTransport(deps = {}){
     }
 
     if(op === 'chat-selected-decryption-material' || op === 'chat-decryption-material'){
-      const identity = await resolveIdentity(data.identity, ctx);
+      const vaultOperation=op==='chat-decryption-material'&&data.service==='Vault';
+      let identity;
+      if(vaultOperation){
+        await ctx.assertVault();
+        const material=await ctx.prepareVault(data.serial);
+        identity=material.identity;
+        if(!identity||identity.recipientKey!==data.recipientKey)throw Error('Hybrid vault recipient changed');
+      }else identity=await resolveIdentity(data.identity, ctx);
       if(!identity?.certificate || !identity?.recipientKey){
         throw Error('Select a saved hardware identity with a restored certificate before decrypting.');
       }
       const rid = randomHex(24);
-      tickets.set(rid, {kind: 'decrypt', created: Date.now(), identity});
+      tickets.set(rid, {kind: 'decrypt', created: Date.now(), identity, vaultOperation});
       return {
         review: rid,
         recipientCertificate: identity.certificate,
@@ -215,28 +222,15 @@ function createHardwareTransport(deps = {}){
       const t = tickets.get(data.review);
       if(!t || t.kind !== 'decrypt') throw Error('Expired or unknown Web Smart Card decryption ticket.');
       tickets.delete(data.review);
-      await ctx.assertIdentity?.(t.identity);
+      if(t.vaultOperation){if(data.service!=='Vault')throw Error('Vault ticket purpose changed');await ctx.assertVault();}else await ctx.assertIdentity?.(t.identity);
       if(data.recipientKey !== t.identity.recipientKey) throw Error('Recipient key changed.');
-      return piv.decapsulateComponentsViaSmartCard(data, t.identity, checkedPrompt(t.identity, ctx));
+      return piv.decapsulateComponentsViaSmartCard(data, t.identity, checkedPrompt(t.identity, t.vaultOperation?{...ctx,assertIdentity:ctx.assertVault}:ctx));
     }
 
     if(op === 'chat-vault-material'){
-      ctx.say?.('Reading PIV vault key material via Web Smart Card (no PIN required)…');
-      const vm = await piv.readVaultMaterialViaSmartCard();
-      let matchedIdentity = null;
-      if(ctx.identityStore?.list){
-        try{
-          const listed = await ctx.identityStore.list();
-          const rows = Array.isArray(listed) ? listed : (listed?.identities || listed?.choices || []);
-          matchedIdentity = rows.find(r=>r.certificate && String(r.serial) === String(vm.serial)) || null;
-        }catch(_){}
-      }
-      return {
-        certificate: matchedIdentity?.certificate || '',
-        serial: vm.serial || (matchedIdentity?.serial ? String(matchedIdentity.serial) : ''),
-        algorithm: matchedIdentity?.certificate ? 'ML-KEM-768 + X25519' : (vm.classical?.algorithm || ''),
-        classical: vm.classical || null,
-      };
+      ctx.say?.('Restoring verified public bundle and selecting vault protection…');
+      if(!ctx.prepareVault)throw Error('Vault hardware policy unavailable');
+      return ctx.prepareVault(data.serial);
     }
 
     if(op === 'chat-vault-ecdh'){

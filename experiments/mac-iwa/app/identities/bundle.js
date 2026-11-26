@@ -34,7 +34,7 @@ export async function assertSelectedCardIdentity(fresh,selected,inspect){
  */
 export function validatePublicSnapshot(value,{bundle=false}={}){
  const fields=['format','version','serial','slots','warnings',...(bundle?['bundle','generation']:[])];
- if(!exact(value,fields)||value.format!=='sequoia-iwa-public-snapshot'||value.version!==1||!serial(value.serial)||!Array.isArray(value.slots)||value.slots.length!==SLOTS.length||!Array.isArray(value.warnings)||value.warnings.length>16)fail();
+ if(!exact(value,fields)||value.format!=='sequoia-iwa-public-snapshot'||![1,2].includes(value.version)||!serial(value.serial)||!Array.isArray(value.slots)||(value.version===1?value.slots.length!==SLOTS.length:!value.slots.length||value.slots.length>SLOTS.length)||!Array.isArray(value.warnings)||value.warnings.length>16)fail();
  if(value.warnings.some(w=>typeof w!=='string'||!w.length||w.length>500||/[\x00-\x1f\x7f]/.test(w)))fail();
  const seen=new Set();
  for(const entry of value.slots){

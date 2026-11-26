@@ -59,6 +59,7 @@ async function pivSecret(w){
  // vault purpose inside WASM. The native helper never sees the vault envelope.
  const started=epoch;
  const v=await decryptInIwa({cipher:w.binding.cipher,recipientKey:w.binding.recipientKey,
+  native:(op,data,options)=>hardwareRequest(op,op==='chat-decryption-material'?{...data,serial:w.binding.serial,recipientKey:w.binding.recipientKey}:data,options),
   service:'Vault',purpose:'vault',vault:{vaultId:record?.id||w.vaultId,wrapperId:w.id},
   gate:async()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
  try{return bytes(v.secret);}finally{delete v.secret;}
@@ -70,11 +71,12 @@ async function enroll(type,check,create=false,expectedSerial=null){
  const vaultId=record?.id||crypto.randomUUID(),w={id:crypto.randomUUID(),name,type,binding:{}};let secret;
  try{
   if(type==='piv'){
-   const material=await call('chat-vault-material');
+   const selectedSerial=expectedSerial||el('fido-serial').value.trim();
+   const material=await call('chat-vault-material',selectedSerial?{serial:selectedSerial}:{});
    if(expectedSerial&&String(material.serial)!==String(expectedSerial))throw Error('Wrong YubiKey for PIV enrollment.');
-   if(el('vault-classical').checked){if(!material.classical)throw Error('No classical PIV vault key configured. Configure an existing public key and slot first; no keys will be generated.');if(!confirm('Classical ECDH protects this vault. Its encrypted backup is not post-quantum resistant. Continue?'))return;const result=await classicalWrap(material.classical);w.binding=result.binding;try{secret=await classicalOpen(w.binding,call);if(!secret.every((b,i)=>b===result.secret[i]))throw Error('PIV ECDH enrollment verification failed.');}finally{result.secret.fill(0);}
+   if(material.classicalAllowed){if(!material.classical)throw Error('No classical PIV vault key configured. Configure an existing public key and slot first; no keys will be generated.');if(!confirm('Classical ECDH protects this vault. Its encrypted backup is not post-quantum resistant. Continue?'))return;const result=await classicalWrap(material.classical);w.binding=result.binding;try{secret=await classicalOpen(w.binding,call);if(!secret.every((b,i)=>b===result.secret[i]))throw Error('PIV ECDH enrollment verification failed.');}finally{result.secret.fill(0);}
    }else{
-    if(!material.certificate)throw Error('No Level 3 OpenPGP certificate saved for hybrid PIV vault. Restore your identity bundle first, or check "Use configured classical PIV ECDH key" for a P-256/P-384 PIV slot.');
+    if(!material.certificate)throw Error('No verified supported hybrid vault certificate is available. YK6 setup never falls back to classical wrapping.');
     const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
    }
    if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint)===(w.binding.recipientKey||w.binding.fingerprint)))throw Error('This PIV key already unlocks the vault.');
@@ -104,6 +106,8 @@ record=await load();revision=record?.revision||0;if(record)validate(record);rend
 
 // Read-only gate for the experimental in-memory Google session.
 window.vaultIsUnlocked=()=>engine.unlocked;
+// Locked-vault decryption is allowed only inside an explicit active vault operation.
+window.vaultOperationActive=()=>active;
 
 // Dedicated onboarding entry point. Never overwrite a saved/imported vault and
 // never infer permission to create a credential from an assertion failure.
@@ -118,7 +122,7 @@ window.createStartupVault=async({name,serial,method,classical=false})=>{
   if(method==='existing-piv'||!engine.unlocked)return;
   // The read-only probe follows successful FIDO protection. Failure leaves
   // that verified vault intact and never attempts PIV provisioning or login.
-  let material;try{material=await call('chat-vault-material');check();}
+  let material;try{material=await call('chat-vault-material',{serial});check();}
   catch(error){tell('FIDO vault saved. PIV availability could not be checked: '+error.message);return;}
   if(!hasMatchingPiv(material,serial))return;
   if(!confirm('This YubiKey already has a usable PIV wrapping key. Also configure PIV unlocking for this vault? No keys will be created or changed.'))return;

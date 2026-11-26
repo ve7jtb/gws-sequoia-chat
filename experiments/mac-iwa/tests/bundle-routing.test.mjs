@@ -90,3 +90,10 @@ test('multiple-device restore remains actionable while the global operation lock
   assert.equal(busy,false);assert.equal(node('identity-device-dialog').open,false);assert.match(messages.at(-1),/Read-only test boundary/);
  }finally{for(const[key,value]of Object.entries(previous)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}
 });
+
+test('mapped v2 snapshot must still match every signed component',()=>{
+ const s=snapshot();s.version=2;s.slots=s.slots.filter(x=>['9c','84'].includes(x.slot));
+ assert.equal(matchBundlePublicKeys(inspected(),s).liveKeysMatched,true);
+ s.slots.pop();assert.throws(()=>matchBundlePublicKeys(inspected(),s));
+ s.slots=[];assert.throws(()=>validatePublicSnapshot(s));
+});

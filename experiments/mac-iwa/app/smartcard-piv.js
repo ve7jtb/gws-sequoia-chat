@@ -670,7 +670,7 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
   });
 }
 
-async function readPublicSnapshotViaSmartCard(serial, includeBundle){
+async function readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle=null){
   return withPivSession(serial || null, async(conn, info)=>{
     const observed = new Map();
     let stored = null;
@@ -714,9 +714,21 @@ async function readPublicSnapshotViaSmartCard(serial, includeBundle){
       stored = {generation, bundle: toBase64(bundleBytes)};
     }
 
+    // Vault restore verifies the signed manifest first, then reads every
+    // mapped key twice. Avoid unrelated empty beta slots without treating an
+    // unauthenticated SCP error as evidence that a slot is empty.
+    let snapshotSlots=ALL_24_SLOTS;
+    if(inspectBundle){
+      if(!stored)throw Error('Mapped snapshot requires a public bundle');
+      const verified=await inspectBundle(stored.bundle);
+      if(!verified.bundleSignatureVerified||verified.serial!==String(info.serial)||!verified.slots?.length)throw Error('Invalid signed slot manifest');
+      const ids=verified.slots.map(s=>s.slot);
+      if(new Set(ids).size!==ids.length||ids.some(id=>!ALL_24_SLOTS.some(s=>s.hex===id)))throw Error('Invalid mapped slots');
+      snapshotSlots=ALL_24_SLOTS.filter(s=>ids.includes(s.hex));
+    }
     const readSlotsOnce = async()=>{
       const out = [];
-      for(const slot of ALL_24_SLOTS){
+      for(const slot of snapshotSlots){
         const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
         if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
           out.push({slot: slot.hex, publicKeySha256: null});
@@ -751,7 +763,7 @@ async function readPublicSnapshotViaSmartCard(serial, includeBundle){
 
     const reply = {
       format: 'sequoia-iwa-public-snapshot',
-      version: 1,
+      version: inspectBundle ? 2 : 1,
       serial: String(info.serial),
       slots: firstSlots,
       warnings: [],
@@ -798,6 +810,7 @@ async function readClassicalVaultSlots(conn, serial, preferredSlot=null){
 
 async function readVaultMaterialViaSmartCard(options = {}){
   return withPivSession(options.serial || null, async(conn, info)=>{
+    if(options.capabilitiesOnly)return {serial:info.serial,version:info.version};
     const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
     const classicalSlots = await readClassicalVaultSlots(conn, info.serial, preferredSlot);
     const classical = preferredSlot

@@ -90,8 +90,17 @@ const { createHardwareTransport } = ctx;
   const shares = await t.dispatch('chat-decapsulate-components', { review: dmat.review, requestId: '2'.repeat(64), recipientKey:id.recipientKey }, {}, nativeRequest);
   assert.equal(shares.mlkemSecret, 'CC==');
 
+  // Locked-vault hybrid operations use verified public material rather than
+  // the account-selected message identity. Tickets cannot change purpose.
+  let vaultActive=true;
+  const vaultCtx={prepareVault:async serial=>{assert.equal(serial,'41088108');return {identity:id};},assertVault:()=>{if(!vaultActive)throw Error('Vault operation ended');}};
+  const vd=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
+  await assert.rejects(t.dispatch('chat-decapsulate-components',{review:vd.review,service:'Chat',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/purpose changed/);
+  vaultActive=false;
+  await assert.rejects(t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/operation ended/);
+
   // Vault material + classical ECDH via smartcard
-  const vmat = await t.dispatch('chat-vault-material', {}, {}, nativeRequest);
+  const vmat = await t.dispatch('chat-vault-material', {}, {}, nativeRequest,{prepareVault:()=>fakePiv.readVaultMaterialViaSmartCard()});
   assert.equal(vmat.serial, '41088108');
   assert.equal(vmat.classical.slot, '9d');
   assert.equal(vmat.classical.algorithm, 'ECDH-P256');

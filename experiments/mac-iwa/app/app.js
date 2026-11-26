@@ -63,6 +63,13 @@ function hardwareRequest(op,data={},options={}) {
  }
  if(window.hardwareTransport){
   return window.hardwareTransport.dispatch(op,data,options,nativeRequest,{identityStore:ownIdentityStore,say,
+   prepareVault:async serial=>{
+    const {prepareVaultMaterial}=await import('./vault/hardware.js');
+    const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
+    const {parseCardBundle}=await import('./identities/bundle.js');
+    return prepareVaultMaterial({serial,piv:window.SequoiaSmartCardPiv,inspectBundle,inspectIdentity,parseCardBundle,store:ownIdentityStore});
+   },
+   assertVault:()=>{if(!window.vaultOperationActive?.())throw Error('Vault operation ended');},
    authorizeIdentity:async ref=>{
     window.vaultGate();
     const {choices}=await hardwareIdentitySelection.list(ownEmail);
