@@ -4,6 +4,12 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.20.41 passed the Level 5 missed-touch retest on macOS Chromium.**
+A full Chromium IWA Lab restart loaded the new touch retry wording. The
+trace still identified `SW=6982` on the final ML-KEM-1024 decapsulation in
+slot 9D, and the read-only hardware audit matched the baseline.
+[Missed-touch retest details](experiments/mac-iwa/README.md#level-5-missed-touch-retest-02041)
+
 **IWA 0.20.40 passed a fresh Level 5 ML-KEM-1024 + P-384 vault unlock
 on macOS Chromium over Web Smart Card.** The post-PIN touch prompt
 appeared, FIDO PRF stayed enrolled, and the hardware audit matched the

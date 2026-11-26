@@ -2860,3 +2860,24 @@ The post-test read-only audit exactly matched the saved baseline across
 all 24 PIV slots, including public keys, PIN and touch policies, and PIN
 retry counts. The recorded FIDO settings and credential capacity also
 matched.
+
+### Level 5 missed-touch retest (0.20.41)
+
+On 2026-11-26, Chromium showed 0.20.41 as installed, and the installed
+bundle matched the signed release byte for byte. The running IWA continued
+to show the previous error wording. Fully quitting Chromium IWA Lab and
+reopening Sequoia Chat Lab from the same profile loaded the new wording.
+
+In the controlled retest, the app showed **Waiting for YubiKey** after
+PIV PIN submission. The tester let the touch window expire. The app
+reported that the YubiKey declined the operation and advised starting a
+fresh unlock and touching promptly if the flash was missed.
+
+The diagnostic retained `INS=87 P1=E7 P2=9D, final command, SW=6982`,
+identifying the final ML-KEM-1024 decapsulation in slot 9D. The bare
+status was unauthenticated, and the secure session closed. The status
+indicates a security refusal and does not uniquely identify a touch timeout.
+
+The post-retest read-only audit exactly matched the saved baseline across
+all 24 PIV slots, including public keys, PIN and touch policies, and PIN
+retry counts. Recorded FIDO settings and credential capacity also matched.
