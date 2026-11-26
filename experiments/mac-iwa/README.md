@@ -2748,3 +2748,7 @@ loopback PKCE, rather than Extension. Explicit saved choices remain unchanged.
 Drive authorization already used loopback independently. The user confirmed
 Gmail/Chat authorization worked after selecting loopback in the restored profile.
 Regression tests cover missing settings and persistence of both explicit modes.
+
+### 0.20.30 — discover before enrolling
+
+New-vault FIDO setup checks for an existing credential under the selected RP and serial before offering creation. Only CTAP NO_CREDENTIALS plus explicit confirmation permits creation; cancellation, PIN and transport errors stop. After FIDO protection succeeds, a read-only PIV probe offers a second unlock method when matching existing wrapping material is available. No PIV provisioning is performed by this flow. Four new policy regressions pass.

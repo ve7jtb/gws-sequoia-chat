@@ -1,3 +1,4 @@
+import {discoverOrCreate,hasMatchingPiv} from './vault/enrollment.js';
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap,classicalOpen} from './vault/piv.js';
 import {createSoftwareIdentityStore} from './software/store.js';
@@ -63,20 +64,29 @@ async function pivSecret(w){
  try{return bytes(v.secret);}finally{delete v.secret;}
 }
 async function prf(w){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
-async function enroll(type,check,create=false){
+async function enroll(type,check,create=false,expectedSerial=null){
  if(record&&!engine.unlocked)throw Error('Unlock the existing vault before adding another method.');
  const name=el('vault-name').value.trim();if(!name||name.length>80)throw Error('Enter an unlock-method name (1–80 characters).');
  const vaultId=record?.id||crypto.randomUUID(),w={id:crypto.randomUUID(),name,type,binding:{}};let secret;
  try{
   if(type==='piv'){
    const material=await call('chat-vault-material');
+   if(expectedSerial&&String(material.serial)!==String(expectedSerial))throw Error('Wrong YubiKey for PIV enrollment.');
    if(el('vault-classical').checked){if(!material.classical)throw Error('No classical PIV vault key configured. Configure an existing public key and slot first; no keys will be generated.');if(!confirm('Classical ECDH protects this vault. Its encrypted backup is not post-quantum resistant. Continue?'))return;const result=await classicalWrap(material.classical);w.binding=result.binding;try{secret=await classicalOpen(w.binding,call);if(!secret.every((b,i)=>b===result.secret[i]))throw Error('PIV ECDH enrollment verification failed.');}finally{result.secret.fill(0);}
    }else{
     if(!material.certificate)throw Error('No Level 3 OpenPGP certificate saved for hybrid PIV vault. Restore your identity bundle first, or check "Use configured classical PIV ECDH key" for a P-256/P-384 PIV slot.');
     const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
    }
    if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint)===(w.binding.recipientKey||w.binding.fingerprint)))throw Error('This PIV key already unlocks the vault.');
-  }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding():{})};if(create){const r=await window.directFido.create(w.binding,name,vaultId);w.binding=r.binding;try{secret=bytes(r.secret);}finally{delete r.secret;}}else secret=await prf(w);if(record?.wrappers.some(x=>x.type==='prf'&&x.binding.credentialId===w.binding.credentialId))throw Error('This passkey already unlocks the vault.');}
+  }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding():{})};if(create){
+    // Discover first under this exact RP and serial; never turn cancellation,
+    // wrong PIN, transport loss or unsupported PRF into credential creation.
+    const found=await discoverOrCreate({
+     assertExisting:async()=>({secret:await prf(w)}),
+     confirmCreate:()=>confirm('No FIDO credential exists for this IWA on the selected key. Create a new discoverable PRF credential?'),
+     createNew:async()=>{const r=await window.directFido.create(w.binding,name,vaultId);w.binding=r.binding;try{return {secret:bytes(r.secret)};}finally{delete r.secret;}}
+    });secret=found.result.secret;create=found.created;
+   }else secret=await prf(w);if(record?.wrappers.some(x=>x.type==='prf'&&x.binding.credentialId===w.binding.credentialId))throw Error('This passkey already unlocks the vault.');}
   check();if(record)await engine.add(w,secret);else await engine.create(w,secret,vaultId);check();await commit();if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. You may remove the key. Lock the vault to test a fresh unlock.');
  }finally{secret?.fill(0);}
 }
@@ -103,5 +113,16 @@ window.createStartupVault=async({name,serial,method,classical=false})=>{
  if(!name||name.length>80)throw Error('Enter a vault name.');
  if(method!=='existing-piv'&&!/^[1-9][0-9]{0,9}$/.test(serial))throw Error('Enter the connected YubiKey serial.');
  el('vault-name').value=name;el('fido-serial').value=serial;el('vault-classical').checked=classical;
- return run(check=>enroll(method==='existing-piv'?'piv':'prf',check,method==='new-prf'));
+ return run(async check=>{
+  await enroll(method==='existing-piv'?'piv':'prf',check,method==='new-prf');
+  if(method==='existing-piv'||!engine.unlocked)return;
+  // The read-only probe follows successful FIDO protection. Failure leaves
+  // that verified vault intact and never attempts PIV provisioning or login.
+  let material;try{material=await call('chat-vault-material');check();}
+  catch(error){tell('FIDO vault saved. PIV availability could not be checked: '+error.message);return;}
+  if(!hasMatchingPiv(material,serial))return;
+  if(!confirm('This YubiKey already has a usable PIV wrapping key. Also configure PIV unlocking for this vault? No keys will be created or changed.'))return;
+  el('vault-classical').checked=!material.certificate;
+  await enroll('piv',check,false,serial);
+ });
 };
