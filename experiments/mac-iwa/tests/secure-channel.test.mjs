@@ -58,3 +58,13 @@ function fakeCard({badReceipt=false}={}){
 }
 test('full SCP11b handshake authenticates, encrypts long commands and rekeys after PIV/FIDO SELECT',async()=>{const card=fakeCard(),c=await openSecureConnection(card,{trust});await c.transmit(h('00a4040001aa'));assert.equal(hex(await c.transmit(h('00f80000'))),'010203049000');const long=new Uint8Array(255).fill(9);await c.transmit(join(h('10870000ff'),long));assert.equal(hex(await c.transmit(h('00870000010100'))),'010203049000');await c.transmit(h('00a4040001bb'));await c.transmit(h('80108000010400'));assert.equal(card.handshakes,2);c.close();await assert.rejects(c.transmit(h('00f80000')),/Closed/);});
 test('invalid handshake receipt stops before any application or PIN APDU',async()=>{const c=await openSecureConnection(fakeCard({badReceipt:true}),{trust});await assert.rejects(c.transmit(h('00a4040001aa')),/receipt/);await assert.rejects(c.transmit(h('0020008006313233343536')),/Closed/);});
+
+// The beta trust file is a pinned CA certificate, never a wildcard by model,
+// serial, subject name, or missing manufacturer chain. Unrelated leaves fail.
+test('temporary beta pin retains CA constraints and rejects unrelated leaves',async()=>{
+ const t=JSON.parse(fs.readFileSync(new URL('../app/secure-channel/beta-sd-trust.json',import.meta.url)));
+ const der=unbase64(t.root),c=parseCertificate(der);
+ assert.equal(createHash('sha256').update(der).digest('hex'),'e4e054c35c106f51541775d04da2055ca0190c84c1647719133acc6484ea0a54');
+ assert.equal(c.ca,true);assert.equal(c.pathLen,0);assert.ok(c.usage&4);
+ await assert.rejects(validateChain([leaf],{...t,root:der}),/not trusted/);
+});

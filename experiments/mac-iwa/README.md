@@ -30,6 +30,14 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Temporary Beta YubiKey 6 SD pin (0.20.23)
+
+The opt-in “Beta YubiKey 6 testing” checkbox selects the exact bundled SD attestation certificate as a temporary trust anchor. This is not a wildcard for beta models or serial numbers. Only SCP leaf certificates chaining to that certificate are accepted; other beta devices may need a different authenticated anchor. The certificate was obtained from a test device, not authenticated against the unavailable Yubico 2026 SD Preview CA, so this does not establish manufacturer provenance.
+
+Production-root trust remains the default. The SHA-256 certificate pin is `e4e054c35c106f51541775d04da2055ca0190c84c1647719133acc6484ea0a54`. Validity, CA/path length, key usage, SD policies, leaf signature and SCP proof-of-possession checks remain enabled. Trust selection is frozen during card transactions; there is no fallback between anchors or to plaintext. Remove the temporary mode when the independently sourced preview CA becomes available.
+
+Validation: 12 secure-channel/startup tests passed; the saved Beta0 public chain validates against the pin and a tampered leaf is rejected. Live secure-channel and PRF unlock testing remains pending. No card keys, credentials or policies were changed.
+
 ## Secure-channel startup correction (0.20.22)
 
 The Chromebook check of 0.20.21 stopped with “Secure-channel policy is not ready” before any card operation or PIN request. Its application bootstrap omitted the secure-channel UI module. Version 0.20.22 loads that module before the hardware and vault entry points, with a production-loader regression test. Hardware SCP validation remains pending; the application never silently falls back to plaintext.
