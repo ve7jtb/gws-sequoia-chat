@@ -181,10 +181,11 @@ function createHardwareTransport(deps = {}){
       const hex=n=>n.toString(16).padStart(2,'0').toUpperCase();
       const name=command.ins===0x20?'PIV PIN verification':command.ins===0x87?'PIV private operation':'PIV card command';
       const diagnostic=`INS=${hex(command.ins)} P1=${hex(command.p1)} P2=${hex(command.p2)}, ${command.stage}, SW=6982`;
-      const advice=command.ins===0x87&&command.stage==='final command'
-        ?' If the key flashed and you missed it, start a fresh unlock and touch it promptly.'
-        :' Start a fresh unlock to open a new secure card session.';
-      throw Error(`${name} stopped because the secure response could not be authenticated (${diagnostic}).${advice}`,{cause:error});
+      const touch=command.ins===0x87&&command.stage==='final command';
+      const summary=touch
+        ?'YubiKey declined the operation. If you missed the flash, start a fresh unlock and touch the key promptly.'
+        :`${name} was declined. Start a fresh unlock to open a new secure card session.`;
+      throw Error(`${summary} Diagnostic: ${diagnostic} (unauthenticated status).`,{cause:error});
     }finally{
       if(showing){
         dialog.removeEventListener('cancel',preventCancel);

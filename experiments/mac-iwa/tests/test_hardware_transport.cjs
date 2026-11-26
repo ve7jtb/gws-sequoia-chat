@@ -148,11 +148,11 @@ const { createHardwareTransport } = ctx;
       assert.equal(element('entry').hidden,true);
       assert.equal(element('wait').hidden,false);
       assert.match(element('status').textContent,/Touch YubiKey SN# 123/);
-      throw Error('Missing SCP response MAC (SW=6982) [INS=87 P1=E7 P2=9D, final command, SW=6982]');
+      throw Error('Card declined the command (bare SW=6982) [INS=87 P1=E7 P2=9D, final command, SW=6982]');
     },
   }});
   browserTransport.setMode('smartcard');
-  await assert.rejects(browserTransport.dispatch('chat-vault-level5-open',{serial:'123'},{},nativeRequest,{assertVault(){}}),/INS=87 P1=E7 P2=9D.*touch it promptly/);
+  await assert.rejects(browserTransport.dispatch('chat-vault-level5-open',{serial:'123'},{},nativeRequest,{assertVault(){}}),/declined the operation.*touch the key promptly.*INS=87 P1=E7 P2=9D/);
   assert.equal(element('dialog').open,false);
   assert.equal(element('entry').hidden,false);
   assert.equal(element('wait').hidden,true);

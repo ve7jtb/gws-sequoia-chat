@@ -69,8 +69,11 @@ export class SecureMessaging{
    const framed=command(cla|4,ins,p1,p2,join(cipher,new Uint8Array(8)),cipher.length+8>255);
    this.chain=await cmac(this.mac,join(this.chain,framed.slice(0,-8)));
    const r=await raw(this.conn,cla|4,ins,p1,p2,join(cipher,this.chain.slice(0,8)));
-   // An unauthenticated status is never passed to an application as a valid
-   // PIN rejection/success. Tear down on any corruption; no plaintext retry.
+   // Amendment F uses Amendment D secure messaging. An error such as 6982
+   // may be returned as a bare status. Reject the operation and close this
+   // session, keeping the unauthenticated header only for diagnostics.
+   if(!r.data.length && r.sw===0x6982)
+    throw scpStatusError('Card declined the command (bare SW=6982)',r.sw,ins,p1,p2,r.stage);
    if(r.data.length<8)throw scpStatusError('Missing SCP response MAC (SW='+r.sw.toString(16)+')',r.sw,ins,p1,p2,r.stage);
    const ciphertext=r.data.slice(0,-8),tag=await cmac(this.rmac,join(this.chain,ciphertext,new Uint8Array([r.sw>>8,r.sw&255])));
    if(!same(tag.slice(0,8),r.data.slice(-8)))throw Error('SCP response MAC mismatch');
