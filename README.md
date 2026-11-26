@@ -4,6 +4,16 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.20.32 passed existing FIDO credential reuse and PIV vault
+lock/unlock testing on macOS Chromium on 2026-11-26.** Setup reused the existing
+package-scoped PRF credential, then added the existing slot 82 ECDH-P384 key as
+a second vault unlock method. A fresh lock and PIV unlock succeeded with SCP11b
+and the approved beta SD pin enabled. Before/after audits matched all 24 PIV
+slots, public keys, PIN/touch policies and retry counters; FIDO credential
+capacity was unchanged and no duplicate credential was added. See the
+[vault enrollment results](experiments/mac-iwa/README.md#fido-reuse-and-piv-vault-validation-02032)
+and [signed 0.20.32 preview](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.32).
+
 **IWA 0.20.24 passed Chromebook encrypted-vault restore and SCP-protected
 FIDO PRF unlock on 2026-11-25.** Restore authenticated the backup with the
 existing credential and verified the restored records by reading them back.

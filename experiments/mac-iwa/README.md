@@ -2755,8 +2755,44 @@ New-vault FIDO setup checks for an existing credential under the selected RP and
 
 ### 0.20.31 — silent FIDO discovery
 
-Existing-credential discovery first tries getAssertion with UP=false and UV=false and no PIN authentication. Protected/hidden credential responses fall through to authenticated discovery; they never authorize creation. Vault PRF evaluation still uses the existing UV-protected path. Three silent-discovery regressions passed; hardware confirmation remains pending.
+Existing-credential discovery first tries getAssertion with UP=false and UV=false and no PIN authentication. Protected/hidden credential responses fall through to authenticated discovery; they never authorize creation. Vault PRF evaluation still uses the existing UV-protected path. Three silent-discovery regressions passed. Existing-credential enrollment passed the live test below; no separate APDU trace was saved to distinguish silent discovery from authenticated fallback.
 
 ### 0.20.32 — bounded PIV vault probe
 
-Vault wrapping-key discovery stops at the first usable authenticated EC key rather than continuing through unrelated empty slots. Explicit slot selection reads only that slot. This avoids the observed beta empty-slot un-MACed response without relaxing SCP authentication. Thirteen probe/SCP regressions pass; hardware enrollment verification is pending.
+Vault wrapping-key discovery stops at the first usable authenticated EC key rather than continuing through unrelated empty slots. Explicit slot selection reads only that slot. This avoids the observed beta empty-slot un-MACed response without relaxing SCP authentication. Thirteen probe/SCP regressions pass. Hardware enrollment and a fresh PIV unlock passed the live test below.
+
+### FIDO reuse and PIV vault validation (0.20.32)
+
+On 2026-11-26, the installed signed IWA in macOS Chromium completed this sequence
+using an existing provisioned beta YubiKey:
+
+1. Discovery-first setup reused the existing discoverable FIDO PRF credential
+   under the IWA package RP and saved an unlocked vault. No new-credential
+   confirmation or makeCredential operation was performed by the test workflow.
+2. After the PIV probe fix, the existing **slot 82 ECDH-P384** key was enrolled
+   as a second local vault unlock method. The app reported **“Unlock method
+   verified and saved.”** The existing FIDO method remained enrolled.
+3. The vault was explicitly locked, the PIV method selected, and a separate
+   PIV PIN operation completed. The app reported **“Vault unlocked.”** Both
+   methods remained listed, with PIV marked as the default.
+
+SCP11b and the explicitly approved temporary beta SD certificate pin remained
+enabled. The PIV probe stops at the first usable authenticated wrapping key;
+it does not ignore missing response MACs or fall back to plaintext. The earlier
+empty-slot `SW=6a88` failure no longer blocked this enrollment.
+
+The final read-only audit matched both the original FIDO-setup baseline and
+the immediate PIV-enrollment baseline: all **24 PIV slots**, public-key hashes,
+key metadata, PIN/touch policies and retry counters were unchanged. FIDO
+credential storage remained **78 available**, FIDO PIN retries remained **8**,
+and PIV PIN retries remained **3/3**. No duplicate discoverable credential was
+added, and no hardware keys or policies were generated, deleted or changed.
+FIDO assertions may advance signature counters; this is not a claim that every
+internal device byte stayed identical. Device-specific audit files stay local.
+
+This test validates classical P-384 vault wrapping, not hybrid PQ vault wrapping.
+The new PIV method changes the local encrypted vault's unlock wrappers only.
+The beta SD pin does not establish manufacturer-root provenance. Silent
+`UP=false, UV=false` discovery is covered by regression tests; the live run
+confirms credential reuse but does not separately prove which discovery path
+returned the credential. PRF evaluation still used UV.
