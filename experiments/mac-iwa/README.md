@@ -2799,4 +2799,24 @@ returned the credential. PRF evaluation still used UV.
 
 ### 0.20.33 — hybrid YK6 vault enrollment
 
-New PIV vault methods use reported firmware, never serial-number model lists. YK6 restores its signed public bundle, checks every mapped live public key, and requires supported native Level 3 ML-KEM-768/X25519 wrapping; missing/unsupported bundles fail without classical fallback. YK5 can use an existing P-384 key. Existing classical wrappers remain readable for migration; remove them only after a fresh hybrid unlock passes. Vault decryption has its own active-operation guard and purpose-bound, single-use hardware ticket, independent of mail-account selection. Forty-one focused regressions and transport tests passed. Hardware migration testing is pending.
+New PIV vault methods use reported firmware, never serial-number model lists. YK6 restores its signed public bundle, checks every mapped live public key, and requires supported native Level 3 ML-KEM-768/X25519 wrapping; missing/unsupported bundles fail without classical fallback. YK5 can use an existing P-384 key. Existing classical wrappers remain readable for migration; remove them only after a fresh hybrid unlock passes. Vault decryption has its own active-operation guard and purpose-bound, single-use hardware ticket, independent of mail-account selection. Forty-one focused regressions and transport tests passed. See the 0.20.35 hardware validation below.
+
+### Hybrid vault validation (0.20.35)
+
+On 2026-11-26, the macOS Chromium IWA read the YubiKey 6 Beta 0 firmware
+information across Management pages and verified the signed public bundle
+over Web Smart Card with SCP11b and the temporary beta SD certificate pin.
+It enrolled the existing ML-KEM-768 key in slot 9D and X25519 key in slot
+85 as one hybrid vault unlock method.
+
+The vault was locked, the new hybrid PIV method was explicitly selected,
+and a fresh PIV PIN and touch operation unlocked the vault. Only after
+that success was the local slot 82 P-384 wrapper removed. The enrolled
+methods list then showed the hybrid PIV method as the default and the
+existing FIDO PRF method as the alternative.
+
+Read-only card snapshots taken before enrollment and after the fresh
+unlock matched across all 24 PIV slots, including public keys, key
+metadata, PIN and touch policies, and retry counts. The captured FIDO
+settings and credential capacity also matched. Removing the wrapper
+changed the local vault only. The slot 82 hardware key remains on the card.
