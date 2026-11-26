@@ -2820,3 +2820,20 @@ unlock matched across all 24 PIV slots, including public keys, key
 metadata, PIN and touch policies, and retry counts. The captured FIDO
 settings and credential capacity also matched. Removing the wrapper
 changed the local vault only. The slot 82 hardware key remains on the card.
+
+### Chromebook hybrid vault validation (0.20.35)
+
+On 2026-11-26, the Chromebook restored a vault with its existing FIDO PRF
+enrollment and unlocked it using that method. With Web Smart Card, SCP11b,
+and the temporary beta SD certificate pin enabled, the app enrolled a
+hybrid PIV wrapper using the existing ML-KEM-768 key in slot 9D and the
+X25519 key in slot 85 of the YubiKey 6 Beta 0.
+
+After explicitly locking the vault, we selected the hybrid PIV method and
+completed a fresh PIN and touch operation. The app reported **“Vault
+unlocked.”** Hybrid PIV was the default, and FIDO PRF remained enrolled.
+
+The post-test read-only audit on the Mac exactly matched the saved
+baseline for all 24 PIV slots, including public keys, key metadata, PIN
+and touch policies, and PIN retry counts. The recorded FIDO settings and
+credential capacity also matched.

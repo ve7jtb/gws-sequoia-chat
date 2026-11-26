@@ -4,6 +4,12 @@ A standalone local browser app and CLI for encrypted Google Chat bundles and Ope
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).
 
+**IWA 0.20.35 passed a fresh ML-KEM-768 + X25519 vault unlock on
+Chromebook over Web Smart Card.** FIDO PRF remained enrolled, and the
+post-test card audit matched the saved baseline for all 24 PIV slots,
+PIN and touch policies, retry counts, and recorded FIDO settings.
+[Chromebook hybrid vault test](experiments/mac-iwa/README.md#chromebook-hybrid-vault-validation-02035)
+
 **IWA 0.20.35 passed a fresh ML-KEM-768 + X25519 vault unlock on a
 YubiKey 6 Beta 0 using Web Smart Card on macOS Chromium.** After the
 unlock passed, the local P-384 wrapper was removed. The hybrid PIV method
