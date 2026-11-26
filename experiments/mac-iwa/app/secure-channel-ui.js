@@ -8,9 +8,9 @@ const ROOT='62760c6a6ef91679f454c8902b80fd009825b3f25da90f1fbace2ec6586cd5a8';
 // Temporary certificate pin, not an independently authenticated manufacturer root.
 const BETA_ROOT='e4e054c35c106f51541775d04da2055ca0190c84c1647719133acc6484ea0a54';
 const BETA_KEY='sequoia_secure_yubikey_beta_pin';
-let required=false,beta=false,active=0;
+let required=true,beta=false,active=0;
 const trustPromises=new Map();
-try{required=localStorage.getItem(KEY)==='required';}catch{/* Default remains opt-in on a first installation. */}
+try{required=localStorage.getItem(KEY)!=='off';}catch{/* Fail closed: new instances require SCP even if preferences cannot be read. */}
 const checkbox=document.getElementById('secure-yubikey-connection');
 try{beta=localStorage.getItem(BETA_KEY)==='enabled';}catch{/* Production trust is the default. */}
 const betaCheckbox=document.getElementById('secure-yubikey-beta');

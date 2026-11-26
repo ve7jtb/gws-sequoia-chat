@@ -480,6 +480,30 @@ async function readAll24Slots(conn){
   return slots;
 }
 
+// A provisioning candidate must have no user keys AND no certificate objects.
+// Read errors are not emptiness. The second read occurs in the same PC/SC
+// transaction and detects concurrent changes before exposing a review plan.
+async function inspectEmptyPivCandidate(){
+  if(!global.SequoiaSecureChannel?.isRequired())throw Error('Provisioning discovery requires SCP11b.');
+  return withPivSession(null,async(conn,info)=>{
+    if(!info.serial)throw Error('The inserted key has no readable serial.');
+    async function inventory(){
+      const rows=[];
+      for(const slot of ALL_24_SLOTS){
+        const meta=await transmitChained(conn,buildGetMetadataApdu(slot.id));
+        if(![0x9000,0x6a88,0x6a82].includes(meta.sw))throw Error('Slot inspection failed: '+slot.hex);
+        const objectId=({'9a':0x5fc105,'9c':0x5fc10a,'9d':0x5fc10b,'9e':0x5fc101})[slot.hex]??(0x5fc10d+slot.id-0x82);
+        const cert=await readPivDataObject(conn,objectId);
+        rows.push({slot:slot.hex,keyPresent:meta.sw===0x9000,certificatePresent:cert!==null});
+      }
+      return rows;
+    }
+    const first=await inventory(),second=await inventory();
+    if(JSON.stringify(first)!==JSON.stringify(second))throw Error('PIV slots changed during discovery.');
+    return {serial:info.serial,version:info.version,slots:first};
+  });
+}
+
 async function readPinRetries(conn){
   const meta = await transmitChained(conn, buildGetMetadataApdu(0x80));
   if(meta.sw !== 0x9000) throw Error('Failed to read PIV PIN retries: SW=0x' + meta.sw.toString(16));
@@ -880,6 +904,7 @@ function formatPivReport(r){
 const api = {
   // Shared serial-checked transaction for switching to the FIDO applet.
   withPivSession,
+  inspectEmptyPivCandidate,
   encodeBerLength,
   encodeBerTlv,
   buildSelectPivApdu,

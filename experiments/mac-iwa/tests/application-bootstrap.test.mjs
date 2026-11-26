@@ -11,7 +11,7 @@ function run(pending){
  vm.createContext(context);return {done:vm.runInContext('(async()=>{'+source+'})()',context),loaded,redirect:()=>redirect,policy:()=>policy};
 }
 test('IWA bootstrap uses only allowlisted TrustedScriptURL assets in order',async()=>{
- const f=run(null);await f.done;assert.equal(f.loaded[0],'/config.js');assert(f.loaded.includes('/app.js'));assert.equal(f.loaded.at(-1),'/google-transport.js');
+ const f=run(null);await f.done;assert.equal(f.loaded[0],'/config.js');assert(f.loaded.includes('/app.js'));assert.equal(f.loaded.at(-1),'/startup-ui.js');assert(f.loaded.indexOf('/startup-ui.js')>f.loaded.indexOf('/hardware-transport.js'));
  for(const url of ['https://attacker.invalid/code.js','/other.js','/app.js?replace=1'])assert.throws(()=>f.policy().createScriptURL(url));
 });
 test('partial restoration redirects before loading any mail or vault code',async()=>{

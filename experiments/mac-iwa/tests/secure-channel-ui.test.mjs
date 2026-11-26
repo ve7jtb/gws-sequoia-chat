@@ -9,7 +9,9 @@ test('secure preference persists, locks during sessions and refuses unavailable 
  globalThis.localStorage={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};
  globalThis.fetch=async()=>({ok:false});
  await import('../app/secure-channel-ui.js');const policy=globalThis.SequoiaSecureChannel;
- assert.equal(policy.isRequired(),false);assert.equal(betaCheckbox.checked,false);const raw={};const session=await policy.acquire(raw);assert.equal(session.connection,raw);assert.ok(checkbox.disabled);assert.ok(betaCheckbox.disabled);
+ assert.equal(policy.isRequired(),true);assert.equal(checkbox.checked,true);assert.equal(betaCheckbox.checked,false);
+ // An explicit user opt-out remains supported; the default itself is secure.
+ checkbox.checked=false;listeners.get('change')();assert.equal(values.get('sequoia_secure_yubikey_connection'),'off');const raw={};const session=await policy.acquire(raw);assert.equal(session.connection,raw);assert.ok(checkbox.disabled);assert.ok(betaCheckbox.disabled);
  betaCheckbox.checked=true;betaListeners.get('change')();assert.equal(betaCheckbox.checked,false);
  checkbox.checked=true;listeners.get('change')();assert.equal(policy.isRequired(),false);assert.equal(checkbox.checked,false);session.close();
  checkbox.checked=true;listeners.get('change')();assert.equal(policy.isRequired(),true);assert.equal([...values.values()][0],'required');

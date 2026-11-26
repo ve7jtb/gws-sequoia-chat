@@ -94,7 +94,7 @@ function identityRequest(snapshot){
  if(snapshot&&Object.hasOwn(snapshot,'provider'))throw Error('Unknown identity provider.');
  return hardwareRequest;
 }
-function custodyLabel(identity){return identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial+(identity.custody==='hardware-companion'?' + encrypted software companion':'');}
+function custodyLabel(identity){return identity.hardware?.privateRemoved?'YubiKey '+identity.hardware.serial+' · vault certificate':identity.provider==='software'?'Software (experimental) · '+identity.name:'YubiKey '+identity.serial+(identity.custody==='hardware-companion'?' + encrypted software companion':'');}
 // Display only the selected certificate's authenticated component mapping.
 // A legacy record's identity.slots is the union of ALL bundle profiles, including
 // S/MIME and compatibility keys, so using that union would misstate which keys
@@ -180,7 +180,7 @@ async function refreshSendIdentities(){
 }
 function updateIdentityHelp(){
  const selected=sendIdentities.find(c=>c.id===$('send-identity').value);
- $('send-identity-help').textContent=!selected?'Restore a matching YubiKey identity, or unlock the vault and create or import a software OpenPGP identity.':selected.provider==='software'?'Software (experimental): keys are unlocked only in a disposable browser worker. The vault must remain unlocked; no YubiKey signing operation is used. '+compatibilityWarnings(selected,selected).join(' '):'The selected signed manifest is checked against its YubiKey before the PIN prompt. Signing: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'. '+compatibilityWarnings(selected,selected).join(' ');
+ $('send-identity-help').textContent=!selected?'Restore a matching YubiKey identity, or unlock the vault and create or import a software OpenPGP identity.':selected.hardware?.privateRemoved?'Hardware-only vault identity: keys are checked against YubiKey '+selected.hardware.serial+' before the PIV PIN prompt. Signing uses 9c/84; decryption uses 9d/85. '+compatibilityWarnings(selected,selected).join(' '):selected.provider==='software'?'Software (experimental): keys are unlocked only in a disposable browser worker. The vault must remain unlocked; no YubiKey signing operation is used. '+compatibilityWarnings(selected,selected).join(' '):'The selected signed manifest is checked against its YubiKey before the PIN prompt. Signing: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'. '+compatibilityWarnings(selected,selected).join(' ');
 }
 $('send-identity').addEventListener('change',()=>{updateIdentityHelp();
  invalidateCertificateViews();try{localStorage.setItem('sequoia-iwa-send-identity',$('send-identity').value);}catch(_){}
@@ -369,11 +369,19 @@ async function bootstrap(){
  const {initializeSoftwareUi}=await import('./software-ui.js');
  softwareUi=initializeSoftwareUi({isBusy:()=>busy,setBusy:operationBusy,say,account:()=>ownEmail,
   changed:async()=>{invalidateCertificateViews();await refreshSendIdentities();},
-  test:async(identity,onProgress)=>{
+  test:async(identity,onProgress,backupBinding)=>{
    const account=accountSnapshot;assertAccount(account);softwareTestAbort=new AbortController();
    try{
     const {runSoftwareTest}=await import('./software-test.js');
-    return await runSoftwareTest({identity,selection:identitySelection,request:identityRequest(identity),
+    const normal=identityRequest(identity);
+    const request=backupBinding?async(op,data,options)=>{
+     if(op==='chat-sign-digest'||op==='chat-decapsulate-components'){
+      const {operateImportedKey}=await import('./piv-import.js');const {review,service,...component}=data;
+      return operateImportedKey(op==='chat-sign-digest'?'sign':'decapsulate',component,backupBinding,{...options,signal:softwareTestAbort.signal,guard:async()=>{assertAccount(account);window.vaultGate?.();await identitySelection.assert(identity);}});
+     }
+     return normal(op,data,options);
+    }:normal;
+    return await runSoftwareTest({identity,selection:identitySelection,request,hardware:!!backupBinding||!!identity.hardware?.privateRemoved,
      gate:()=>{assertAccount(account);window.vaultGate?.();},signal:softwareTestAbort.signal,onProgress,
      createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
      createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'})});
@@ -533,7 +541,7 @@ function reviewMatchedIdentity(matched,generation,account){
 }
 function showMatchedIdentity(){
  const selected=decryptionChoice?.matched.choices.find(c=>c.id===$('decrypt-identity').value);
- $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v'+(selected.version||6)+' · '+(selected.encryptionAlgorithm||'ML-KEM-768 + X25519')+(selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nComponents: '+operationSlots(selected,'decryption')+'; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
+ $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v'+(selected.version||6)+' · '+(selected.encryptionAlgorithm||'ML-KEM-768 + X25519')+(selected.hardware?.privateRemoved?'\nUses the unlocked vault mapping and the YubiKey PIV PIN prompt.':selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nComponents: '+operationSlots(selected,'decryption')+'; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
 }
 $('decrypt-identity').addEventListener('change',showMatchedIdentity);
 event('matched-identity-cancel',cancelDecryptionChoice);

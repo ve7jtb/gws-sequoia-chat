@@ -1,0 +1,25 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {planPivBackup,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
+// Synthetic serial only: these tests perform no card discovery or mutation.
+const request=()=>({profile:'level3',serial:'12345678',expectedSerial:'12345678',supportedAlgorithms:['ML-DSA-65','ML-KEM-768','Ed25519','X25519'],slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
+test('backup plan keeps certification, signing and encryption roles distinct',()=>{
+ const r=request(),plan=planPivBackup(r);assert.equal(plan.keys.length,6);assert.equal(new Set(plan.keys.map(k=>k.slot)).size,6);
+ assert(plan.keys.every(k=>k.pin==='always'));assert.equal(plan.operation,'import-existing-software-keys');
+ assert.equal(plan.keys.find(k=>k.slot==='9c').touch,'always');assert.equal(plan.keys.find(k=>k.slot==='9d').touch,'always');
+ assert.equal(plan.keys.find(k=>k.slot==='84').touch,'never');
+});
+test('unknown, occupied, certificate-only and duplicate slots refuse the entire plan',()=>{
+ for(const mutate of [r=>r.slots.pop(),r=>r.slots[0].keyPresent=true,r=>r.slots[0].certificatePresent=true,r=>delete r.slots[0].keyPresent,r=>r.slots.push(r.slots[0])]){const r=request();mutate(r);assert.throws(()=>planPivBackup(r));}
+});
+test('wrong card or unsupported composite cannot produce a partial backup',()=>{
+ for(const mutate of [r=>r.serial='87654321',r=>r.supportedAlgorithms.pop(),r=>r.profile='level5']){const r=request();mutate(r);assert.throws(()=>planPivBackup(r));}
+});
+
+test('serial is detected rather than supplied in advance; subsequent review binds it',()=>{
+ const r=request();delete r.expectedSerial;assert.equal(planPivBackup(r).serial,'12345678');
+ r.expectedSerial='87654321';assert.throws(()=>planPivBackup(r),/does not match/);
+});
+test('occupied unrelated slots reject even when every destination is empty',()=>{
+ for(const slot of ['9a','9e','82','83','95']){const r=request();r.slots.find(s=>s.slot===slot).keyPresent=true;assert.throws(()=>planPivBackup(r),/not empty/);}
+});

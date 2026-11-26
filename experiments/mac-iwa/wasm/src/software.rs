@@ -712,6 +712,48 @@ fn export(mut v: serde_json::Value) -> Result<serde_json::Value> {
     }
     result
 }
+/// Export validated Level 3 seeds only for an explicitly reviewed card import.
+/// This operation runs in a disposable worker. It is never used for downloads,
+/// normal signing, or persistence; the caller wipes mutable seed buffers after
+/// the SCP-protected import and keeps the encrypted source on every failure.
+fn backup_material(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    fields(&v, &["encryptedSecret", "password"])?;
+    let loaded = load(&mut v)?;
+    ensure!(loaded.info["profile"] == "level3", "Native Level 3 backup required");
+    ensure!(loaded.pairs.len() == 3, "Exactly three logical keys required");
+    let primary = loaded.cert.fingerprint().to_hex();
+    let mut keys = Vec::new();
+    for pair in &loaded.pairs {
+        let fp = pair.public().fingerprint().to_hex();
+        pair.secret().map(|secret| -> Result<()> {
+            let mut add = |slot: &str, algorithm: &str, seed: &[u8], public: &[u8]| {
+                keys.push(serde_json::json!({"slot":slot,"algorithm":algorithm,"seed":B64.encode(seed),"publicKey":B64.encode(public)}));
+            };
+            match (pair.public().mpis(), secret) {
+                (mpi::PublicKey::MLDSA65_Ed25519 { mldsa: mp, eddsa: ep }, mpi::SecretKeyMaterial::MLDSA65_Ed25519 { mldsa, eddsa }) => {
+                    let certification = fp == primary;
+                    ensure!(certification || loaded.info["signingFingerprint"] == fp, "Unexpected signing role");
+                    add(if certification {"86"} else {"9c"}, "ML-DSA-65", mldsa.as_ref(), mp.as_ref());
+                    add(if certification {"87"} else {"84"}, "Ed25519", eddsa.as_ref(), ep.as_ref());
+                },
+                (mpi::PublicKey::MLKEM768_X25519 { mlkem: mp, ecdh: ep }, mpi::SecretKeyMaterial::MLKEM768_X25519 { mlkem, ecdh }) => {
+                    ensure!(loaded.info["recipientKey"] == fp, "Unexpected encryption role");
+                    add("9d", "ML-KEM-768", mlkem.as_ref(), mp.as_ref());
+                    add("85", "X25519", ecdh.as_ref(), ep.as_ref());
+                },
+                _ => bail!("Unsupported card backup algorithm"),
+            }
+            Ok(())
+        })?;
+    }
+    ensure!(keys.len()==6, "Incomplete backup");
+    Ok(serde_json::json!({"keys":keys,"certificateHash":loaded.info["certificateHash"]}))
+}
+#[wasm_bindgen]
+pub fn software_backup_material(input: &str) -> Result<String, JsValue> {
+    call(input, backup_material).map_err(|_| JsValue::from_str("Hardware backup material rejected"))
+}
+
 /// Generate only software keys using the browser's CSPRNG-backed Rust backend.
 #[wasm_bindgen]
 pub fn software_generate(input: &str) -> Result<String, JsValue> {

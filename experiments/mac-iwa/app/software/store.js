@@ -32,8 +32,14 @@ async function publicMetadata(value){
  return {version,profile,signingAlgorithm,encryptionAlgorithm,pqSigning,pqEncryption,certificate:value.certificate,certificateHash:value.certificateHash,fingerprint:value.fingerprint,emails,signingFingerprint:value.signingFingerprint,recipientKey:value.recipientKey,algorithms:[...value.algorithms]};
 }
 function itemShape(item){
- if(!fields(item,['id','name','kind','version','encryptedSecret','password','public'])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
- label(item.name);credentials(item.encryptedSecret,item.password);
+ if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
+ label(item.name);
+ if(item.hardware){
+  const h=item.hardware;if(!fields(h,['serial','slots','verified','privateRemoved'])||!/^[1-9][0-9]{5,9}$/.test(h.serial)||h.verified!==true||typeof h.privateRemoved!=='boolean'||!Array.isArray(h.slots)||h.slots.length!==6)throw Error('Invalid hardware backup binding.');
+  for(const k of h.slots)if(!fields(k,['slot','publicKeySha256'])||!['86','87','9c','84','9d','85'].includes(k.slot)||!/^[a-f0-9]{64}$/.test(k.publicKeySha256))throw Error('Invalid hardware slot binding.');
+  if(new Set(h.slots.map(k=>k.slot)).size!==6)throw Error('Duplicate hardware slot binding.');
+  if(h.privateRemoved){if(item.encryptedSecret!==''||item.password!=='')throw Error('Removed private keys remain in record.');}else credentials(item.encryptedSecret,item.password);
+ }else credentials(item.encryptedSecret,item.password);
  const old=['certificate','certificateHash','fingerprint','emails','signingFingerprint','recipientKey','algorithms'];
  if(!fields(item.public,item.version===1?old:[...old,'version','profile','signingAlgorithm','encryptionAlgorithm','pqSigning','pqEncryption']))throw Error('Invalid stored software public metadata.');return item;
 }
@@ -53,13 +59,13 @@ export function softwareIdentityBinding(snapshot){return {provider:'software',va
  * A lock, replace/remove, other-window commit or failed write invalidates prior
  * operation reviews, including remove-and-reimport of the same fingerprint.
  */
-export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,changed=()=>{},clock=()=>Date.now()}){
+export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,hardwareCall,changed=()=>{},clock=()=>Date.now()}){
  const active=new Set(),grants=new Map();let mutation=false;
  const current=()=>{const s=access.snapshot();if(!s?.unlocked||!s.vaultId||!Number.isSafeInteger(s.revision)||!Number.isSafeInteger(s.epoch)||!Array.isArray(s.items))throw Error('Unlock the credential vault before using software identities.');return s;};
  const marker=s=>({vaultId:s.vaultId,revision:s.revision,epoch:s.epoch});
  async function check(s){const now=current();if(!same(marker(now),marker(s)))throw Error('Software identity vault changed; start again.');await access.assertCurrent(marker(s));if(!same(marker(current()),marker(s)))throw Error('Software identity vault changed; start again.');}
  function recordsIn(s){const records=s.items.filter(x=>x?.kind===KIND);if(records.length>16||new Set(records.map(x=>x.id)).size!==records.length)throw Error('Invalid software identity inventory.');return records.map(itemShape);}
- function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email};}
+ function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
  async function withController(signal,fn){const c=new AbortController();active.add(c);const abort=()=>c.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)c.abort();try{if(c.signal.aborted)throw Error('Software operation cancelled.');return await fn(c.signal);}finally{signal?.removeEventListener('abort',abort);active.delete(c);}}
  async function list(account){
   account=mailbox(account);if(!access.snapshot()?.unlocked)return {choices:[],revision:0};const s=current(),choices=[];await check(s);
@@ -125,6 +131,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,cha
   });}finally{mutation=false;}
  }
  async function exportIdentity(selected,newPassword,{signal}={}){
+  if(selected.hardware?.privateRemoved)throw Error('Private keys are on the YubiKey only; export the public certificate instead.');
   if(typeof newPassword!=='string'||newPassword.length<12||new TextEncoder().encode(newPassword).length>1024)throw Error('Use an export password of at least 12 characters (at most 1024 UTF-8 bytes).');
   return withController(signal,async signal=>{
    await assert(selected);const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);if(!item)throw Error('Software identity removed.');
@@ -173,7 +180,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,cha
   if(!fields(request,allowed)||!hex(request.requestId,64)||(signing?(request.signingFingerprint!==selected.signingFingerprint||request.hashAlgorithm!==10):(request.recipientKey!==selected.recipientKey||request.service!==grant.service)))throw Error('Software operation binding mismatch.');
   const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);if(!item)throw Error('Software identity removed.');
   const {review,service,...component}=request;const input={encryptedSecret:item.encryptedSecret,password:item.password,request:component};let result;
-  try{result=await cryptoCall(signing?'sign':'decapsulate',input,{signal});await assert(selected);if(signal.aborted)throw Error('Software operation cancelled.');
+  try{result=item.hardware?.privateRemoved?await hardwareCall(signing?'sign':'decapsulate',component,{...item.hardware,certificate:selected.certificate},{signal,guard:()=>assert(selected)}):await cryptoCall(signing?'sign':'decapsulate',input,{signal});await assert(selected);if(signal.aborted)throw Error('Software operation cancelled.');
    const expected=signing?[...Object.keys(component),'ed25519','mldsa65',...(selected.version===5?['inlineEd25519']:[])]:[...Object.keys(component),'mlkemSecret','x25519Secret'];
    if(!fields(result,expected)||Object.keys(component).some(k=>result[k]!==component[k]))throw Error('Software response binding mismatch.');
    const modern=selected.version===6,level5=selected.profile==='level5',p521=selected.profile.startsWith('level5-');
@@ -183,6 +190,41 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,cha
   }catch(e){if(result&&!signing){delete result.mlkemSecret;delete result.x25519Secret;}throw e;}
   finally{input.password='';input.encryptedSecret='';}
  });}
- return {list,get,assert,records,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
+ // Provisioning material is released only after the card-plan confirmation.
+ // It is never persisted separately or exported as a download. Every asynchronous
+ // step rechecks the vault generation, including the worker response.
+ async function backupMaterial(selected,plan,{signal}={}){
+  return withController(signal,async signal=>{
+   await assert(selected);if(selected.profile!=='level3'||selected.hardware?.privateRemoved)throw Error('Native backup requires existing Level 3 software keys.');
+   const s=current(),item=recordsIn(s).find(x=>x.id===selected.identityId);await check(s);
+   const input={encryptedSecret:item.encryptedSecret,password:item.password};let result;const out=[];
+   try{
+    result=await cryptoCall('backup-material',input,{signal});await assert(selected);
+    if(result.certificateHash!==selected.certificateHash||!Array.isArray(result.keys)||result.keys.length!==6)throw Error('Backup source changed.');
+    for(const key of plan.keys){const k=result.keys.find(x=>x.slot===key.slot);if(!k||k.algorithm!==key.component)throw Error('Backup component mismatch.');
+     const seed=canonical(k.seed,88);out.push({slot:k.slot,algorithm:k.algorithm,seed,publicKey:null});
+     if(seed.length!==(key.component==='ML-KEM-768'?64:32))throw Error('Invalid private seed length.');out.at(-1).publicKey=canonical(k.publicKey,3000);}
+    return out;
+   }catch(error){for(const key of out)key.seed.fill(0);throw error;}finally{input.password='';input.encryptedSecret='';for(const k of result?.keys||[])k.seed='';}
+  });
+ }
+ async function saveHardware(selected,plan,proof){
+  await assert(selected);const s=current();await check(s);
+  if(proof.publicKeysMatch!==true||proof.signingVerified!==true||proof.decryptionVerified!==true||!Array.isArray(proof.slots))throw Error('Verified hardware proof required.');
+  const item=recordsIn(s).find(x=>x.id===selected.identityId);
+  const replacement={...item,hardware:{serial:plan.serial,slots:proof.slots,verified:true,privateRemoved:false}};itemShape(replacement);
+  await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
+  return {identity:await get(selected.id,selected.email)};
+ }
+ async function assertHardware(handle){const selected=handle?.identity;await assert(selected);if(!selected.hardware?.verified)throw Error('No verified hardware identity.');}
+ async function removePrivate(selected,handle){
+  await assertHardware(handle);if(!same(selected,handle.identity))throw Error('Hardware removal review changed.');
+  const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);
+  // This atomic replacement retains the certificate and card mapping. Old
+  // exported backups are independent and may still contain the secret packets.
+  const replacement={...item,encryptedSecret:'',password:'',hardware:{...item.hardware,privateRemoved:true}};
+  itemShape(replacement);await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
+ }
+ return {list,get,assert,records,backupMaterial,saveHardware,assertHardware,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
   cancel(){grants.clear();for(const controller of active)controller.abort();}};
 }

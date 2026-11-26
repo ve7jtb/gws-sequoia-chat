@@ -2,6 +2,7 @@ import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap,classicalOpen} from './vault/piv.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
+import {operateImportedKey} from './piv-import.js';
 import {inspectIdentity} from './identities/client.js';
 const engine=new Vault();let record=null,revision=0,active=false,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
@@ -9,6 +10,8 @@ const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',
 function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker(workerPolicy?workerPolicy.createScriptURL('/vault/worker.js'):'/vault/worker.js',{type:'module'});const t=setTimeout(()=>{w.terminate();reject(Error('Vault cryptography timed out.'));},30000);w.onmessage=({data})=>{clearTimeout(t);w.terminate();data.ok?resolve(data.result):reject(Error(data.error));};w.onerror=()=>{clearTimeout(t);w.terminate();reject(Error('Vault cryptography failed.'));};w.postMessage({op,input});});}
 function lock(){softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
+ // Publish only presentation state; the startup screen never receives vault secrets.
+ window.vaultStartupState=()=>({exists:!!record,unlocked:engine.unlocked&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type})),defaultId:record?.default,status:el('vault-status').textContent});
  // Unlock completes after its component request releases the general UI lock.
  // Refresh this control here too, so it becomes usable immediately on success.
  el('vault-lock').disabled=!engine.unlocked;
@@ -17,6 +20,7 @@ function render(){
  el('vault-method-list').replaceChildren();if(engine.unlocked)for(const w of record.wrappers){const row=document.createElement('div');row.textContent=w.name+' · '+w.type+(w.type==='piv'?' · '+w.binding.serial:'');for(const [label,fn] of [['Rename',async()=>{const name=prompt('Name for this unlock method',w.name);if(name!==null){await engine.rename(w.id,name);await commit();}}],['Remove',async()=>{if(confirm('Remove this vault unlock method? This does not delete any credential or token key.')){await engine.remove(w.id);await commit();}}]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);row.append(b);}el('vault-method-list').append(row);}
  el('vault-items').replaceChildren();if(engine.unlocked)for(const item of engine.data.items){const row=document.createElement('p');row.textContent=item.name+' · '+item.kind+' (encrypted at rest)';el('vault-items').append(row);}
  el('vault-state').textContent=record?(engine.unlocked?'Unlocked — auto-locks after five minutes of inactivity.':'Locked — choose an enrolled method.'):'No IWA vault yet. Use PIV by default, or FIDO PRF for software-only credentials.';
+ window.dispatchEvent(new Event('iwa-vault-state'));
  el('vault-add-piv').textContent=record?'Add PIV unlock method':'Create vault with PIV (default)';el('vault-add-prf').textContent=record?'Add FIDO PRF unlock method':'Create software-only vault with FIDO PRF';
 }
 async function commit(options={}){try{options.guard?.();const candidate=engine.record;await persist(candidate,revision,options);options.guard?.();record=structuredClone(candidate);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();window.dispatchEvent(new Event('iwa-software-identities-changed'));}
@@ -27,7 +31,7 @@ function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lo
 // same encrypted IndexedDB record and compare-and-swap revision used by PIV/PRF.
 const sameVault=expected=>engine.unlocked&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
 const softwareIdentities=createSoftwareIdentityStore({
- inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,
+ inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,hardwareCall:operateImportedKey,
  changed:()=>window.dispatchEvent(new Event('iwa-software-identities-changed')),
  access:{
   snapshot:()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),

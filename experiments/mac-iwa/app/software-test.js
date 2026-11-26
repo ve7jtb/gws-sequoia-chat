@@ -4,7 +4,7 @@
 import {signAndEncrypt} from './signing-session.js';
 import {decryptWithHardware} from './decryption-session.js';
 export async function runSoftwareTest({identity,selection,request,gate,signal,
- createSigningWorker,createDecryptionWorker,onProgress=()=>{},
+ createSigningWorker,createDecryptionWorker,onProgress=()=>{},hardware=false,
  sign=signAndEncrypt,decrypt=decryptWithHardware}){
  if(identity?.provider!=='software')throw Error('Select a software identity.');
  const id=crypto.randomUUID(),binding=selection.nativeBinding(identity);
@@ -21,7 +21,7 @@ export async function runSoftwareTest({identity,selection,request,gate,signal,
   else if(!['chat-selected-signing-material','chat-selected-decryption-material'].includes(op))throw Error('Unexpected software test request.');
   const result=await request(op,data,options);await check();return result;
  };
- onProgress('Signing and encrypting in the IWA — no PIN or hardware operation.');
+ onProgress('Signing and encrypting the local test; complete any authenticator prompts. No email is sent.');
  const own=await call('chat-selected-signing-material',{identity:binding});
  await selection.validateMaterial(own,identity,'signing');
  const material={...own,recipientCertificate:identity.certificate,recipientFingerprint:identity.fingerprint,
@@ -49,5 +49,5 @@ export async function runSoftwareTest({identity,selection,request,gate,signal,
   profile:identity.profile||'level3',openPgpVersion:identity.version||6,
   pqSigning:identity.pqSigning!==false,pqEncryption:identity.pqEncryption!==false,
   signatureVerified:true,decryptionVerified:true,payloadVerified:true,privateOperations:{signing,decapsulation},
-  nativeRequests:0,messagesSent:0,cardWrites:0};
+  nativeRequests:0,hardwareOperations:hardware?2:0,messagesSent:0,cardWrites:0};
 }

@@ -1,8 +1,10 @@
+import {createBackupUi} from './piv-backup-ui.js';
 // Creation/import/export are explicit local actions. The form's password is passed only to the
 // vault software provider, cleared on every completion, and never logged. Own
 // certificate import does not grant trust to a recipient or change a card.
 export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
  const $=id=>document.getElementById(id),provider=()=>window.softwareIdentities;
+ const backup=createBackupUi({provider,account,test,say,changed});
  const bytes64=bytes=>{let s='';for(const byte of bytes)s+=String.fromCharCode(byte);return btoa(s);};
  const download=(data,name,type)=>{const url=URL.createObjectURL(new Blob([data],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
  let reviewReport=null,generation=0,renderTicket=0,importController=null,exportSelection=null;
@@ -20,13 +22,14 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   const rows=await provider().records();
   // A lock can occur while reading encrypted storage or validating policy.
   if(started!==generation||ticket!==renderTicket||!window.vaultIsUnlocked?.())return;
-  $('software-status').textContent=rows.length?'Software private keys are encrypted in the vault.':'No software OpenPGP identities in this vault.';
+  $('software-status').textContent=rows.length?'Software keys are encrypted in the vault; hardware-only entries retain public bindings.':'No software OpenPGP identities in this vault.';
   for(const row of rows){
    const box=document.createElement('div');box.className='contact';const text=document.createElement('p');
-   text.textContent=row.name+' · Software (experimental) · OpenPGP v'+(row.version||6)+'\n'+(row.signingAlgorithm||'ML-DSA-65 + Ed25519')+' signing · '+(row.encryptionAlgorithm||'ML-KEM-768 + X25519')+' encryption\n'+row.fingerprint+'\n'+(row.emails||[]).join(', ')+'\n'+warning(row);box.append(text);
+   text.textContent=row.name+(row.hardware?.privateRemoved?' · YubiKey '+row.hardware.serial+' (vault public binding) · OpenPGP v':' · Software (experimental) · OpenPGP v')+(row.version||6)+'\n'+(row.signingAlgorithm||'ML-DSA-65 + Ed25519')+' signing · '+(row.encryptionAlgorithm||'ML-KEM-768 + X25519')+' encryption\n'+row.fingerprint+'\n'+(row.emails||[]).join(', ')+'\n'+warning(row);box.append(text);
    const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
+   if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
-   button('Export encrypted identity…',async()=>{
+   if(!row.hardware?.privateRemoved)button('Export encrypted identity…',async()=>{
     const current=await provider().get(row.id,account());clearExport();exportSelection={identity:current,generation,account:account()};
     $('software-export-details').textContent=current.name+' · OpenPGP v'+current.version+'\n'+current.fingerprint+'\n'+warning(current);
     $('software-export-save').textContent=current.version===5?'Export encrypted .pqidentity file':'Export encrypted .pgp file';
@@ -38,9 +41,9 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
     const current=await provider().get(row.id,email);
     const report=await test(current,message=>{if(started===generation)$('software-test-result').textContent=message;});
     if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())throw Error('Software test context changed; result discarded.');
-    reviewReport=report;$('software-test-result').textContent='PASS — software signing, decryption and exact text/HTML/attachment verified. No native calls or email. '+warning(current);$('software-test-export').disabled=false;
+    reviewReport=report;$('software-test-result').textContent='PASS — signing, decryption and exact text/HTML/attachment verified. No email sent. '+warning(current);$('software-test-export').disabled=false;
    });
-   button('Remove software identity…',async()=>{if(!confirm('Remove '+row.name+' from this encrypted vault? Keep your original encrypted OpenPGP backup. No YubiKey or recipient trust is changed.'))return;await provider().remove(row);await changed();await refresh();});
+   button(row.hardware?.privateRemoved?'Forget hardware identity…':'Remove software identity…',async()=>{if(!confirm('Remove '+row.name+' from this encrypted vault? Keep your original encrypted OpenPGP backup. No YubiKey or recipient trust is changed.'))return;await provider().remove(row);await changed();await refresh();});
    target.append(box);
   }
  }

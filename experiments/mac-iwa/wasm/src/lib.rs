@@ -23,7 +23,7 @@ pub use bundle::inspect_bundle;
 mod companion;
 pub use companion::{companion_inspect, companion_complete};
 mod software;
-pub use software::{software_inspect, software_sign, software_decapsulate, software_generate, software_export, software_import_p12, software_p12_verify_mac};
+pub use software::{software_inspect, software_sign, software_decapsulate, software_generate, software_export, software_backup_material, software_import_p12, software_p12_verify_mac};
 const LIMIT:usize=262144;
 fn field<'a>(v:&'a serde_json::Value,k:&str)->Result<&'a str>{v[k].as_str().context("Missing field")}
 fn public(raw:&str)->Result<Cert>{let cert=Cert::from_bytes(&B64.decode(raw)?)?;ensure!(!cert.is_tsk(),"Public certificate only");Ok(cert)}

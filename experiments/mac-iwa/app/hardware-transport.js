@@ -259,7 +259,7 @@ function createHardwareTransport(deps = {}){
     return dispatchSmartCard(op, data, {...ctx,signal:options.signal});
   }
 
-  return {getMode, setMode, dispatch};
+  return {getMode, setMode, dispatch, promptPin:promptPinInBrowser};
 }
 
 const transport = createHardwareTransport();

@@ -155,3 +155,23 @@ test('compatibility metadata cannot silently claim post-quantum signing or encry
  const h=await harness(),base={...metadata,version:4,profile:'level3-v4-classical',fingerprint:'A'.repeat(40),signingFingerprint:'B'.repeat(40),recipientKey:'C'.repeat(40),signingAlgorithm:'EdDSA',encryptionAlgorithm:'ECDH'};
  for(const caps of [{pqSigning:true,pqEncryption:false},{pqSigning:false,pqEncryption:true}]){h.setCrypto(async()=>({...base,...caps}));await assert.rejects(h.import(),/capabilities/);assert.equal(h.writes,0);}
 });
+
+test('verified backup keeps public binding and removal survives a vault restart',async()=>{
+ const h=await harness(),selected=await h.import();
+ const slots=['86','87','9c','84','9d','85'].map(slot=>({slot,publicKeySha256:'e'.repeat(64)}));
+ const handle=await h.store.saveHardware(selected,{serial:'12345678'},{publicKeysMatch:true,signingVerified:true,decryptionVerified:true,slots});
+ assert.equal(handle.identity.hardware.privateRemoved,false);
+ assert(h.engine.data.items[0].encryptedSecret);await h.store.assertHardware(handle);
+ await h.store.removePrivate(handle.identity,handle);
+ assert.equal(h.engine.data.items[0].encryptedSecret,'');assert.equal(h.engine.data.items[0].password,'');
+ assert.equal(h.engine.data.items[0].public.certificate,certificate);assert.equal(h.engine.data.items[0].hardware.serial,'12345678');
+ h.lock();await h.unlock();const restored=await h.store.get(selected.id,account);
+ assert.equal(restored.hardware.privateRemoved,true);assert.equal(restored.certificate,certificate);
+ await assert.rejects(h.store.export(restored,'another test password'),/YubiKey only/);
+});
+test('failed hardware proof cannot persist a backup or authorize removal',async()=>{
+ const h=await harness(),selected=await h.import();
+ await assert.rejects(h.store.saveHardware(selected,{serial:'12345678'},{publicKeysMatch:true,signingVerified:false,decryptionVerified:true}),/proof/);
+ assert.equal(h.engine.data.items[0].encryptedSecret,encryptedSecret);
+ await assert.rejects(h.store.removePrivate(selected,{identity:selected}));
+});

@@ -30,6 +30,57 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Vault-first startup (0.20.25)
+
+The app starts at **Log in** when a vault exists, with the saved FIDO PRF or PIV
+unlock methods. A successful unlock opens the conversation workspace; locking
+or the inactivity timeout returns to login. Google sign-in is a separate step.
+An empty instance starts with **Restore complete encrypted backup**, **Create a
+new vault**, and **Set up a new YubiKey**. Creation reuses the existing reviewed
+FIDO/PIV enrollment controls; it never performs a private operation on page load.
+Connection settings, including required SCP and the explicit beta pin, remain
+available under a disclosure and are not changed by startup routing.
+
+The new-key setup explains FIDO PIN initialization using Yubico Authenticator
+and FIDO PRF credential creation here. After vault creation, it guides the user
+to account setup and software OpenPGP key generation. Private keys and their
+random file password remain encrypted in the vault. Optional hardware backup
+provisioning is an explicit, separately reviewed action on a Level 3 software identity. SCP11b now defaults to required on new instances; an explicit saved
+choice is preserved. The beta SD pin remains a separate opt-in trust choice. Imported vault-only backups must be explicitly
+saved before the workspace opens; complete backups retain authenticated review
+and readback verification.
+
+### Empty-card backup import (0.20.25 testing channel)
+
+The backup-import planner detects the card serial and requires all 24 user PIV
+slots to contain neither keys nor certificates. Factory attestation is excluded;
+no reset or overwrite is offered. The transaction coordinator journals public
+progress, stops on partial failure, and keeps software keys unless public-key
+matching, signing, decryption and persistence of a usable hardware identity all
+succeed. Removal is a separate, unchecked-by-default decision; previously
+exported encrypted backups can still contain private keys.
+
+The import adapter and vault hardware bindings are integrated. The Level 3 v6
+profile copies six existing software components over required SCP11b: ML-DSA-65
+certification/signing in 86/9c, Ed25519 certification/signing in 87/84, ML-KEM-768
+in 9d, and X25519 in 85. All require a PIN; 86, 9c and 9d require touch. Readback
+checks every public key and policy before local signing/decryption tests. Level 5
+Ed448/X448 backup is not offered on cards lacking those algorithms.
+
+After verification, the encrypted vault retains the public certificate, detected
+serial and six public-key hashes. Removing the software copy is a separate
+confirmation; subsequent private operations use the serial-checked card. A fresh
+encrypted vault backup is required to carry this mapping to another instance:
+this flow does not write a self-contained public certificate bundle onto the card.
+Imported private keys have software origin and cannot claim on-device generation
+or generated-key attestation. Removal cannot erase copies in old backups or
+promise physical erasure of browser memory, swap or storage remnants.
+
+Automated validation: 90 targeted JavaScript tests passed, plus the real WASM seed export. Coverage includes simulated PIV management
+authentication/import/readback, refusal of occupied slots and incorrect keys,
+and vault persistence/removal across restart. Live provisioning and removal
+validation is still pending; no hardware success is claimed by these tests.
+
 ## Backup restore and SCP (0.20.24)
 
 Complete restore preserves the receiving device’s SCP requirement, temporary beta-pin selection and hardware transport. It never imports those connection settings from a backup; absent local settings retain normal defaults. Other conflicting settings, vaults, identities and certificate trust still stop restoration before writing. Readback verifies the restored records together with preserved local settings, and interrupted restore remains resumable. The backup page now loads the same SCP policy before PRF access. It does not silently bypass a required secure channel.
@@ -61,7 +112,7 @@ The Chromebook check of 0.20.21 stopped with “Secure-channel policy is not rea
 
 The optional **Secure YubiKey connection (SCP11b; Web Smart Card only)** toggle
 requires an authenticated, encrypted card session for direct PIV and CTAP2.
-It defaults off; when enabled it never silently falls back to plaintext or the
+New instances require it by default from 0.20.25; an explicit saved choice is preserved. When enabled it never silently falls back to plaintext or the
 native helper. The existing serial/public-key checks still identify the intended
 key. Failure of the manufacturer chain, handshake receipt, response MAC or
 padding ends the operation before further commands.

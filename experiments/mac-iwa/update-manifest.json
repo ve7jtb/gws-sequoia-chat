@@ -1,6 +1,13 @@
 {
   "versions": [
     {
+      "version": "0.20.25",
+      "src": "https://github.com/ve7jtb/gws-sequoia-chat/releases/download/iwa-v0.20.25/sequoia-lab.swbn",
+      "channels": [
+        "testing"
+      ]
+    },
+    {
       "version": "0.20.24",
       "src": "https://github.com/ve7jtb/gws-sequoia-chat/releases/download/iwa-v0.20.24/sequoia-lab.swbn",
       "channels": [
@@ -67,6 +74,9 @@
   "channels": {
     "default": {
       "name": "Preview"
+    },
+    "testing": {
+      "name": "Provisioning test preview"
     }
   }
 }
