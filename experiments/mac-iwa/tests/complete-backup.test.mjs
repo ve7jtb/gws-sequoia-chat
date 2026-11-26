@@ -14,3 +14,25 @@ test('interrupted restore resumes idempotently and retains marker',async()=>{con
 test('unknown databases abort complete capture',async()=>{const d=storage();d.db.set('unknown',{});await assert.rejects(capture(d,origin));});
 test('Drive upload contains encrypted envelope and requests only bounded API paths',async()=>{const f=await fixture(),box=await seal(f.snapshot,f.vault),calls=[];const drive=createBackupDrive({fetcher:async(u,o)=>{calls.push([u,o]);return new Response(JSON.stringify({id:'safe',name:'backup'}));}});drive.connect({token:'test-token',scope:DRIVE_SCOPE,expiresIn:3600});await drive.upload(box);assert.ok(calls[0][0].startsWith('https://www.googleapis.com/upload/drive/v3/files?'));assert.ok(!calls[0][1].body.includes('test@example.org'));assert.equal(calls[0][1].redirect,'error');await assert.rejects(drive.download('../bad'));drive.disconnect();await assert.rejects(drive.list());});
 test('Drive rejects wrong scopes, plaintext and expired sessions',async()=>{let time=0;const d=createBackupDrive({clock:()=>time,fetcher:()=>{throw Error('must not fetch');}});assert.throws(()=>d.connect({token:'x',scope:'email',expiresIn:1}));d.connect({token:'x',scope:DRIVE_SCOPE,expiresIn:1});await assert.rejects(d.upload({plaintext:'secret'}));time=2000;await assert.rejects(d.list());});
+// These are host connection decisions, not account or certificate trust data.
+// Importing a backup must not undo required SCP or opt another host into beta.
+test('restore preserves local SCP, beta pin and transport without altering backup',async()=>{
+ const f=await fixture(),d=storage(),hash=await digest(f.snapshot);
+ d.settings.setItem('sequoia_secure_yubikey_connection','required');d.settings.setItem('sequoia_secure_yubikey_beta_pin','enabled');d.settings.setItem('sequoia_hardware_transport','smartcard');
+ await restore(d,f.snapshot,origin);
+ assert.equal(d.settings.getItem('sequoia_secure_yubikey_connection'),'required');assert.equal(d.settings.getItem('sequoia_secure_yubikey_beta_pin'),'enabled');assert.equal(d.settings.getItem('sequoia_hardware_transport'),'smartcard');assert.equal(await digest(f.snapshot),hash);
+ assert.deepEqual((await capture(d,origin)).databases,f.snapshot.databases);assert.equal(d.settings.getItem(PENDING),null);
+});
+test('backup cannot introduce beta trust or replace local SCP policy',async()=>{
+ const f=await fixture();f.snapshot.settings.push(['sequoia_secure_yubikey_connection','off'],['sequoia_secure_yubikey_beta_pin','enabled']);
+ const d=storage();d.settings.setItem('sequoia_secure_yubikey_connection','required');await restore(d,f.snapshot,origin);
+ assert.equal(d.settings.getItem('sequoia_secure_yubikey_connection'),'required');assert.equal(d.settings.getItem('sequoia_secure_yubikey_beta_pin'),null);
+});
+test('preserving connection settings does not permit conflicting certificate trust',async()=>{
+ const f=await fixture(),d=storage();d.settings.setItem('sequoia_secure_yubikey_beta_pin','enabled');d.db.set(DATABASES[2][0],{format:'sequoia-iwa-certificates',version:1,bindings:[]});
+ await assert.rejects(restore(d,f.snapshot,origin),/database differs/);assert.equal(d.db.size,1);assert.equal(d.settings.getItem(PENDING),null);
+});
+test('interrupted restore with local SCP policy resumes and verifies',async()=>{
+ const f=await fixture(),d=storage(),put=d.put;d.settings.setItem('sequoia_secure_yubikey_connection','required');let n=0;d.put=async(...a)=>{if(++n===2)throw Error('interrupted');return put(...a);};
+ await assert.rejects(restore(d,f.snapshot,origin));d.put=put;await restore(d,f.snapshot,origin);assert.equal(d.settings.getItem(PENDING),null);assert.equal(d.settings.getItem('sequoia_secure_yubikey_connection'),'required');
+});

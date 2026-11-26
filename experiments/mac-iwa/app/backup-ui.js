@@ -1,3 +1,5 @@
+// Load the same required-SCP policy before any backup PRF assertion.
+import './secure-channel-ui.js';
 import {Vault,load,bytes,b64} from './vault/core.js';
 import {evaluate} from './ctap2-smartcard.js';
 import {capture,seal,unseal,digest,restore,browserStorage,recoveryVault} from './complete-backup.js';
@@ -55,11 +57,11 @@ el('export').onclick=()=>run(async()=>{
 });
 el('save').onclick=()=>{if(box)save();};
 el('file').onchange=()=>run(async()=>{clear();const f=el('file').files[0];if(!f||f.size>24*1024*1024)throw Error('Invalid backup file size');select(JSON.parse(await f.text()));tell('File loaded. Use its enrolled authenticator to verify.');});
-el('verify').onclick=()=>run(async()=>{review=null;el('restore-success').hidden=true;el('restore').textContent='Restore into empty instance';el('restore').disabled=true;el('approve').checked=false;await unlock(recoveryVault(box,location.origin));review=await unseal(box,vault,location.origin);el('review').textContent=JSON.stringify({origin:review.origin,databases:review.databases.map(r=>({name:r.name,present:r.value!==null})),settings:review.settings.length,sha256:await digest(review)},null,2);el('restore').disabled=false;tell('Backup authenticated. Restore refuses conflicting existing data.');});
+el('verify').onclick=()=>run(async()=>{review=null;el('restore-success').hidden=true;el('restore').textContent='Restore into empty instance';el('restore').disabled=true;el('approve').checked=false;await unlock(recoveryVault(box,location.origin));review=await unseal(box,vault,location.origin);el('review').textContent=JSON.stringify({origin:review.origin,databases:review.databases.map(r=>({name:r.name,present:r.value!==null})),settings:review.settings.length,preservedLocalSettings:['SCP requirement','beta SD pin selection','hardware transport'],sha256:await digest(review)},null,2);el('restore').disabled=false;tell('Backup authenticated. This device’s SCP, beta-pin and hardware transport settings will be preserved. Other conflicting data is refused.');});
 el('restore').onclick=()=>run(async()=>{if(!review||!el('approve').checked)throw Error('Review and explicitly approve trust restoration');el('restore').disabled=true;el('restore').textContent='Restoring and verifying…';
  try{await restore(storage,review,location.origin);}catch(e){el('restore').disabled=false;el('restore').textContent='Restore into empty instance';throw e;}
  el('restore').textContent='Restore complete';el('restore-success').hidden=false;el('restore-success').focus();
- tell('Restore complete; every stored record read back identically. Return to the app and unlock with your existing authenticator.');review=null;el('restore').disabled=true;});
+ tell('Restore complete; records verified and this device’s SCP, beta-pin and hardware transport settings preserved. Return to the app and unlock with your existing authenticator.');review=null;el('restore').disabled=true;});
 el('connect').onclick=()=>run(async()=>{disconnect();controller=new AbortController();const clientId=getLoopbackClientId();const session=await runLoopbackPkceOAuth({clientId,clientSecret:getLoopbackClientSecret(clientId),scopes:[DRIVE_SCOPE],signal:controller.signal,onAuthUrl:url=>{el('auth').href=url;el('auth').hidden=false;}});drive.connect(session);el('auth').hidden=true;tell('Drive connected for app-created files only. No backup uploaded yet.');});
 el('disconnect').onclick=()=>{disconnect();tell('Drive session cleared.');};
 el('upload').onclick=()=>run(async()=>{if(!box)throw Error('Create a backup first');const result=await drive.upload(box);tell('Encrypted snapshot uploaded: '+result.name);});

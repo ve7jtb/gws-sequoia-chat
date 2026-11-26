@@ -30,6 +30,12 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Backup restore and SCP (0.20.24)
+
+Complete restore preserves the receiving device’s SCP requirement, temporary beta-pin selection and hardware transport. It never imports those connection settings from a backup; absent local settings retain normal defaults. Other conflicting settings, vaults, identities and certificate trust still stop restoration before writing. Readback verifies the restored records together with preserved local settings, and interrupted restore remains resumable. The backup page now loads the same SCP policy before PRF access. It does not silently bypass a required secure channel.
+
+Validation: 25 backup, startup and secure-channel tests passed, including local-policy preservation, refusal to import beta trust, conflicting certificate trust and interrupted recovery. A PIN-free live SCP check on the Chromebook passed with the temporary beta pin; live PRF restore/unlock testing is pending.
+
 ## Temporary Beta YubiKey 6 SD pin (0.20.23)
 
 The opt-in “Beta YubiKey 6 testing” checkbox selects the exact bundled SD attestation certificate as a temporary trust anchor. This is not a wildcard for beta models or serial numbers. Only SCP leaf certificates chaining to that certificate are accepted; other beta devices may need a different authenticated anchor. The certificate was obtained from a test device, not authenticated against the unavailable Yubico 2026 SD Preview CA, so this does not establish manufacturer provenance.

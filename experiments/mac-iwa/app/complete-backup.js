@@ -3,6 +3,9 @@
 import {validate as validateVault} from './vault/core.js';
 export const DATABASES=[['sequoia-iwa-vault','vault'],['sequoia-iwa-identities','state'],['sequoia-iwa-certificates','state']];
 export const PENDING='sequoia-complete-restore-pending';
+// Connection trust belongs to the receiving device. A backup must neither
+// disable required SCP nor enable a beta anchor or switch hardware transports.
+export const LOCAL_CONNECTION_SETTINGS=new Set(['sequoia_secure_yubikey_connection','sequoia_secure_yubikey_beta_pin','sequoia_hardware_transport']);
 const LIMIT=12*1024*1024,enc=new TextEncoder();
 const fail=m=>{throw Error(m);};
 const canonical=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
@@ -67,13 +70,21 @@ export async function restore(storage,snapshot,origin){
  // Validate *all* destinations before the first write. Never merge trust into
  // an unrelated installation. The only supported target is empty or identical.
  for(let i=0;i<3;i++)if(before.databases[i].value!==null&&canonical(before.databases[i].value)!==canonical(snapshot.databases[i].value))fail('Existing database differs; restore refused');
- const incoming=new Map(snapshot.settings);for(const [k,v] of before.settings)if(!incoming.has(k)||incoming.get(k)!==v)fail('Existing settings differ; restore refused');
+ // Project the authenticated snapshot onto this device's connection policy.
+ // Missing local values stay missing (normal defaults); imported values never
+ // silently opt a new host into beta trust. Keep the original snapshot digest
+ // as the recovery marker so interrupted restores still bind to one backup.
+ const expected=structuredClone(snapshot);
+ expected.settings=[...snapshot.settings.filter(([k])=>!LOCAL_CONNECTION_SETTINGS.has(k)),...before.settings.filter(([k])=>LOCAL_CONNECTION_SETTINGS.has(k))].sort((a,b)=>a[0].localeCompare(b[0]));
+ const incoming=new Map(expected.settings);for(const [k,v] of before.settings)if(!incoming.has(k)||incoming.get(k)!==v)fail('Existing settings differ; restore refused (setting: '+k+')');
  // IndexedDB cannot atomically commit across three databases and localStorage.
  // A durable marker blocks app startup until an idempotent retry verifies all
  // records. It contains only a digest; no password or decrypted vault content.
  storage.settings.setItem(PENDING,hash);
  for(const r of snapshot.databases)await storage.put(r.name,r.store,r.value);
- for(const [k,v] of snapshot.settings)storage.settings.setItem(k,v);
- if(await digest(await capture(storage,origin))!==hash)fail('Restore readback failed; reopen backup to resume');
+ // Never write device-local policy, even with an identical value: another
+ // window changing it must cause readback failure, not be silently undone.
+ for(const [k,v] of expected.settings)if(!LOCAL_CONNECTION_SETTINGS.has(k))storage.settings.setItem(k,v);
+ if(await digest(await capture(storage,origin))!==await digest(expected))fail('Restore readback failed; reopen backup to resume');
  storage.settings.removeItem(PENDING);return hash;
 }
