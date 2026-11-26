@@ -30,6 +30,37 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Single-touch key-generation entropy (0.20.26 testing)
+
+Software identity creation offers **Mix YubiKey entropy into key generation**
+(default selected). It creates one temporary non-discoverable credential
+under the signed IWA RP, using `hmac-secret-mc` at creation time: one touch, no follow-up assertions, and no saved credential handles. Every
+operation uses a fresh user handle, challenge and 32-byte PRF input. The flow
+requires Web Smart Card, SCP11b and advertised extension/protocol support.
+
+PIN-free creation is used when policy permits. If Always UV is enabled, or
+PIN-free creation is not advertised, the app prompts once and keeps the normalized
+PIN in a mutable operation buffer for one RP-scoped token request. It clears
+that buffer, tokens and contributions on completion, cancellation or failure.
+There is no automatic retry. Browser runtimes may retain transient copies; this
+is not a guarantee against memory/swap inspection. Existing FIDO credentials,
+PIV slots and policies are not changed by entropy collection.
+
+Inside the disposable WASM worker, HMAC-DRBG/SHA-512 mixes one 32-byte output
+with 96 fresh OS-random bytes and a purpose label. Only the generation operation
+uses this state; it is erased on exit. Other random calls retain their OS source.
+The WASM backend checks that generation consumed the mixed RNG. The 256-bit output is supplemental input, not a measurement of physical entropy, and this is not a FIPS validation
+or protection against a compromised host. Unchecking the option explicitly uses
+OS randomness alone. Neither entropy values nor temporary handles enter vault
+records or exports.
+
+Validation: 115 automated JavaScript tests passed (one optional test skipped).
+Protocol peer tests cover one PIN-free creation, Always-UV PIN handling,
+cancellation and failure without retry. An independent HMAC reference test checks
+DRBG generation/update and clearing. All seven software profiles passed the mixed
+entropy WASM signing/decryption, encrypted export/restore and restart test with
+simulated hardware contributions. Physical single-touch validation remains pending.
+
 ## Vault-first startup (0.20.25)
 
 The app starts at **Log in** when a vault exists, with the saved FIDO PRF or PIV

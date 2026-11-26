@@ -215,3 +215,55 @@ async function operate({serial,rpId,credentialId,salt,userId,name,preview},promp
   }finally{pinBytes?.fill(0);pinHash?.fill(0);token?.fill(0);k?.hmac.fill(0);k?.aes.fill(0);secret?.fill(0);}
  },options);
 }
+
+// One temporary non-discoverable credential contributes secret material to
+// software generation. Nothing is enrolled in the vault or written to storage.
+// Keep a required PIN only in mutable operation memory and clear it on exit.
+// No failed credential creation is automatically retried.
+export async function collectEntropy(serial,promptPin,options={}){
+ const rpId=packageRp();let cachedPin,outputs=[];
+ try{return await session(serial,async(conn,info)=>{
+  const extensions=info.get(2)||[],caps=info.get(4)||new Map();
+  if(!(info.get(6)||[]).includes(2)||!extensions.includes('hmac-secret')||!extensions.includes('hmac-secret-mc'))throw Error('Single-touch entropy requires PIN protocol 2 and hmac-secret-mc.');
+  const needsPin=caps.get('alwaysUv')===true||caps.get('makeCredUvNotRqd')!==true;
+  if(needsPin&&(caps.get('clientPin')!==true||caps.get('pinUvAuthToken')!==true))throw Error('Configure the authenticator FIDO PIN before entropy collection.');
+  {
+   if(options.signal?.aborted)throw Error('Entropy collection cancelled');await options.guard?.();
+   let k,token,pinHash,secret,auth;
+   try{
+    k=await agreement((await command(conn,6,map([1,2],[2,2]),options)).get(1));
+    if(needsPin){
+     if(!cachedPin){
+      const retries=(await command(conn,6,map([1,2],[2,1]),options)).get(3);
+      if(!Number.isInteger(retries)||retries<1)throw Error('FIDO PIN unavailable or blocked');
+      let entered=await promptPin({serial,rpId,retries,purpose:'FIDO PIN — key-generation entropy'});
+      cachedPin=te.encode(entered.normalize('NFC'));entered='';
+      if(cachedPin.length<4||cachedPin.length>63||cachedPin.includes(0))throw Error('Invalid FIDO PIN encoding');
+     }
+     if(options.signal?.aborted)throw Error('Entropy collection cancelled');await options.guard?.();
+     pinHash=(await hash(cachedPin)).slice(0,16);
+     const response=await command(conn,6,map([1,2],[2,9],[3,k.publicKey],[6,await encrypt(k,pinHash)],[9,1],[10,rpId]),options);
+     token=await decrypt(k,response.get(2));if(token.length!==32)throw Error('Invalid PIN/UV token');
+    }
+    // Fresh salts and user handles prevent reuse/replacement. Raw CTAP uses
+    // hmac-secret directly; this is not a vault WebAuthn PRF evaluation point.
+    const saltEnc=await encrypt(k,random(32)),clientHash=random(32);
+    const ext=map(['hmac-secret',true],['hmac-secret-mc',map([1,k.publicKey],[2,saltEnc],[3,await mac(k.hmac,saltEnc)],[4,2])]);
+    const args=map([1,clientHash],[2,map(['id',rpId],['name','IWA key-generation entropy'])],[3,map(['id',random(32)],['name','Temporary entropy'],['displayName','Temporary entropy'])],[4,[map(['type','public-key'],['alg',-7])]],[6,ext],[7,map(['rk',false])]);
+    if(token){args.set(8,await mac(token,clientHash));args.set(9,2);}
+    await options.guard?.();if(options.signal?.aborted)throw Error('Entropy collection cancelled');
+    const progress=()=>options.progress?.('Touch your authenticator — collect key-generation entropy.');progress();
+    const response=await command(conn,1,args,{...options,progress,creationAuthority:CREATE_AUTHORITY});auth=response.get(2);
+    const flags=needsPin?0xc5:0xc1;
+    if(!(auth instanceof Uint8Array)||(auth[32]&flags)!==flags||!equal(auth.slice(0,32),await hash(te.encode(rpId))))throw Error('Entropy credential RP/UP/UV response rejected');
+    const credential=attestedKey(auth);credential.id.fill(0);
+    const returned=decode(auth.slice(credential.end));
+    if(returned.get('hmac-secret')!==true)throw Error('Entropy extension not enabled');
+    secret=await decrypt(k,returned.get('hmac-secret-mc'));if(secret.length!==32)throw Error('Invalid entropy output length');
+    outputs.push(secret);secret=null;
+   }finally{pinHash?.fill(0);token?.fill(0);secret?.fill(0);auth?.fill(0);k?.hmac.fill(0);k?.aes.fill(0);}
+  }
+  await options.guard?.();if(options.signal?.aborted)throw Error('Entropy collection cancelled');
+  return cat(...outputs);
+ },options);}finally{cachedPin?.fill(0);for(const output of outputs)output.fill(0);outputs=[];}
+}

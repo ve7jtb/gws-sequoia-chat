@@ -38,7 +38,7 @@ const guard=expected=>{const now=state();assert(now.unlocked);for(const key of [
 const access={snapshot:state,assertCurrent:async expected=>guard(expected),replaceItems:async(items,expected,{signal})=>{
  guard(expected);assert(!signal.aborted);engine.data.items=items;await engine.save();guard(expected);assert(!signal.aborted);record=structuredClone(engine.record);revision=record.revision;writes++;
 }};
-const newStore=()=>createSoftwareIdentityStore({access,inspectPublic:inspectIdentity,cryptoCall:software});store=newStore();
+const newStore=()=>createSoftwareIdentityStore({access,inspectPublic:inspectIdentity,cryptoCall:software,entropyCollector:async({guard})=>{await guard();return random(32);}});store=newStore();
 const selection=createProviderSelection({hardware:{list:async()=>({choices:[],revision:0})},software:()=>store,match:matchRecipients});
 const reports=[];
 const save=(name,data)=>fs.writeFileSync(path.join(directory,name),data,{mode:0o600});
@@ -67,7 +67,7 @@ async function independent(identity,encryptedSecret,artifact){
 }
 try{
  for(const profile of SOFTWARE_PROFILES){
-  console.log('Testing '+profile+'…');const created=await store.create({name:'Synthetic '+profile,profile},email);
+  console.log('Testing '+profile+'…');const created=await store.create({name:'Synthetic '+profile,profile,entropy:process.env.IWA_TEST_MIXED_ENTROPY==='1'},email);
   assert.equal(created.profile,profile);const originalFingerprint=created.fingerprint,exported=await store.export(created,exportPassword);
   assert(!JSON.stringify(record).includes(exportPassword));assert(!JSON.stringify(record).includes(exported.encryptedSecret));
   save(profile+'-secret.'+(created.version===5?'pqidentity':'pgp'),Buffer.from(exported.encryptedSecret,'base64'));

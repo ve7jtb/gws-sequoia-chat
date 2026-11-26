@@ -3,7 +3,7 @@ import initPreviewSequoia,{inspect_public,verify_detached} from './wasm/sequoia_
 import {derive,verify,point,digest} from './preview-sign.js';
 // Browser-only FIDO controls. This module never logs PINs, assertions or PRF
 // outputs. Only GetInfo's public capability summary is rendered/exportable.
-import {getInfo,evaluate,createCredential,createPreviewSign,signPreview,encode,decode,extensionRp,packageRp} from './ctap2-smartcard.js';
+import {getInfo,evaluate,collectEntropy,createCredential,createPreviewSign,signPreview,encode,decode,extensionRp,packageRp} from './ctap2-smartcard.js';
 import {b64,bytes} from './vault/core.js';
 const el=id=>document.getElementById(id);
 let active=null;
@@ -70,6 +70,23 @@ el('fido-getinfo').onclick=async()=>{try{const result=await run(options=>getInfo
 // assertion-only path deliberately has no makeCredential fallback.
 window.directFido=Object.freeze({
  complete,
+ async entropy({signal,guard}){
+  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card for single-touch entropy.');
+  if(!globalThis.SequoiaSecureChannel?.isRequired())throw Error('Enable secure YubiKey connection for entropy collection.');
+  const serial=selectedSerial();
+  return run(async options=>{
+   const abort=()=>active?.abort();signal?.addEventListener('abort',abort,{once:true});
+   try{
+    if(signal?.aborted)throw Error('Entropy collection cancelled');await guard();
+    el('fido-pin-detail').textContent='Key '+serial+' · One temporary non-resident credential. Existing credentials and PIV keys are unchanged.';
+    if(!el('fido-pin-dialog').open)el('fido-pin-dialog').showModal();
+    stage('Collecting key-generation entropy','Preparing authenticator touch…');
+    el('fido-pin-cancel').onclick=abort;el('fido-pin-dialog').oncancel=e=>{e.preventDefault();abort();};
+    const output=await collectEntropy(serial,details=>promptPin(details,options.signal,true),{...options,guard});
+    complete('Touch complete. Mixing authenticator output with fresh OS randomness for software key generation.');return output;
+   }finally{signal?.removeEventListener('abort',abort);}
+  });
+ },
  // Only public recovery metadata is persisted; never PINs or PRF outputs.
  async create(binding,name,vaultId){
   if(globalThis.hardwareTransport?.getMode()!=='smartcard'||binding.rpId!==packageRp())throw Error('Select Web Smart Card and the IWA package RP first.');

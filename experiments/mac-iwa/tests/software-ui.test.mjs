@@ -39,7 +39,7 @@ test('import clears password immediately before file reading and leaves no form 
 });
 
 test('create defaults to v6 and requests no file password',async t=>{
- const f=fixture(t);await f.get('software-create').onclick();assert.deepEqual(f.creates,[{value:{name:'Synthetic',profile:'level3'},account:'me@example.invalid'}]);assert.equal(f.changed.length,1);assert.equal(f.imports.length,0);
+ const f=fixture(t);await f.get('software-create').onclick();assert.deepEqual(f.creates,[{value:{name:'Synthetic',profile:'level3',entropy:false},account:'me@example.invalid'}]);assert.equal(f.changed.length,1);assert.equal(f.imports.length,0);
 });
 test('classical compatibility creation requires its explicit warning confirmation',async t=>{
  const f=fixture(t);let warning;globalThis.confirm=message=>{warning=message;return false;};f.get('software-create-profile').value='level5-v4-classical';await f.get('software-create').onclick();assert.match(warning,/signing.*not post-quantum/);assert.match(warning,/encryption is also classical/);assert.equal(f.creates.length,0);

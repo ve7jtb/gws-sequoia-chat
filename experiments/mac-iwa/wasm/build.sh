@@ -7,8 +7,8 @@ BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
   echo 'Requires wasm-bindgen-cli 0.2.130' >&2; exit 1;
 }
 # Isolate artifacts so the compiler feature cannot leak into the baseline.
-RUSTFLAGS='' cargo +1.88.0 build --release --locked --target wasm32-unknown-unknown
-RUSTFLAGS='-C target-feature=+wide-arithmetic' CARGO_TARGET_DIR=target-wide \
+RUSTFLAGS='--cfg getrandom_backend="custom"' cargo +1.88.0 build --release --locked --target wasm32-unknown-unknown
+RUSTFLAGS='--cfg getrandom_backend="custom" -C target-feature=+wide-arithmetic' CARGO_TARGET_DIR=target-wide \
   cargo +1.88.0 build --release --locked --target wasm32-unknown-unknown
 for variant in baseline wide; do
   target=target; out=pkg; dest=../app/wasm

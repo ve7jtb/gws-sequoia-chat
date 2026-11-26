@@ -24,5 +24,5 @@ self.onmessage=async({data})=>{
   // or native messaging. The importer clears them on success and failure.
   self.postMessage({id,ok:true,result});
  }catch(_){self.postMessage({id,ok:false});}
- finally{if(input){input.password='';input.encryptedSecret='';input.newPassword='';input.p12='';}input=null;self.close();}
+ finally{if(input){input.password='';input.encryptedSecret='';input.newPassword='';input.p12='';input.hardwareEntropy='';}input=null;self.close();}
 };

@@ -8,7 +8,7 @@ const certificate=b64(new TextEncoder().encode('disposable public certificate fi
 const certificateHash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',Uint8Array.from(atob(certificate),x=>x.charCodeAt(0))))].map(x=>x.toString(16).padStart(2,'0')).join('');
 const metadata={supported:true,version:6,hybridContact:true,certificate,certificateHash,fingerprint:'A'.repeat(64),signingFingerprint:'B'.repeat(64),recipientKey:'C'.repeat(64),emails:[account,'alias@example.invalid'],algorithms:['ML-DSA-65 + Ed25519','ML-KEM-768 + X25519']};
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
-async function harness(){
+async function harness(entropyCollector){
  const engine=new Vault(),secret=random(32),wrapper={id:crypto.randomUUID(),type:'prf',name:'Test passkey',binding:{salt:b64(random(32)),credentialId:b64(random(32))}};
  await engine.create(wrapper,secret);let saved=structuredClone(engine.record),epoch=1,revision=saved.revision,changed=0,writes=0,calls=[],publicInfo=structuredClone(metadata),override;
  const state=()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]});
@@ -20,7 +20,7 @@ async function harness(){
   if(op==='inspect')return structuredClone(metadata);
   const r=input.request;return op==='sign'?{...r,ed25519:b64(new Uint8Array(64)),mldsa65:b64(new Uint8Array(3309))}:{...r,mlkemSecret:b64(new Uint8Array(32).fill(3)),x25519Secret:b64(new Uint8Array(32).fill(4))};
  };
- const store=createSoftwareIdentityStore({access,inspectPublic:async()=>structuredClone(publicInfo),cryptoCall,changed:()=>changed++});
+ const store=createSoftwareIdentityStore({access,inspectPublic:async()=>structuredClone(publicInfo),cryptoCall,entropyCollector,changed:()=>changed++});
  return {engine,store,secret,wrapper,calls,get saved(){return saved;},get writes(){return writes;},get changed(){return changed;},setCrypto:fn=>override=fn,setPublic:v=>publicInfo=v,
   async import(){return store.import({name:'My software key',encryptedSecret,password},account);},
   lock(){store.cancel();epoch++;engine.lock();},async unlock(){await engine.unlock(saved,wrapper.id,secret);},
@@ -174,4 +174,19 @@ test('failed hardware proof cannot persist a backup or authorize removal',async(
  await assert.rejects(h.store.saveHardware(selected,{serial:'12345678'},{publicKeysMatch:true,signingVerified:false,decryptionVerified:true}),/proof/);
  assert.equal(h.engine.data.items[0].encryptedSecret,encryptedSecret);
  await assert.rejects(h.store.removePrivate(selected,{identity:selected}));
+});
+
+test('single-touch material reaches only generation and is cleared without entering vault records',async()=>{
+ const entropy=new Uint8Array(32).fill(73);let inputRef;
+ const h=await harness(async({guard})=>{await guard();return entropy;});
+ h.setCrypto(async(op,input)=>{assert.equal(op,'generate');assert.equal(atob(input.hardwareEntropy).length,32);inputRef=input;return {encryptedSecret,public:metadata};});
+ await h.store.create({name:'Mixed entropy',profile:'level3',entropy:true},account);
+ assert(entropy.every(v=>v===0));assert.equal(inputRef.hardwareEntropy,'');
+ assert(!JSON.stringify(h.engine.data).includes('hardwareEntropy'));assert.equal(h.writes,1);
+});
+test('locking during entropy collection prevents generation and clears returned contribution',async()=>{
+ const entropy=new Uint8Array(32).fill(41);let h;
+ h=await harness(async()=>{h.lock();return entropy;});
+ await assert.rejects(h.store.create({name:'Cancelled entropy',profile:'level3',entropy:true},account));
+ assert(entropy.every(v=>v===0));assert.equal(h.writes,0);assert.equal(h.calls.length,0);
 });

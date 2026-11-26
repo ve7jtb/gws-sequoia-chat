@@ -59,7 +59,7 @@ export function softwareIdentityBinding(snapshot){return {provider:'software',va
  * A lock, replace/remove, other-window commit or failed write invalidates prior
  * operation reviews, including remove-and-reimport of the same fingerprint.
  */
-export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,hardwareCall,changed=()=>{},clock=()=>Date.now()}){
+export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,hardwareCall,entropyCollector,changed=()=>{},clock=()=>Date.now()}){
  const active=new Set(),grants=new Map();let mutation=false;
  const current=()=>{const s=access.snapshot();if(!s?.unlocked||!s.vaultId||!Number.isSafeInteger(s.revision)||!Number.isSafeInteger(s.epoch)||!Array.isArray(s.items))throw Error('Unlock the credential vault before using software identities.');return s;};
  const marker=s=>({vaultId:s.vaultId,revision:s.revision,epoch:s.epoch});
@@ -115,10 +115,19 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  async function createIdentity(value,account,{signal}={}){
   if(mutation)throw Error('Another software identity change is in progress.');mutation=true;
   try{return await withController(signal,async signal=>{
-   if(!fields(value,['name','profile'])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
-   const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result;
-   try{result=await cryptoCall('generate',{profile:value.profile,email:account,name,password},{signal});await check(s);if(result.public?.profile&&result.public.profile!==value.profile)throw Error('Generated profile does not match the request.');return await savePrepared(result,name,password,account,s,signal);}
-   finally{password='';if(result){result.encryptedSecret='';if(result.compatibility)for(const child of result.compatibility)child.encryptedSecret='';}}
+   if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
+   if(value.entropy!==undefined&&typeof value.entropy!=='boolean')throw Error('Invalid entropy option');
+   const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result,entropy;const input={profile:value.profile,email:account,name,password};
+   try{
+    if(value.entropy){
+     if(typeof entropyCollector!=='function')throw Error('Hardware entropy service unavailable');
+     entropy=await entropyCollector({signal,guard:()=>check(s)});await check(s);
+     if(!(entropy instanceof Uint8Array)||entropy.length!==32)throw Error('One 32-byte entropy contribution required');
+     input.hardwareEntropy=btoa(String.fromCharCode(...entropy));
+    }
+    if(signal.aborted)throw Error('Software creation cancelled');
+    result=await cryptoCall('generate',input,{signal});await check(s);if(result.public?.profile&&result.public.profile!==value.profile)throw Error('Generated profile does not match the request.');return await savePrepared(result,name,password,account,s,signal);}
+   finally{entropy?.fill(0);input.hardwareEntropy='';input.password='';password='';if(result){result.encryptedSecret='';if(result.compatibility)for(const child of result.compatibility)child.encryptedSecret='';}}
   });}finally{mutation=false;}
  }
  async function importP12(value,account,{signal}={}){

@@ -259,3 +259,5 @@ mod profile_tests;
 
 mod smartcard;
 pub use smartcard::smartcard_signing_input;
+
+mod entropy;

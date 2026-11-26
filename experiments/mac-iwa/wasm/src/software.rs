@@ -602,6 +602,23 @@ fn encrypted_result(cert: &pgp::Cert, password: &str) -> Result<serde_json::Valu
     Ok(serde_json::json!({"encryptedSecret":encoded,"public":public}))
 }
 pub(super) fn generate(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    // Take the optional single-credential contribution before strict field
+    // validation. The RAII scope wipes DRBG state even on generation errors.
+    let mut contribution = zeroize::Zeroizing::new(Vec::new());
+    if let Some(value) = v.as_object_mut().and_then(|m|m.remove("hardwareEntropy")) {
+        contribution.extend_from_slice(&B64.decode(value.as_str().context("Entropy encoding")?)?);
+        ensure!(contribution.len()==32,"One 32-byte entropy output required");
+    }
+    #[cfg(target_arch="wasm32")]
+    let _entropy_scope = if contribution.is_empty(){None}else{Some(super::entropy::start(&contribution)?)};
+    #[cfg(not(target_arch="wasm32"))]
+    ensure!(contribution.is_empty(),"Hardware entropy generation is browser-only");
+    let result=generate_inner(v);
+    #[cfg(target_arch="wasm32")]
+    if result.is_ok(){if let Some(scope)=&_entropy_scope{scope.assert_used()?;}}
+    result
+}
+fn generate_inner(mut v:serde_json::Value)->Result<serde_json::Value>{
     use pgp::cert::{CertBuilder, CipherSuite};
     use pgp::types::{KeyFlags, PublicKeyAlgorithmSpecification as Spec};
     fields(&v, &["profile", "email", "name", "password"])?;

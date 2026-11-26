@@ -31,7 +31,7 @@ function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lo
 // same encrypted IndexedDB record and compare-and-swap revision used by PIV/PRF.
 const sameVault=expected=>engine.unlocked&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
 const softwareIdentities=createSoftwareIdentityStore({
- inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,hardwareCall:operateImportedKey,
+ inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,hardwareCall:operateImportedKey,entropyCollector:options=>window.directFido.entropy(options),
  changed:()=>window.dispatchEvent(new Event('iwa-software-identities-changed')),
  access:{
   snapshot:()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),

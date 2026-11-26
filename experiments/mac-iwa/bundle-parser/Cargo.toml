@@ -21,5 +21,5 @@ sequoia-openpgp = { git = "https://github.com/ve7jtb/sequoia.git", rev = "65979c
 ed25519-dalek = { version = "=2.2.0", default-features = false }
 cx448 = { version = "=0.1.1", default-features = false, features = ["signing"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom = "0.4"
 js-sys = "=0.3.107"

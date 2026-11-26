@@ -82,7 +82,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
     const message='This optional compatibility identity has classical signing, which is not post-quantum resistant.'+(profile.endsWith('-classical')?' Its encryption is also classical.':' Its encryption is hybrid and remains post-quantum resistant.')+' Create it for older recipients? V6 remains the default.';
     if(!confirm(message))return;
    }
-   await provider().create({name,profile},email,{signal:importController.signal});
+   await provider().create({name,profile,entropy:$('software-hardware-entropy')?.checked===true},email,{signal:importController.signal});
    if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())throw Error('Software creation context changed; review the vault before continuing.');
    await changed();await refresh();say('Software identity created in the encrypted vault. Use Export encrypted identity to make a portable backup. No hardware keys or recipient trust changed.');
   }finally{importController=null;}
