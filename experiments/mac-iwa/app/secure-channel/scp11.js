@@ -17,7 +17,11 @@ function command(cla,ins,p1,p2,data,extended=false,le=false){
 // Record only public command headers and the transport stage. A status
 // received without a valid MAC remains untrusted diagnostic information.
 function scpStatusError(message,sw,ins,p1,p2,stage){
- return Object.assign(Error(message),{scpCommand:{sw,ins,p1,p2,stage}});
+ // Web Smart Card can recreate a callback exception using only its message.
+ // Put the safe header in the message before it crosses that boundary.
+ const hex=value=>value.toString(16).padStart(2,'0').toUpperCase();
+ return Object.assign(Error(`${message} [INS=${hex(ins)} P1=${hex(p1)} P2=${hex(p2)}, ${stage}, SW=${hex(sw)}]`),
+  {scpCommand:{sw,ins,p1,p2,stage}});
 }
 async function raw(conn,cla,ins,p1,p2,data=empty){
  let r,off=0;while(data.length-off>255){r=split(await conn.transmit(command(cla|16,ins,p1,p2,data.slice(off,off+255))));if(r.sw!==0x9000||r.data.length)throw scpStatusError('SCP command chaining rejected',r.sw,ins,p1,p2,'command fragment');off+=255;}

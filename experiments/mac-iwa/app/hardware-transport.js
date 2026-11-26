@@ -136,6 +136,8 @@ function createHardwareTransport(deps = {}){
     const waiting = doc?.getElementById('smartcard-pin-wait');
     const status = doc?.getElementById('smartcard-pin-status');
     const title = doc?.getElementById('smartcard-pin-title');
+    if(doc && (!dialog || !entry || !waiting || !status || !title))
+      throw Error('The YubiKey touch dialog is unavailable. Close and reopen the app.');
     let showing = false;
     // Keep the PIN dialog open. Replacing it with a second modal can leave
     // the login screen visible while the browser changes modal focus.
@@ -156,13 +158,25 @@ function createHardwareTransport(deps = {}){
         const pin = await prompt(details);
         // Start the card's touch window only after the instruction has had
         // time to appear. A timer works when animation frames are throttled.
-        if(showing)await new Promise(resolve=>setTimeout(resolve,500));
+        if(showing)await new Promise(resolve=>{
+          const fallback=setTimeout(resolve,900);
+          requestAnimationFrame(()=>requestAnimationFrame(()=>{
+            clearTimeout(fallback);
+            setTimeout(resolve,500);
+          }));
+        });
         if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
         await ctx.assertVault();
         return pin;
       });
     }catch(error){
-      const command=error.scpCommand??error.cause?.scpCommand;
+      // Chromium may preserve only the message from a transaction callback.
+      const header=/\[INS=([0-9A-F]{2}) P1=([0-9A-F]{2}) P2=([0-9A-F]{2}), (command fragment|GET RESPONSE|final command), SW=6982\]/i.exec(error.message);
+      const fromMessage=header&&{
+        ins:parseInt(header[1],16),p1:parseInt(header[2],16),
+        p2:parseInt(header[3],16),stage:header[4],sw:0x6982,
+      };
+      const command=error.scpCommand??error.cause?.scpCommand??fromMessage;
       if(command?.sw!==0x6982)throw error;
       const hex=n=>n.toString(16).padStart(2,'0').toUpperCase();
       const name=command.ins===0x20?'PIV PIN verification':command.ins===0x87?'PIV private operation':'PIV card command';
