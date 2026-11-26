@@ -120,6 +120,37 @@ function createHardwareTransport(deps = {}){
     };
   }
 
+  // The main login screen and vault enrollment share these card operations.
+  // Show the same touch guidance in both paths after the PIN field is cleared.
+  async function withVaultTouch(serial, ctx, perform){
+    const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault});
+    const dialog = global.document?.getElementById('smartcard-touch-dialog');
+    const status = global.document?.getElementById('smartcard-touch-status');
+    // A card command already in progress cannot be cancelled safely from
+    // this dialog. Keep the touch instruction visible until it settles.
+    const preventCancel = event => event.preventDefault();
+    try{
+      return await perform(async details=>{
+        const pin = await prompt(details);
+        const instruction = serial ? `Touch YubiKey SN# ${serial}` : 'Touch your YubiKey';
+        if(dialog && status){
+          status.textContent = `${instruction} promptly when it flashes. Keep it connected until the operation finishes.`;
+          dialog.addEventListener('cancel',preventCancel);
+          dialog.showModal();
+          // Allow a paint before the card starts waiting for touch.
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+        }
+        if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
+        await ctx.assertVault();
+        return pin;
+      });
+    }finally{
+      dialog?.removeEventListener('cancel',preventCancel);
+      if(dialog?.open)dialog.close();
+      if(status)status.textContent='';
+    }
+  }
+
   async function dispatchSmartCard(op, data, ctx){
     if(!piv) throw Error('Web Smart Card PIV module is not loaded.');
     if(!global.navigator?.smartCard && !deps.piv){
@@ -224,7 +255,8 @@ function createHardwareTransport(deps = {}){
       tickets.delete(data.review);
       if(t.vaultOperation){if(data.service!=='Vault')throw Error('Vault ticket purpose changed');await ctx.assertVault();}else await ctx.assertIdentity?.(t.identity);
       if(data.recipientKey !== t.identity.recipientKey) throw Error('Recipient key changed.');
-      return piv.decapsulateComponentsViaSmartCard(data, t.identity, checkedPrompt(t.identity, t.vaultOperation?{...ctx,assertIdentity:ctx.assertVault}:ctx));
+      if(t.vaultOperation)return withVaultTouch(t.identity.serial,ctx,prompt=>piv.decapsulateComponentsViaSmartCard(data,t.identity,prompt));
+      return piv.decapsulateComponentsViaSmartCard(data,t.identity,checkedPrompt(t.identity,ctx));
     }
 
     if(op === 'chat-vault-material'){
@@ -236,11 +268,11 @@ function createHardwareTransport(deps = {}){
     if(op === 'chat-vault-level5-open'){
       await ctx.assertVault();
       if(!global.SequoiaSecureChannel?.isRequired())throw Error('Level 5 vault requires SCP11b.');
-      return piv.openLevel5VaultViaSmartCard(data,checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault}));
+      return withVaultTouch(data.serial,ctx,prompt=>piv.openLevel5VaultViaSmartCard(data,prompt));
     }
 
     if(op === 'chat-vault-ecdh'){
-      return piv.ecdhViaSmartCard(data, data.slot || null, data.serial || null, promptPinInBrowser);
+      return withVaultTouch(data.serial,ctx,prompt=>piv.ecdhViaSmartCard(data,data.slot||null,data.serial||null,prompt));
     }
 
     throw Error(`Operation "${op}" requires the Native helper (PKCS#11). Switch Hardware transport to Native helper to use it.`);

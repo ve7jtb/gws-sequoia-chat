@@ -942,7 +942,7 @@ async function ecdhViaSmartCard(request, slotHex, serial, promptPin){
   const algId = peerPoint.length === 65 ? 0x11 : 0x14;
 
   return withPivSession(targetSerial, async(conn,info)=>{
-    const keys=await readClassicalVaultSlots(conn,info.serial);
+    const keys=await readClassicalVaultSlots(conn,info.serial,targetSlotHex);
     if(!keys.some(k=>k.slot===targetSlotHex&&k.fingerprint===request.fingerprint&&k.algorithm===(algId===0x11?'ECDH-P256':'ECDH-P384')))
       throw Error('Vault public key changed; PIN not submitted.');
     // Authenticate the device/channel and live key before asking for its PIN.

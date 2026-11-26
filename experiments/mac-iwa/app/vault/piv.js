@@ -13,4 +13,4 @@ export async function classicalWrap(material){
 // Both curves feed a 256-bit wrapping secret into the vault's separate HKDF.
 // The per-wrapper context includes both public keys, curve and recipient hash.
 export async function reduce(raw){try{return new Uint8Array(await crypto.subtle.digest('SHA-256',raw));}finally{raw.fill(0);}}
-export async function classicalOpen(binding,transport){const r=await transport('chat-vault-ecdh',{peer:binding.peer,fingerprint:binding.fingerprint});if(r.fingerprint!==binding.fingerprint)throw Error('Wrong PIV key');try{return await reduce(bytes(r.secret));}finally{delete r.secret;}}
+export async function classicalOpen(binding,transport){const r=await transport('chat-vault-ecdh',{peer:binding.peer,fingerprint:binding.fingerprint,serial:binding.serial,slot:binding.slot});if(r.fingerprint!==binding.fingerprint)throw Error('Wrong PIV key');try{return await reduce(bytes(r.secret));}finally{delete r.secret;}}
