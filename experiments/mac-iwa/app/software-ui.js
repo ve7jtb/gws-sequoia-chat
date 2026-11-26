@@ -1,4 +1,4 @@
-import {createBackupUi} from './piv-backup-ui.js';
+import {createBackupUi,recoveryPrompt} from './piv-backup-ui.js';
 // Creation/import/export are explicit local actions. The form's password is passed only to the
 // vault software provider, cleared on every completion, and never logged. Own
 // certificate import does not grant trust to a recipient or change a card.
@@ -29,6 +29,13 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
    if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
+   if(row.hardware?.verified&&!row.hardware.privateRemoved)button('Verify encrypted vault backup…',async()=>{
+    const store=provider(),current=await store.get(row.id,account());
+    const recovery=await recoveryPrompt(current.hardware.serial);
+    if(!recovery)return;
+    await store.verifyRecoveryBackup(current,recovery);
+    say('Encrypted backup verified with the separate YubiKey. The software keys remain in the vault.');
+   });
    if(row.hardware?.slots.length>=8)button('Export provisioned public certificates…',async()=>{
     const current=await provider().get(row.id,account());
     const bundle=await provider().provisioningCertificates(current);
@@ -110,10 +117,11 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())
     throw Error('The provisioning vault or account changed. Preserve the journal.');
   };
-  const card=createPivImporter({promptManagement});
-  const verify=await createCertificateVerifier(piv);
+  const card=createPivImporter({promptManagement:managementPrompt});
   say('Checking firmware and all 24 PIV slots. No writes yet.');
   const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,...await card.inspect()});
+  guard();
+  const verify=await createCertificateVerifier(piv);
   guard();
   const journalKey='sequoia-level3-provisioning:'+plan.serial;
   const existing=localStorage.getItem(journalKey);

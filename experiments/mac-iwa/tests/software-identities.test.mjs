@@ -162,6 +162,13 @@ test('verified backup keeps public binding and removal survives a vault restart'
  const handle=await h.store.saveHardware(selected,{serial:'12345678'},{publicKeysMatch:true,signingVerified:true,decryptionVerified:true,slots});
  assert.equal(handle.identity.hardware.privateRemoved,false);
  assert(h.engine.data.items[0].encryptedSecret);await h.store.assertHardware(handle);
+ // A separate recovery-key check authenticates the file without changing
+ // the vault revision or clearing any recoverable software key material.
+ const writesBeforeRecovery=h.writes;
+ await assert.rejects(h.store.verifyRecoveryBackup(handle.identity,{}),/Recovery verification/);
+ await h.store.verifyRecoveryBackup(handle.identity,{verified:true});
+ assert.equal(h.writes,writesBeforeRecovery);
+ assert.equal(h.engine.data.items[0].encryptedSecret,encryptedSecret);
  await assert.rejects(h.store.removePrivate(handle.identity,handle),/Recovery verification/);
  assert.equal(h.engine.data.items[0].encryptedSecret,encryptedSecret);
  await h.store.removePrivate(handle.identity,handle,{verified:true});

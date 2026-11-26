@@ -98,3 +98,25 @@ test('overlapping inventory reads render only the newest snapshot',async t=>{
  old.resolve([{...f.row,name:'Stale'}, {...f.row,name:'Removed'}]);await first;
  assert.equal(f.get('software-identities').children.length,1);assert.match(f.get('software-identities').children[0].children[0].textContent,/Newest/);
 });
+
+// Exercise the actual review button through the read-only hardware boundary.
+test('backup-first review reaches read-only card inventory before asking for credentials', async t=>{
+ const f=fixture(t);
+ t.mock.method(globalThis,'confirm',()=>assert.fail('Inventory failure must stop before confirmation'));
+ const previousChannel=globalThis.SequoiaSecureChannel,previousPiv=globalThis.SequoiaSmartCardPiv;
+ t.after(()=>{
+  if(previousChannel===undefined)delete globalThis.SequoiaSecureChannel;
+  else globalThis.SequoiaSecureChannel=previousChannel;
+  if(previousPiv===undefined)delete globalThis.SequoiaSmartCardPiv;
+  else globalThis.SequoiaSmartCardPiv=previousPiv;
+ });
+ globalThis.SequoiaSecureChannel={isRequired:()=>true};
+ globalThis.SequoiaSmartCardPiv={inspectEmptyPivCandidate:async()=>{throw Error('Synthetic inventory stop');}};
+ f.window.SequoiaSmartCardPiv=globalThis.SequoiaSmartCardPiv;
+ f.get('combined-level3-mode').value='backup';
+ f.get('combined-level3-nist').checked=true;
+ await f.get('combined-level3-review').onclick();
+ assert.deepEqual(f.messages.at(-1),{message:'Synthetic inventory stop',error:true});
+ assert.equal(f.get('piv-management-dialog').open,undefined);
+ assert.equal(f.creates.length,0);
+});

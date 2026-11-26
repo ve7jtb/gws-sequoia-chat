@@ -311,6 +311,17 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   return {identity:await get(selected.id,selected.email)};
  }
  async function assertHardware(handle){const selected=handle?.identity;await assert(selected);if(!selected.hardware?.verified)throw Error('No verified hardware identity.');}
+ // Verify the actual exported file against the current vault item. This is
+ // also available for combined identities whose software keys must be kept.
+ async function verifyRecoveryBackup(selected,recovery){
+  await assertHardware({identity:selected});
+  const s=current();await check(s);
+  const item=recordsIn(s).find(x=>x.id===selected.identityId);
+  if(!item?.encryptedSecret||item.hardware.privateRemoved)throw Error('No software private identity to verify.');
+  if(typeof access.verifyRecovery!=='function')throw Error('Independent recovery verification is required.');
+  await access.verifyRecovery(recovery,item,item.hardware.serial);
+  await check(s);
+ }
  async function removePrivate(selected,handle,recovery){
   await assertHardware(handle);if(!same(selected,handle.identity))throw Error('Hardware removal review changed.');
   const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);
@@ -323,6 +334,6 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   const replacement={...item,encryptedSecret:'',password:'',hardware:{...item.hardware,privateRemoved:true}};
   itemShape(replacement);await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
  }
- return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,saveProvisioned,saveHardware,assertHardware,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
+ return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,saveProvisioned,saveHardware,assertHardware,verifyRecoveryBackup,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
   cancel(){grants.clear();for(const controller of active)controller.abort();}};
 }

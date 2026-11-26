@@ -15,15 +15,15 @@ export function managementPrompt(length){
 }
 // Read the file the user actually saved and list only its independent PRF
 // methods. The store repeats all checks before it can remove private keys.
-async function recoveryPrompt(targetSerial){
+export async function recoveryPrompt(targetSerial,{removeSoftware=false}={}){
  const dialog=document.createElement('dialog');
  const title=document.createElement('h2');title.textContent='Verify a separate recovery YubiKey';
  const help=document.createElement('p');help.textContent='Choose the encrypted vault-only backup containing this identity. Export it from Vault first if needed.';
  const file=document.createElement('input');file.type='file';file.accept='.json';file.setAttribute('aria-label','Encrypted vault backup');
  const methods=document.createElement('select');methods.setAttribute('aria-label','Recovery YubiKey');
  const status=document.createElement('p');status.setAttribute('role','status');
- const verify=document.createElement('button');verify.textContent='Verify and remove software copy';verify.disabled=true;
- const cancel=document.createElement('button');cancel.textContent='Keep software copy';
+ const verify=document.createElement('button');verify.textContent=removeSoftware?'Verify and remove software copy':'Verify encrypted backup';verify.disabled=true;
+ const cancel=document.createElement('button');cancel.textContent=removeSoftware?'Keep software copy':'Cancel';
  dialog.append(title,help,file,methods,status,cancel,verify);document.body.append(dialog);
  try{
   return await new Promise(resolve=>{
@@ -59,7 +59,7 @@ export function createBackupUi({provider,account,test,say,changed}){
   if(identity.hardware){
    const binding={...identity.hardware,certificate:identity.certificate};
    await test(identity,m=>say(m),binding);await store.assert(identity);
-   const recovery=await recoveryPrompt(identity.hardware.serial);
+   const recovery=await recoveryPrompt(identity.hardware.serial,{removeSoftware:true});
    if(recovery){await store.removePrivate(identity,{identity},recovery);await changed();say('Software private keys removed; public certificate and verified YubiKey mapping retained.');}
    return;
   }
