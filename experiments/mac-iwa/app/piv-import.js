@@ -21,15 +21,6 @@ export function createPivImporter({promptManagement}){
  const p=api(),tlv=p.encodeBerTlv;
  const tx=async(conn,ins,p1,p2,data)=>{const r=await p.transmitCommandChained(conn,ins,p1,p2,data);if(r.sw!==0x9000)throw Error('PIV command '+ins.toString(16)+' failed: SW='+r.sw.toString(16));return r.data;};
  async function inspect(serial){const s=await p.inspectEmptyPivCandidate(serial);return {...s,supportedAlgorithms:s.version?.startsWith('6.')?Object.keys(algorithms):[]};}
- async function emptyInside(conn,plan){
-  for(const slot of USER_PIV_SLOTS){
-   const id=parseInt(slot,16),r=await p.transmitChained(conn,p.buildGetMetadataApdu(id));
-   if(![0x6a88,0x6a82].includes(r.sw))throw Error('Card is not verifiably empty: '+slot);
-   const object=({'9a':0x5fc105,'9c':0x5fc10a,'9d':0x5fc10b,'9e':0x5fc101})[slot]??(0x5fc10d+id-0x82);
-   const c=await p.transmitChained(conn,p.buildGetDataApdu(object));
-   if(![0x6a88,0x6a82].includes(c.sw))throw Error('Certificate slot is not verifiably empty: '+slot);
-  }
- }
  async function authenticate(conn,guard){
   const m=await p.transmitChained(conn,p.buildGetMetadataApdu(0x9b));if(m.sw!==0x9000)throw Error('Management-key metadata unavailable');
   const type=p.parseBerTlv(m.data).get(1)?.[0],length={8:16,10:24,12:32}[type];if(!length)throw Error('AES management key required; no settings changed.');
@@ -78,11 +69,12 @@ export function createPivImporter({promptManagement}){
       !(k.publicKey instanceof Uint8Array)||k.publicKey.length!==d[3])throw Error('Invalid source component.');
   }
   await p.withPivSession(plan.serial,async(conn,info)=>{
-   const version=await p.provisioningFirmware(conn,info);
+   const {version,slots}=await p.readProvisioningInventory(conn,info);
    if(!version?.startsWith('6.'))throw Error('PQC YubiKey required.');
-   // An unauthenticated absent-slot response throws here. It must never be
-   // treated as proof that overwriting a card slot is safe.
-   await emptyInside(conn,plan);
+   if(slots.length!==USER_PIV_SLOTS.length||USER_PIV_SLOTS.some(slot=>
+    !slots.some(row=>row.slot===slot&&row.keyPresent===false&&row.certificatePresent===false)))
+    throw Error('Card is not verifiably empty.');
+
    await guard();
    await authenticate(conn,guard);
    await guard();

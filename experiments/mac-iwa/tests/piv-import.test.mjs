@@ -14,7 +14,11 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
  })));
  const inspect=async()=>({serial:'12345678',version:'6.0.0',slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
  const meta=id=>{const k=material.find(k=>parseInt(k.slot,16)===id),a=slots.get(id),publicKey=k.publicKey.slice();if(wrongPublic)publicKey[0]^=1;return join(t(1,new Uint8Array([a.alg])),t(2,new Uint8Array([3,a.touch])),t(3,new Uint8Array([a.origin])),t(4,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,publicKey)));};
- const stub={...p,inspectEmptyPivCandidate:inspect,withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
+ const stub={...p,inspectEmptyPivCandidate:inspect,
+  readProvisioningInventory:async()=>{const inventory=await inspect();
+   if(occupied)inventory.slots.find(row=>row.slot===occupied.toString(16)).keyPresent=true;
+   return inventory;
+  },withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
   if(a[1]===0xcb)return {sw:0x6a82};assert.equal(a[1],0xf7);
   if(a[3]===0x9b)return {sw:0x9000,data:t(1,new Uint8Array([10]))};
   if(a[3]===occupied)return {sw:0x9000,data:new Uint8Array()};

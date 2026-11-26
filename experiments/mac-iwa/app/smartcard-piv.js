@@ -480,28 +480,62 @@ async function readAll24Slots(conn){
   return slots;
 }
 
-// A provisioning candidate must have no user keys AND no certificate objects.
-// Read errors are not emptiness. The second read occurs in the same PC/SC
-// transaction and detects concurrent changes before exposing a review plan.
+// Beta0 reports absent PIV slots with unprotected error words. Use positive,
+// MAC-verified evidence from its shared-storage index instead. YubiKit assigns
+// records 1 and 2 to PIV. Require exactly the factory F9 key and certificate,
+// whose presence is independently verified on the same authenticated card.
+function assertBeta0FactoryPivStorage(data){
+  if(data.length!==32||data[0]!==1||data[1]!==30)
+    throw Error('Unrecognized Beta0 storage inventory.');
+  const view=new DataView(data.buffer,data.byteOffset,data.byteLength),ids=new Set();
+  for(let i=2;i<data.length;i+=5){
+    const id=data[i],objects=view.getUint16(i+1);
+    if(id>5||ids.has(id))throw Error('Unrecognized Beta0 storage inventory.');
+    ids.add(id);
+    if((id===1||id===2)&&objects!==1)
+      throw Error('YubiKey is not empty: PIV contains more than the factory attestation entries.');
+  }
+}
+
+async function readProvisioningInventory(conn,info){
+  if(!global.SequoiaSecureChannel?.isRequired()||!conn.authenticatedDevice)
+    throw Error('Provisioning inventory requires authenticated SCP11b.');
+  const readBeta=info.version==='0.0.1';
+  const device=readBeta?await readProvisioningManagement(conn,info):info;
+  if(device.beta0){
+    // readProvisioningManagement leaves Management selected. Read the index
+    // here, then select PIV and authenticate it again before returning.
+    const result=await transmitChained(conn,new Uint8Array([0,0x30,0,0]));
+    if(result.sw!==0x9000)throw Error('Authenticated Beta0 storage inventory is unavailable.');
+    assertBeta0FactoryPivStorage(result.data);
+  }
+  if(readBeta)await reselectProvisioningPiv(conn,info);
+  if(device.beta0){
+    const key=await transmitChained(conn,buildGetMetadataApdu(0xf9));
+    const certificate=await readPivDataObject(conn,0x5fff01);
+    if(key.sw!==0x9000||!parseSlotMetadata(key.data).publicKeyBytes.length||!certificate?.length)
+      throw Error('Could not verify both factory PIV attestation entries.');
+    return {version:device.version,slots:ALL_24_SLOTS.map(({hex})=>({slot:hex,keyPresent:false,certificatePresent:false}))};
+  }
+  const slots=[];
+  for(const slot of ALL_24_SLOTS){
+    const meta=await transmitChained(conn,buildGetMetadataApdu(slot.id));
+    if(![0x9000,0x6a88,0x6a82].includes(meta.sw))throw Error('Slot inspection failed: '+slot.hex);
+    const objectId=({'9a':0x5fc105,'9c':0x5fc10a,'9d':0x5fc10b,'9e':0x5fc101})[slot.hex]??(0x5fc10d+slot.id-0x82);
+    const cert=await readPivDataObject(conn,objectId);
+    slots.push({slot:slot.hex,keyPresent:meta.sw===0x9000,certificatePresent:cert!==null});
+  }
+  return {version:device.version,slots};
+}
+
+// Read twice in one PC/SC transaction, then independently recheck within
+// the separate transaction that performs the reviewed management writes.
 async function inspectEmptyPivCandidate(serial=null){
-  if(!global.SequoiaSecureChannel?.isRequired())throw Error('Provisioning discovery requires SCP11b.');
   return withPivSession(serial,async(conn,info)=>{
     if(!info.serial)throw Error('The inserted key has no readable serial.');
-    const version=await provisioningFirmware(conn,info);
-    async function inventory(){
-      const rows=[];
-      for(const slot of ALL_24_SLOTS){
-        const meta=await transmitChained(conn,buildGetMetadataApdu(slot.id));
-        if(![0x9000,0x6a88,0x6a82].includes(meta.sw))throw Error('Slot inspection failed: '+slot.hex);
-        const objectId=({'9a':0x5fc105,'9c':0x5fc10a,'9d':0x5fc10b,'9e':0x5fc101})[slot.hex]??(0x5fc10d+slot.id-0x82);
-        const cert=await readPivDataObject(conn,objectId);
-        rows.push({slot:slot.hex,keyPresent:meta.sw===0x9000,certificatePresent:cert!==null});
-      }
-      return rows;
-    }
-    const first=await inventory(),second=await inventory();
+    const first=await readProvisioningInventory(conn,info),second=await readProvisioningInventory(conn,info);
     if(JSON.stringify(first)!==JSON.stringify(second))throw Error('PIV slots changed during discovery.');
-    return {serial:info.serial,version,slots:first};
+    return {serial:info.serial,...first};
   });
 }
 
@@ -864,9 +898,15 @@ function vaultDeviceInfoFromFields(fields,expectedSerial){
   if(String(parseSerial(fields.get(2)))!==String(expectedSerial))throw Error('Management serial mismatch');
   let version=parseVersion(fields.get(5));
   const qualifier=fields.get(0x19);
-  if(qualifier){const q=parseBerTlv(qualifier);version=parseVersion(q.get(1));}
+  let beta0=false;
+  if(qualifier){
+    const q=parseBerTlv(qualifier),type=q.get(2),iteration=q.get(3);
+    version=parseVersion(q.get(1));
+    beta0=version==='6.0.0'&&type?.length===1&&type[0]===1&&
+      iteration?.length===4&&iteration.every(byte=>byte===0);
+  }
   if(!version)throw Error('Missing authenticated device version');
-  return {serial:String(expectedSerial),version};
+  return {serial:String(expectedSerial),version,...(beta0?{beta0:true}:{})};
 }
 // Management information spans pages on newer devices. Follow TAG_MORE_DATA
 // exactly as YubiKit does, retaining authenticated fields across pages. Bound
@@ -904,23 +944,24 @@ async function level5VaultPrivateCommand(conn, algorithm, slot, tag, input){
   }
 }
 
-// Beta PIV GET VERSION can report 0.0.1. Read the version from the
-// authenticated Management applet and reselect PIV before any slot checks.
-async function provisioningFirmware(conn,info){
-  if(info.version!=='0.0.1')return info.version;
+// Beta PIV GET VERSION can report 0.0.1. Qualify the storage layout
+// using version and release fields read inside the authenticated applet.
+async function readProvisioningManagement(conn,info){
   const select=await transmitChained(conn,new Uint8Array([0,0xa4,4,0,8,0xa0,0,0,5,0x27,0x47,0x11,0x17]));
   if(select.sw!==0x9000)throw Error('Management application unavailable.');
-  const device=await readVaultDeviceInfo(async page=>{
+  return readVaultDeviceInfo(async page=>{
     const result=await transmitChained(conn,new Uint8Array([0,0x1d,page,0]));
     if(result.sw!==0x9000)throw Error('Device information unavailable.');
     return result.data;
   },info.serial);
+}
+
+async function reselectProvisioningPiv(conn,info){
   const piv=await transmitChained(conn,buildSelectPivApdu());
   if(piv.sw!==0x9000)throw Error('Could not establish a new authenticated PIV session.');
   const sameCard=await transmitChained(conn,new Uint8Array([0,0xf8,0,0]));
-  if(sameCard.sw!==0x9000||String(parseSerial(sameCard.data))!==String(info.serial))
+  if(sameCard.sw!==0x9000||sameCard.data.length!==4||String(parseSerial(sameCard.data))!==String(info.serial))
     throw Error('YubiKey changed during firmware discovery.');
-  return device.version;
 }
 
 // Level 5 vault wrapping uses the native PIV keys independently of OpenPGP.
@@ -1097,7 +1138,7 @@ const api = {
   // Shared serial-checked transaction for switching to the FIDO applet.
   withPivSession,
   inspectEmptyPivCandidate,
-  provisioningFirmware,
+  readProvisioningInventory,
   encodeBerLength,
   encodeBerTlv,
   buildSelectPivApdu,

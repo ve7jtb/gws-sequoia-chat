@@ -118,7 +118,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
     throw Error('The provisioning vault or account changed. Preserve the journal.');
   };
   const card=createPivImporter({promptManagement:managementPrompt});
-  say('Checking firmware and all 24 PIV slots. No writes yet.');
+  say('Checking firmware and authenticated PIV inventory. No writes yet.');
   const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,...await card.inspect()});
   guard();
   const verify=await createCertificateVerifier(piv);

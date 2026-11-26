@@ -15,7 +15,7 @@ function fixture(fail=false){
  return ok([1,1,0x14,...p.encodeBerTlv(4,p.encodeBerTlv(0x86,point))]);
  }};
  ctx.navigator={smartCard:{establishContext:async()=>({listReaders:async()=>['YubiKey'],connect:async()=>({connection:conn})})}};
- return {p,reads};
+ return {p,reads,ctx};
 }
 test('PIV wrapping probe stops at first authenticated EC key',async()=>{const {p,reads}=fixture();const r=await p.readVaultMaterialViaSmartCard({serial:'1'});assert.equal(r.classical.slot,'82');assert.deepEqual(reads,[0x9d,0x82]);});
 test('explicit wrapping slot avoids scanning unrelated slots',async()=>{const {p,reads}=fixture();await p.readVaultMaterialViaSmartCard({serial:'1',slot:'82'});assert.deepEqual(reads,[0x82]);});
@@ -35,4 +35,45 @@ test('management pagination obtains beta version from the second page',async()=>
 });
 test('management pagination rejects an unbounded continuation',async()=>{
  const {p}=fixture();await assert.rejects(p.readVaultDeviceInfo(async()=>new Uint8Array([3,0x10,1,1]),'1'),/Too many/);
+});
+
+test('Beta0 inventory authenticates aggregate counts and verifies F9 on the same card', async()=>{
+ const {p,ctx}=fixture();
+ // Model the output of the SCP adapter. Bare errors still reject at the
+ // transport boundary. Neither empty-slot probing nor writes are expected.
+ const storage=[1,30,0,0,154,1,162,1,0,1,0,30,2,0,1,0,0,3,0,4,0,32,4,0,0,0,0,5,0,0,0,0];
+ const management=[2,4,0,0,0,1,0x19,14,1,3,6,0,0,2,1,1,3,4,0,0,0,0];
+ const commands=[];
+ function card({inventory=storage,serial=1,missingMac=false,hasCertificate=true}={}){
+  return {authenticatedDevice:{},async transmit(a){
+   commands.push(a[1]);
+   const ok=d=>new Uint8Array([...d,0x90,0]);
+   switch(a[1]){
+    case 0xa4:return ok([]);
+    case 0x1d:return ok([management.length,...management]);
+    case 0x30:if(missingMac)throw Error('Missing SCP response MAC');return ok(inventory);
+    case 0xf8:return ok([0,0,0,serial]);
+    case 0xf7:assert.equal(a[3],0xf9);return ok([1,1,0xe4,4,1,1]);
+    case 0xcb:return ok(hasCertificate?[0x53,1,1]:[]);
+    default:assert.fail('Unexpected provisioning APDU');
+   }
+  }};
+ }
+ const info={serial:'1',version:'0.0.1'};
+ // Enable the same fail-closed policy used by the real browser adapter.
+ Object.assign(ctx,{SequoiaSecureChannel:{isRequired:()=>true}});
+ const proof=await p.readProvisioningInventory(card(),info);
+ assert.equal(proof.slots.length,24);
+ assert(proof.slots.every(s=>s.keyPresent===false&&s.certificatePresent===false));
+ assert.deepEqual(commands,[0xa4,0x1d,0x30,0xa4,0xf8,0xf7,0xcb]);
+ for(const index of [9,14]){
+  const occupied=storage.slice();occupied[index]=2;
+  await assert.rejects(p.readProvisioningInventory(card({inventory:occupied}),info),/not empty/);
+ }
+ const duplicate=storage.slice();duplicate[12]=1;
+ await assert.rejects(p.readProvisioningInventory(card({inventory:duplicate}),info),/Unrecognized/);
+ await assert.rejects(p.readProvisioningInventory(card({missingMac:true}),info),/Missing SCP response MAC/);
+ await assert.rejects(p.readProvisioningInventory(card({serial:2}),info),/YubiKey changed/);
+ await assert.rejects(p.readProvisioningInventory(card({hasCertificate:false}),info),/factory PIV attestation entries/);
+ await assert.rejects(p.readProvisioningInventory({},info),/authenticated SCP11b/);
 });
