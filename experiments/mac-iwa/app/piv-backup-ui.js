@@ -1,16 +1,29 @@
 // UI composition for reviewed backup. No operation runs on startup. The first
 // click is public discovery; a second confirmation binds the detected serial.
 import {createProvisioning} from './piv-provisioning.js';
-import {createPivImporter} from './piv-import.js';
-export function managementPrompt(length){
- const dialog=document.getElementById('piv-management-dialog'),input=document.getElementById('piv-management-value');
- document.getElementById('piv-management-help').textContent='Enter the existing '+length+'-byte PIV management key in hex. This is not your PIN; it is never saved. No PIN or management key will be changed.';
- input.value='';dialog.showModal();input.focus();
+import {createPivImporter,FACTORY_MANAGEMENT_KEY} from './piv-import.js';
+export function managementPrompt(length,{allowFactory=false}={}){
+ const el=id=>document.getElementById(id);
+ const dialog=el('piv-management-dialog'),input=el('piv-management-value');
+ const ok=el('piv-management-ok'),cancel=el('piv-management-cancel'),factory=el('piv-management-factory');
+ el('piv-management-help').textContent='Enter the existing '+length+'-byte PIV management key in hex.'+
+  (allowFactory?' This YubiKey reports that its factory-default management key is still set.':'');
+ input.value='';factory.hidden=!allowFactory;dialog.showModal();input.focus();
  return new Promise((resolve,reject)=>{
-  const ok=document.getElementById('piv-management-ok'),cancel=document.getElementById('piv-management-cancel');
-  function finish(accepted){const value=input.value;input.value='';dialog.close();ok.removeEventListener('click',yes);cancel.removeEventListener('click',no);dialog.removeEventListener('cancel',no);input.removeEventListener('keydown',enter);accepted?resolve(value):reject(Error('Management authentication cancelled.'));}
-  const yes=()=>finish(true),no=e=>{e?.preventDefault();finish(false);},enter=e=>{if(e.key==='Enter'){e.preventDefault();yes();}};
-  ok.addEventListener('click',yes);cancel.addEventListener('click',no);dialog.addEventListener('cancel',no);input.addEventListener('keydown',enter);
+  function finish(value){
+   input.value='';factory.hidden=true;dialog.close();
+   ok.removeEventListener('click',yes);factory.removeEventListener('click',useFactory);
+   cancel.removeEventListener('click',no);dialog.removeEventListener('cancel',no);input.removeEventListener('keydown',enter);
+   if(value===null)reject(Error('Management authentication cancelled.'));
+   else resolve(value);
+  }
+  const yes=()=>finish(input.value),useFactory=()=>{if(allowFactory)finish(FACTORY_MANAGEMENT_KEY);};
+  const no=e=>{e.preventDefault();finish(null);};
+  // Enter in the masked field always submits the custom value. The factory
+  // option requires activation of its own button.
+  const enter=e=>{if(e.key==='Enter'&&!e.repeat&&!e.isComposing){e.preventDefault();yes();}};
+  ok.addEventListener('click',yes);factory.addEventListener('click',useFactory);
+  cancel.addEventListener('click',no);dialog.addEventListener('cancel',no);input.addEventListener('keydown',enter);
  });
 }
 // Read the file the user actually saved and list only its independent PRF

@@ -120,3 +120,26 @@ test('backup-first review reaches read-only card inventory before asking for cre
  assert.equal(f.get('piv-management-dialog').open,undefined);
  assert.equal(f.creates.length,0);
 });
+
+test('factory management key requires its own action; a blank custom field stays blank',async t=>{
+ const {managementPrompt}=await import('../app/piv-backup-ui.js');
+ const {FACTORY_MANAGEMENT_KEY}=await import('../app/piv-import.js');
+ const previous=globalThis.document,nodes=new Map();
+ t.after(()=>{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;});
+ globalThis.document={getElementById(id){
+  if(!nodes.has(id))nodes.set(id,Object.assign(new EventTarget(),{showModal(){},close(){},focus(){}}));
+  return nodes.get(id);
+ }};
+ const get=globalThis.document.getElementById;
+ const factory=get('piv-management-factory'),input=get('piv-management-value');
+ let result=managementPrompt(24,{allowFactory:true});
+ assert.equal(factory.hidden,false);
+ factory.dispatchEvent(new Event('click'));
+ assert.equal(await result,FACTORY_MANAGEMENT_KEY);
+ assert.equal(input.value,'');
+ result=managementPrompt(24,{allowFactory:false});
+ assert.equal(factory.hidden,true);
+ factory.dispatchEvent(new Event('click'));
+ get('piv-management-ok').dispatchEvent(new Event('click'));
+ assert.equal(await result,'');
+});

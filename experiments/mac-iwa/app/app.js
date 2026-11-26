@@ -22,7 +22,10 @@ const say=(text,error=false)=>{$('result').textContent=text;$('result').classLis
 function operationBusy(active) {
  busy=active;$('transport').disabled=active;$('busy').hidden=!active;
  if($('hardware-transport'))$('hardware-transport').disabled=active;
- document.querySelectorAll('button').forEach(b=>{if(!b.closest('#smartcard-pin-dialog'))b.disabled=active;});
+ // Active card operations can still require a local PIN or management key.
+ document.querySelectorAll('button').forEach(b=>{
+  if(!b.closest('#smartcard-pin-dialog, #piv-management-dialog'))b.disabled=active;
+ });
  // A test can be cancelled while its native PIN/touch attempt settles. The
  // coordinator retains this lock and performs only a final public audit.
  $('test-cancel').disabled=!active||!hardwareTestAbort;

@@ -2,6 +2,10 @@
 // PIV management authentication authorizes empty-slot writes only.
 import {USER_PIV_SLOTS} from './piv-backup-plan.js';
 import {smartcardSigningInput} from './identities/client.js';
+// The explicit UI action is distinct from an empty or mistyped custom key.
+export const FACTORY_MANAGEMENT_KEY=Symbol('Factory PIV management key');
+// Yubico's public factory value for the AES-192 PIV management key.
+const factoryManagementKeyHex='010203040506070801020304050607080102030405060708';
 const algorithms={'ML-DSA-65':[0xe3,9,32,1952],'Ed25519':[0xe0,7,32,32],'ML-KEM-768':[0xe6,10,64,1184],'X25519':[0xe1,8,32,32],'P-384':[0x14,6,48,97]};
 const join=(...parts)=>{const out=new Uint8Array(parts.reduce((n,b)=>n+b.length,0));let at=0;for(const b of parts){out.set(b,at);at+=b.length;}return out;};
 const equal=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
@@ -23,9 +27,18 @@ export function createPivImporter({promptManagement}){
  async function inspect(serial){const s=await p.inspectEmptyPivCandidate(serial);return {...s,supportedAlgorithms:s.version?.startsWith('6.')?Object.keys(algorithms):[]};}
  async function authenticate(conn,guard){
   const m=await p.transmitChained(conn,p.buildGetMetadataApdu(0x9b));if(m.sw!==0x9000)throw Error('Management-key metadata unavailable');
-  const type=p.parseBerTlv(m.data).get(1)?.[0],length={8:16,10:24,12:32}[type];if(!length)throw Error('AES management key required; no settings changed.');
-  let entered=await promptManagement(length),key,witness,plain,challenge,expected;
+  const fields=p.parseBerTlv(m.data),type=fields.get(1)?.[0],length={8:16,10:24,12:32}[type];
+  if(!length)throw Error('AES management key required; no settings changed.');
+  const factory=fields.get(5);
+  // Trust only the default flag from the authenticated management metadata
+  // of the reviewed card, and only for the documented AES-192 factory key.
+  const allowFactory=type===10&&factory?.length===1&&factory[0]===1;
+  let entered=await promptManagement(length,{allowFactory}),key,witness,plain,challenge,expected;
   try{
+   if(entered===FACTORY_MANAGEMENT_KEY){
+    if(!allowFactory)throw Error('This YubiKey does not report a supported factory-default management key.');
+    entered=factoryManagementKeyHex;
+   }
    if(typeof entered!=='string'||!new RegExp('^[a-fA-F0-9]{'+length*2+'}$').test(entered))throw Error('Management key must be '+length+' bytes in hex.');
    await guard();key=Uint8Array.from(entered.match(/../g),v=>parseInt(v,16));entered='';
    const first=await tx(conn,0x87,type,0x9b,tlv(0x7c,tlv(0x80,new Uint8Array())));

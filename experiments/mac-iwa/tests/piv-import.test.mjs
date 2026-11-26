@@ -1,9 +1,11 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';import {createCipheriv,createDecipheriv} from 'node:crypto';
-import {createPivImporter} from '../app/piv-import.js';import {planPivBackup,planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
-function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false}={}){
+import {createPivImporter,FACTORY_MANAGEMENT_KEY} from '../app/piv-import.js';import {planPivBackup,planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
+function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,factoryFlag,selectFactory=false}={}){
  const context={Uint8Array,TextEncoder,TextDecoder,atob,btoa,crypto};context.globalThis=context;vm.createContext(context);vm.runInContext(fs.readFileSync(new URL('../app/smartcard-piv.js',import.meta.url),'utf8'),context);
  const p=context.SequoiaSmartCardPiv,t=p.encodeBerTlv,join=(...a)=>new Uint8Array(a.flatMap(x=>[...x]));
- const imports=[],key=Buffer.alloc(24,5),plain=Buffer.alloc(16,9),slots=new Map();let prompt=0;
+ const imports=[],plain=Buffer.alloc(16,9),slots=new Map();
+ const key=selectFactory?Buffer.from([1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8]):Buffer.alloc(24,5);
+ let prompt=0,offeredFactory;
  const crypt=(v,decrypt=false)=>{const c=(decrypt?createDecipheriv:createCipheriv)('aes-192-ecb',key,null);c.setAutoPadding(false);return new Uint8Array(Buffer.concat([c.update(v),c.final()]));};
  const material=['86','87','9c','84','9d','85'].map((slot,i)=>{const algorithm=['ML-DSA-65','Ed25519','ML-DSA-65','Ed25519','ML-KEM-768','X25519'][i];return {slot,algorithm,seed:new Uint8Array(algorithm==='ML-KEM-768'?64:32).fill(i+1),publicKey:new Uint8Array(algorithm==='ML-DSA-65'?1952:algorithm==='ML-KEM-768'?1184:32).fill(i+10)};});
  if(extended)material.push(...[
@@ -20,7 +22,8 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
    return inventory;
   },withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
   if(a[1]===0xcb)return {sw:0x6a82};assert.equal(a[1],0xf7);
-  if(a[3]===0x9b)return {sw:0x9000,data:t(1,new Uint8Array([10]))};
+  if(a[3]===0x9b)return {sw:0x9000,data:join(t(1,new Uint8Array([10])),
+   ...(factoryFlag===undefined?[]:[t(5,Uint8Array.of(factoryFlag))]))};
   if(a[3]===occupied)return {sw:0x9000,data:new Uint8Array()};
   return slots.has(a[3])?{sw:0x9000,data:meta(a[3])}:{sw:0x6a88};
  },transmitCommandChained:async(c,ins,p1,p2,data)=>{
@@ -39,8 +42,11 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
   assert.equal(fields.get(0xaa)[0],3);imports.push(p2);slots.set(p2,{alg:p1,touch:fields.get(0xab)[0],origin:2});return {sw:0x9000,data:new Uint8Array()};
  }};
  globalThis.SequoiaSecureChannel={isRequired:()=>true};globalThis.SequoiaSmartCardPiv=stub;
- const importer=createPivImporter({promptManagement:async()=>{prompt++;return key.toString('hex');}});
- return {importer,material,imports,get prompt(){return prompt;},async plan(){return planPivBackup({profile:'level3',...await importer.inspect()});}};
+ const importer=createPivImporter({promptManagement:async(length,{allowFactory})=>{
+  assert.equal(length,24);prompt++;offeredFactory=allowFactory;
+  return selectFactory?FACTORY_MANAGEMENT_KEY:key.toString('hex');
+ }});
+ return {importer,material,imports,get offeredFactory(){return offeredFactory;},get prompt(){return prompt;},async plan(){return planPivBackup({profile:'level3',...await importer.inspect()});}};
 }
 test('import authenticates AES management key, writes six exact seeds, matches public keys and policies',async()=>{
  const h=harness(),plan=await h.plan(),done=[];await h.importer.importAll(plan,h.material,{guard:async()=>{},completed:async slot=>done.push(slot)});
@@ -78,3 +84,17 @@ for(const mode of ['backup','on-card']){
   assert.deepEqual(rows.filter(key=>key.component==='P-384').map(key=>key.slot),['83','82','8b']);
  });
 }
+
+// Even a caller returning the factory choice directly cannot bypass the
+// authenticated default flag or reach the first import with a custom key set.
+test('factory option uses the same AES challenge only when the card reports the default',async()=>{
+ const options={guard:async()=>{},completed:async()=>{}};
+ for(const factoryFlag of [0,undefined,1]){
+  const h=harness({factoryFlag,selectFactory:true}),plan=await h.plan();
+  const run=h.importer.importAll(plan,h.material,options);
+  if(factoryFlag===1)await run;
+  else await assert.rejects(run,/does not report a supported factory-default/);
+  assert.equal(h.offeredFactory,factoryFlag===1);
+  assert.equal(h.imports.length,factoryFlag===1?6:0);
+ }
+});
