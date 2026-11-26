@@ -38,7 +38,9 @@ const { createHardwareTransport } = ctx;
 
   const t = createHardwareTransport({ piv: fakePiv, storage, promptPin: async () => '123456' });
 
-  // Default mode is 'native'
+  // New installations default to direct Web Smart Card; saved native choices persist.
+  assert.equal(t.getMode(), 'smartcard');
+  t.setMode('native');
   assert.equal(t.getMode(), 'native');
   const r1 = await t.dispatch('status', {}, {}, nativeRequest);
   assert.equal(r1.via, 'native');

@@ -30,6 +30,20 @@ and wrong-certificate rejection. See the [hardware interoperability report](../.
 **Vault** retains enrollment settings, credential creation and
 lock/unlock controls.
 
+## Guided empty-vault setup (0.20.29 testing)
+
+Unconfigured installations select Web Smart Card with SCP11b and the temporary
+beta SD certificate pin enabled. Explicit saved choices are preserved. The
+beta pin remains visibly labeled as test trust, not manufacturer-root verification.
+
+Restore uses a direct navigation button: IWA CSP blocks HTML form submissions.
+Create a new vault has a dedicated two-step wizard: name, then verify an existing
+FIDO PRF credential, explicitly create a new PRF credential, or use existing PIV
+wrapping keys. It contains no backup restore controls. No unprotected vault is
+saved before an unlock method is verified. After creation, setup offers existing
+provisioned YubiKey identities or new software keys; hardware backup remains a
+separate reviewed operation.
+
 ## Single-touch key-generation entropy (0.20.26 testing)
 
 Software identity creation offers **Mix YubiKey entropy into key generation**

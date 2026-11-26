@@ -94,3 +94,14 @@ record=await load();revision=record?.revision||0;if(record)validate(record);rend
 
 // Read-only gate for the experimental in-memory Google session.
 window.vaultIsUnlocked=()=>engine.unlocked;
+
+// Dedicated onboarding entry point. Never overwrite a saved/imported vault and
+// never infer permission to create a credential from an assertion failure.
+window.createStartupVault=async({name,serial,method,classical=false})=>{
+ if(record||await load())throw Error('A vault already exists. Return to login.');
+ if(!['existing-prf','new-prf','existing-piv'].includes(method))throw Error('Choose an unlock method.');
+ if(!name||name.length>80)throw Error('Enter a vault name.');
+ if(method!=='existing-piv'&&!/^[1-9][0-9]{0,9}$/.test(serial))throw Error('Enter the connected YubiKey serial.');
+ el('vault-name').value=name;el('fido-serial').value=serial;el('vault-classical').checked=classical;
+ return run(check=>enroll(method==='existing-piv'?'piv':'prf',check,method==='new-prf'));
+};

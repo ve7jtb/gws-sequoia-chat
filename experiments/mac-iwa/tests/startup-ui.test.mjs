@@ -13,9 +13,9 @@ function fixture(initial){
  const doc={getElementById(id){if(!nodes.has(id))nodes.set(id,node(id));return nodes.get(id);},
   createComment:()=>node('placeholder'),createElement:()=>node('option'),
   querySelector:selector=>doc.getElementById(selector.includes('account-settings')?'account-button':'inbox-button')};
- const win={vaultStartupState:()=>state,addEventListener:(e,f)=>events.set(e,f)};
+ const calls=[];const win={vaultStartupState:()=>state,addEventListener:(e,f)=>events.set(e,f),location:{assign:url=>calls.push(url)},createStartupVault:async value=>calls.push(value)};
  mountStartup(doc,win);
- return {el:doc.getElementById,set(s){state=s;events.get('iwa-vault-state')();}};
+ return {calls,el:doc.getElementById,set(s){state=s;events.get('iwa-vault-state')();}};
 }
 const locked={exists:true,unlocked:false,methods:[{id:'f',name:'Security key',type:'prf'},{id:'p',name:'PIV key',type:'piv'}],defaultId:'f',status:''};
 test('existing vault starts locked with FIDO/PIV selection and delegates only explicit unlock',()=>{
@@ -27,7 +27,7 @@ test('existing vault starts locked with FIDO/PIV selection and delegates only ex
 test('empty instance offers restore/create without automatic hardware writes',()=>{
  const f=fixture({exists:false,unlocked:false,methods:[]});assert.equal(f.el('startup-new').hidden,false);
  assert.equal(f.el('startup-login').hidden,true);f.el('startup-key').click();
- assert.equal(f.el('startup-setup').hidden,false);assert.equal(f.el('vault').parent.id,'startup-panel');
+ assert.equal(f.el('startup-setup').hidden,false);assert.equal(f.el('vault').hidden,true);
  assert.equal(f.el('vault-unlock').clicks,0);f.el('startup-back').click();assert.equal(f.el('startup-new').hidden,false);
 });
 test('unlock opens workspace once; updates preserve current view; relock hides workspace and preserves security controls',()=>{
@@ -50,4 +50,18 @@ test('account setup opens its tab and visibly focuses email without saving',()=>
  assert.deepEqual(f.el('account-email').scrolled,{block:'center',behavior:'instant'});
  assert.deepEqual(f.el('account-email').focused,{preventScroll:true});
  assert.equal(f.el('account-review').clicks,0);
+});
+
+test('restore uses fixed navigation and creation exposes no restore management panel',async()=>{
+ const f=fixture({exists:false,unlocked:false,methods:[]});
+ f.el('startup-restore').click();assert.deepEqual(f.calls,['/backup.html']);f.calls.length=0;
+ f.el('startup-create').click();assert.equal(f.el('vault').hidden,true);
+ assert.equal(f.el('startup-name-step').hidden,false);
+ f.el('startup-vault-name').value='New vault';f.el('startup-next').click();
+ assert.equal(f.el('startup-protection-step').hidden,false);
+ assert.equal(f.calls.length,0);
+ f.el('startup-serial').value='12345678';
+ await f.el('startup-existing-prf').onclick();
+ assert.equal(f.calls[0].method,'existing-prf');assert.equal(f.calls[0].serial,'12345678');
+ assert.equal(f.el('vault-import').clicks,0);assert.equal(f.el('vault-create-prf').clicks,0);
 });

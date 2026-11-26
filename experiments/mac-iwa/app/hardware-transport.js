@@ -32,7 +32,7 @@ function createHardwareTransport(deps = {}){
       const saved = storage?.getItem?.(STORAGE_KEY);
       if(VALID_MODES.has(saved)) return saved;
     }catch(_){}
-    return 'native';
+    return 'smartcard';
   }
 
   function setMode(mode){
