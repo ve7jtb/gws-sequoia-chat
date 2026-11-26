@@ -14,10 +14,15 @@ function command(cla,ins,p1,p2,data,extended=false,le=false){
 // GET RESPONSE and physical command chaining happen *below* SCP: authenticate
 // the assembled ciphertext, not each transport fragment. Limits apply before
 // concatenation, including certificate discovery on an unauthenticated card.
+// Record only public command headers and the transport stage. A status
+// received without a valid MAC remains untrusted diagnostic information.
+function scpStatusError(message,sw,ins,p1,p2,stage){
+ return Object.assign(Error(message),{scpCommand:{sw,ins,p1,p2,stage}});
+}
 async function raw(conn,cla,ins,p1,p2,data=empty){
- let r,off=0;while(data.length-off>255){r=split(await conn.transmit(command(cla|16,ins,p1,p2,data.slice(off,off+255))));if(r.sw!==0x9000||r.data.length)throw Error('SCP command chaining rejected');off+=255;}
+ let r,off=0;while(data.length-off>255){r=split(await conn.transmit(command(cla|16,ins,p1,p2,data.slice(off,off+255))));if(r.sw!==0x9000||r.data.length)throw scpStatusError('SCP command chaining rejected',r.sw,ins,p1,p2,'command fragment');off+=255;}
  r=split(await conn.transmit(command(cla,ins,p1,p2,data.slice(off),false,true)));let chunks=[],total=0;
- for(let n=0;n<512;n++){chunks.push(r.data);total+=r.data.length;if(total>65536)throw Error('SCP response too large');if((r.sw>>8)!==0x61)return {data:join(...chunks),sw:r.sw};r=split(await conn.transmit(new Uint8Array([0,0xc0,0,0,r.sw&255])));}
+ for(let n=0;n<512;n++){chunks.push(r.data);total+=r.data.length;if(total>65536)throw Error('SCP response too large');if((r.sw>>8)!==0x61)return {data:join(...chunks),sw:r.sw,stage:n?'GET RESPONSE':'final command'};r=split(await conn.transmit(new Uint8Array([0,0xc0,0,0,r.sw&255])));}
  throw Error('SCP response chaining limit');
 }
 async function ok(conn,...args){const r=await raw(conn,...args);if(r.sw!==0x9000)throw Error('Secure channel setup failed: SW='+r.sw.toString(16));return r.data;}
@@ -62,7 +67,7 @@ export class SecureMessaging{
    const r=await raw(this.conn,cla|4,ins,p1,p2,join(cipher,this.chain.slice(0,8)));
    // An unauthenticated status is never passed to an application as a valid
    // PIN rejection/success. Tear down on any corruption; no plaintext retry.
-   if(r.data.length<8)throw Error('Missing SCP response MAC (SW='+r.sw.toString(16)+')');
+   if(r.data.length<8)throw scpStatusError('Missing SCP response MAC (SW='+r.sw.toString(16)+')',r.sw,ins,p1,p2,r.stage);
    const ciphertext=r.data.slice(0,-8),tag=await cmac(this.rmac,join(this.chain,ciphertext,new Uint8Array([r.sw>>8,r.sw&255])));
    if(!same(tag.slice(0,8),r.data.slice(-8)))throw Error('SCP response MAC mismatch');
    let plain=empty;if(ciphertext.length){ivData[0]=128;const paddedResponse=await cbc(this.enc,await block(this.enc,ivData),ciphertext,true);let end=paddedResponse.length-1;while(end>=0&&paddedResponse[end]===0)end--;if(end<0||paddedResponse[end]!==128)throw Error('Invalid SCP response padding');plain=paddedResponse.slice(0,end);paddedResponse.fill(0);}

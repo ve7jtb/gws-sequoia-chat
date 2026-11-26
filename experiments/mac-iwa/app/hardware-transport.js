@@ -154,19 +154,23 @@ function createHardwareTransport(deps = {}){
     try{
       return await perform(async details=>{
         const pin = await prompt(details);
-        // Give the visible document a chance to paint. The timer also lets
-        // the operation proceed if Chromium throttles animation frames.
-        if(showing)await new Promise(resolve=>{
-          const timer = setTimeout(resolve,100);
-          requestAnimationFrame(()=>requestAnimationFrame(()=>{
-            clearTimeout(timer);
-            resolve();
-          }));
-        });
+        // Start the card's touch window only after the instruction has had
+        // time to appear. A timer works when animation frames are throttled.
+        if(showing)await new Promise(resolve=>setTimeout(resolve,500));
         if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
         await ctx.assertVault();
         return pin;
       });
+    }catch(error){
+      const command=error.scpCommand??error.cause?.scpCommand;
+      if(command?.sw!==0x6982)throw error;
+      const hex=n=>n.toString(16).padStart(2,'0').toUpperCase();
+      const name=command.ins===0x20?'PIV PIN verification':command.ins===0x87?'PIV private operation':'PIV card command';
+      const diagnostic=`INS=${hex(command.ins)} P1=${hex(command.p1)} P2=${hex(command.p2)}, ${command.stage}, SW=6982`;
+      const advice=command.ins===0x87&&command.stage==='final command'
+        ?' If the key flashed and you missed it, start a fresh unlock and touch it promptly.'
+        :' Start a fresh unlock to open a new secure card session.';
+      throw Error(`${name} stopped because the secure response could not be authenticated (${diagnostic}).${advice}`,{cause:error});
     }finally{
       if(showing){
         dialog.removeEventListener('cancel',preventCancel);
