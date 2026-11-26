@@ -2752,3 +2752,7 @@ Regression tests cover missing settings and persistence of both explicit modes.
 ### 0.20.30 — discover before enrolling
 
 New-vault FIDO setup checks for an existing credential under the selected RP and serial before offering creation. Only CTAP NO_CREDENTIALS plus explicit confirmation permits creation; cancellation, PIN and transport errors stop. After FIDO protection succeeds, a read-only PIV probe offers a second unlock method when matching existing wrapping material is available. No PIV provisioning is performed by this flow. Four new policy regressions pass.
+
+### 0.20.31 — silent FIDO discovery
+
+Existing-credential discovery first tries getAssertion with UP=false and UV=false and no PIN authentication. Protected/hidden credential responses fall through to authenticated discovery; they never authorize creation. Vault PRF evaluation still uses the existing UV-protected path. Three silent-discovery regressions passed; hardware confirmation remains pending.

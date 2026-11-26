@@ -1,3 +1,4 @@
+import {silentDiscovery} from './ctap-discovery.js';
 // Narrow CTAP2 client for the IWA's existing vault credentials. This is not a
 // general WebAuthn broker: no reset, credential management,
 // configuration, PIN changes, or arbitrary relying-party requests are exposed.
@@ -154,6 +155,14 @@ async function operate({serial,rpId,credentialId,salt,userId,name,preview},promp
   if(options.previewMode&&!(info.get(2)||[]).includes('previewSign'))throw Error('This key does not advertise previewSign.');
   if(!(info.get(6)||[]).includes(2)||!(info.get(2)||[]).includes('hmac-secret')||info.get(4)?.get('pinUvAuthToken')!==true||info.get(4)?.get('clientPin')!==true)throw Error('Requires hmac-secret and configured FIDO PIN with PIN/UV protocol 2.');
   if(creating&&!options.previewMode&&(!(info.get(2)||[]).includes('hmac-secret-mc')||info.get(4)?.get('rk')!==true))throw Error('Creation requires discoverable credentials and hmac-secret-mc; no credential was created.');
+  if(!creating&&!credentialId&&!options.previewMode){
+   // No PIN or touch for the first discoverable-credential lookup. The later
+   // UV PRF evaluation intentionally remains separate: hmac-secret has UV
+   // domains and a silent absence can mean a protected credential is hidden.
+   options.progress?.('Checking for an existing credential without PIN or touch…');
+   const discovered=await silentDiscovery(args=>command(conn,2,args,options),rpId,random(32));
+   if(discovered)credentialId=discovered;
+  }
   const retries=(await command(conn,6,map([1,2],[2,1]),options)).get(3);
   if(!Number.isInteger(retries)||retries<1)throw Error('FIDO PIN unavailable or blocked.');
   let k,token,pinBytes,pinHash,secret;
