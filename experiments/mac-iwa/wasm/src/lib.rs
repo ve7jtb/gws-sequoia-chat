@@ -214,6 +214,27 @@ pub fn decrypt_with_session_key(input:&str)->Result<String,JsValue>{
  run().map_err(|_|JsValue::from_str("Decryption request rejected"))
 }
 
+/// Verify one public ML-DSA-65 certificate signature and explicit context.
+#[wasm_bindgen]
+pub fn provisioning_verify_mldsa65(public: &[u8], msg: &[u8], context: &[u8], signature: &[u8]) -> bool {
+    use ml_dsa::{MlDsa65, Signature, VerifyingKey};
+    if msg.len() > 32768 || context.len() > 255 {
+        return false;
+    }
+    let Ok(public) = public.try_into() else { return false };
+    let Ok(signature) = signature.try_into() else { return false };
+    let Some(signature) = Signature::<MlDsa65>::decode(&signature) else { return false };
+    VerifyingKey::<MlDsa65>::decode(&public).verify_with_context(msg, context, &signature)
+}
+
+/// Derive the public portion of one independently generated certification seed.
+#[wasm_bindgen]
+pub fn provisioning_mldsa65_public(seed: &[u8]) -> Result<Vec<u8>, JsValue> {
+    use ml_dsa::{KeyExport, Keypair, MlDsa65, SigningKey};
+    let seed = seed.try_into().map_err(|_| JsValue::from_str("Invalid certification seed"))?;
+    Ok(SigningKey::<MlDsa65>::from_seed(&seed).verifying_key().to_bytes().to_vec())
+}
+
 /// Encapsulate to an authenticated native PIV ML-KEM-1024 public key.
 #[wasm_bindgen]
 pub fn vault_mlkem1024_encapsulate(input: &str) -> Result<String, JsValue> {

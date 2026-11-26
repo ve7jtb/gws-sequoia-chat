@@ -29,6 +29,12 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
    if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
+   if(row.hardware?.slots.length>=8)button('Export provisioned public certificates…',async()=>{
+    const current=await provider().get(row.id,account());
+    const bundle=await provider().provisioningCertificates(current);
+    if(!bundle)throw Error('Provisioned certificate set unavailable.');
+    download(JSON.stringify({...bundle,rfc9980:current.certificate}), 'level3-public-certificates.json','application/json');
+   });
    if(!row.hardware?.privateRemoved)button('Export encrypted identity…',async()=>{
     const current=await provider().get(row.id,account());clearExport();exportSelection={identity:current,generation,account:account()};
     $('software-export-details').textContent=current.name+' · OpenPGP v'+current.version+'\n'+current.fingerprint+'\n'+warning(current);
@@ -86,6 +92,55 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())throw Error('Software creation context changed; review the vault before continuing.');
    await changed();await refresh();say('Software identity created in the encrypted vault. Use Export encrypted identity to make a portable backup. No hardware keys or recipient trust changed.');
   }finally{importController=null;}
+ });
+ $('combined-level3-review').onclick=()=>run(async()=>{
+  const email=account(),name=$('software-name').value.trim(),started=generation;
+  if(!email||!name||name.length>80)throw Error('Set the account email and enter a name before provisioning.');
+  const mode=$('combined-level3-mode').value;
+  if(mode==='backup'&&!$('software-custody-confirm').checked)throw Error('Review the software key custody option first.');
+  const withNist=$('combined-level3-nist').checked;
+  const [{planLevel3Provisioning},{createPivImporter},{managementPrompt},{provisionLevel3},
+   {createCertificateVerifier,certificationPublicKey},{inspectIdentity}]=await Promise.all([
+   import('./piv-backup-plan.js'),import('./piv-import.js'),import('./piv-backup-ui.js'),
+   import('./provisioning/level3-transaction.js'),import('./provisioning/certificate-verifier.js'),
+   import('./identities/client.js'),
+  ]);
+  const ctx=provider(),piv=window.SequoiaSmartCardPiv;
+  const guard=()=>{
+   if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())
+    throw Error('The provisioning vault or account changed. Preserve the journal.');
+  };
+  const card=createPivImporter({promptManagement});
+  const verify=await createCertificateVerifier(piv);
+  say('Checking firmware and all 24 PIV slots. No writes yet.');
+  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,...await card.inspect()});
+  guard();
+  const journalKey='sequoia-level3-provisioning:'+plan.serial;
+  const existing=localStorage.getItem(journalKey);
+  if(existing&&JSON.parse(existing).state!=='prepared')
+   throw Error('This YubiKey has a provisioning journal. Review that run before trying again.');
+  const slots=plan.keys.map(key=>key.slot.toUpperCase()+' '+key.component+' (PIN always, touch '+key.touch+')').join('\n');
+  const custody=mode==='backup'?'The software keys remain in the encrypted vault. Export it with a separate recovery YubiKey.':
+   'The private keys will be generated on the card. Backups can recover the public certificates and slot mappings.';
+  if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody))return;
+  const review={email,name,plan};
+  await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,confirmed:true,guard,
+   promptPin:details=>window.hardwareTransport.promptPin(details),
+   journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
+   vault:{
+    async prepareBackup(review,plan){
+     review.identity=await ctx.create({name,profile:'level3',includeSmime:true},email);
+     guard();
+     const prepared=await ctx.prepareCombinedBackup(review.identity,plan,certificationPublicKey);
+     review.identity=prepared.identity;
+     return prepared.material;
+    },
+    saveCertificates:input=>ctx.saveProvisioned(input),
+   },
+  });
+  await changed();
+  await refresh();
+  say('Saved verified RFC 9980 and S/MIME certificates in the encrypted vault.');
  });
  // Per-identity export uses a new password only for the portable file. It does
  // not reveal the random password stored by the vault or overwrite that source.

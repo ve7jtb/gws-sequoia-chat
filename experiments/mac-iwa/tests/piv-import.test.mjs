@@ -1,13 +1,19 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';import {createCipheriv,createDecipheriv} from 'node:crypto';
-import {createPivImporter} from '../app/piv-import.js';import {planPivBackup,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
-function harness({occupied,wrongManagement=false,wrongPublic=false}={}){
+import {createPivImporter} from '../app/piv-import.js';import {planPivBackup,planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
+function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false}={}){
  const context={Uint8Array,TextEncoder,TextDecoder,atob,btoa,crypto};context.globalThis=context;vm.createContext(context);vm.runInContext(fs.readFileSync(new URL('../app/smartcard-piv.js',import.meta.url),'utf8'),context);
  const p=context.SequoiaSmartCardPiv,t=p.encodeBerTlv,join=(...a)=>new Uint8Array(a.flatMap(x=>[...x]));
  const imports=[],key=Buffer.alloc(24,5),plain=Buffer.alloc(16,9),slots=new Map();let prompt=0;
  const crypt=(v,decrypt=false)=>{const c=(decrypt?createDecipheriv:createCipheriv)('aes-192-ecb',key,null);c.setAutoPadding(false);return new Uint8Array(Buffer.concat([c.update(v),c.final()]));};
  const material=['86','87','9c','84','9d','85'].map((slot,i)=>{const algorithm=['ML-DSA-65','Ed25519','ML-DSA-65','Ed25519','ML-KEM-768','X25519'][i];return {slot,algorithm,seed:new Uint8Array(algorithm==='ML-KEM-768'?64:32).fill(i+1),publicKey:new Uint8Array(algorithm==='ML-DSA-65'?1952:algorithm==='ML-KEM-768'?1184:32).fill(i+10)};});
+ if(extended)material.push(...[
+  ['83','P-384',48,97],['82','P-384',48,97],['8a','ML-DSA-65',32,1952],['8b','P-384',48,97],
+ ].map(([slot,algorithm,seedSize,publicSize],i)=>({
+  slot,algorithm,seed:new Uint8Array(seedSize).fill(i+20),
+  publicKey:new Uint8Array(publicSize).fill(algorithm==='P-384'?4:i+25),
+ })));
  const inspect=async()=>({serial:'12345678',version:'6.0.0',slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
- const meta=id=>{const k=material.find(k=>parseInt(k.slot,16)===id),a=slots.get(id),publicKey=k.publicKey.slice();if(wrongPublic)publicKey[0]^=1;return join(t(1,new Uint8Array([a.alg])),t(2,new Uint8Array([3,a.touch])),t(4,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,publicKey)));};
+ const meta=id=>{const k=material.find(k=>parseInt(k.slot,16)===id),a=slots.get(id),publicKey=k.publicKey.slice();if(wrongPublic)publicKey[0]^=1;return join(t(1,new Uint8Array([a.alg])),t(2,new Uint8Array([3,a.touch])),t(3,new Uint8Array([a.origin])),t(4,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,publicKey)));};
  const stub={...p,inspectEmptyPivCandidate:inspect,withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
   if(a[1]===0xcb)return {sw:0x6a82};assert.equal(a[1],0xf7);
   if(a[3]===0x9b)return {sw:0x9000,data:t(1,new Uint8Array([10]))};
@@ -16,8 +22,17 @@ function harness({occupied,wrongManagement=false,wrongPublic=false}={}){
  },transmitCommandChained:async(c,ins,p1,p2,data)=>{
   if(ins===0x87){const inner=p.parseBerTlv(p.parseBerTlv(data).get(0x7c));if(!inner.get(0x80).length)return {sw:0x9000,data:t(0x7c,t(0x80,crypt(plain)))};
    assert.deepEqual([...inner.get(0x80)],[...plain]);const response=crypt(inner.get(0x81));if(wrongManagement)response[0]^=1;return {sw:0x9000,data:t(0x7c,t(0x82,response))};}
-  assert.equal(ins,0xfe);const fields=p.parseBerTlv(data),k=material.find(k=>parseInt(k.slot,16)===p2);assert.deepEqual([...fields.get(k.algorithm.startsWith('ML-DSA')?9:k.algorithm.startsWith('ML-KEM')?10:k.algorithm==='Ed25519'?7:8)],[...k.seed]);
-  assert.equal(fields.get(0xaa)[0],3);imports.push(p2);slots.set(p2,{alg:p1,touch:fields.get(0xab)[0]});return {sw:0x9000,data:new Uint8Array()};
+  if(ins===0x47){
+   assert.equal(p1,0);
+   const fields=p.parseBerTlv(p.parseBerTlv(data).get(0xac));
+   const k=material.find(k=>parseInt(k.slot,16)===p2);
+   assert.equal(fields.get(0xaa)[0],3);
+   imports.push(p2);
+   slots.set(p2,{alg:fields.get(0x80)[0],touch:fields.get(0xab)[0],origin:1});
+   return {sw:0x9000,data:t(0x7f49,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,k.publicKey))};
+  }
+  assert.equal(ins,0xfe);const fields=p.parseBerTlv(data),k=material.find(k=>parseInt(k.slot,16)===p2);assert.deepEqual([...fields.get(k.algorithm.startsWith('ML-DSA')?9:k.algorithm.startsWith('ML-KEM')?10:k.algorithm==='Ed25519'?7:k.algorithm==='P-384'?6:8)],[...k.seed]);
+  assert.equal(fields.get(0xaa)[0],3);imports.push(p2);slots.set(p2,{alg:p1,touch:fields.get(0xab)[0],origin:2});return {sw:0x9000,data:new Uint8Array()};
  }};
  globalThis.SequoiaSecureChannel={isRequired:()=>true};globalThis.SequoiaSmartCardPiv=stub;
  const importer=createPivImporter({promptManagement:async()=>{prompt++;return key.toString('hex');}});
@@ -43,3 +58,19 @@ test('vault lock during PIN entry prevents submission to card',async()=>{
  await assert.rejects(operateImportedKey('decapsulate',{}, {},{guard:async()=>{if(!unlocked)throw Error('Vault locked');}}),/Vault locked/);
  assert.equal(submitted,false);
 });
+
+for(const mode of ['backup','on-card']){
+ test(mode+' operates on ten reviewed slots and checks the origin and both P-384 roles',async()=>{
+  const h=harness({extended:true}),done=[];
+  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,
+   includeExperimentalNist:true,...await h.importer.inspect()});
+  const options={guard:async()=>{},completed:async slot=>done.push(slot)};
+  if(mode==='backup')await h.importer.importAll(plan,h.material,options);
+  else await h.importer.generateAll(plan,options);
+  const rows=await h.importer.readPublicKeys(plan);
+  assert.equal(rows.length,10);
+  assert.deepEqual(done,plan.keys.map(key=>key.slot));
+  assert(rows.every(key=>key.origin===(mode==='backup'?'imported':'generated')));
+  assert.deepEqual(rows.filter(key=>key.component==='P-384').map(key=>key.slot),['83','82','8b']);
+ });
+}

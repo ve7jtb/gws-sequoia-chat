@@ -483,10 +483,11 @@ async function readAll24Slots(conn){
 // A provisioning candidate must have no user keys AND no certificate objects.
 // Read errors are not emptiness. The second read occurs in the same PC/SC
 // transaction and detects concurrent changes before exposing a review plan.
-async function inspectEmptyPivCandidate(){
+async function inspectEmptyPivCandidate(serial=null){
   if(!global.SequoiaSecureChannel?.isRequired())throw Error('Provisioning discovery requires SCP11b.');
-  return withPivSession(null,async(conn,info)=>{
+  return withPivSession(serial,async(conn,info)=>{
     if(!info.serial)throw Error('The inserted key has no readable serial.');
+    const version=await provisioningFirmware(conn,info);
     async function inventory(){
       const rows=[];
       for(const slot of ALL_24_SLOTS){
@@ -500,7 +501,7 @@ async function inspectEmptyPivCandidate(){
     }
     const first=await inventory(),second=await inventory();
     if(JSON.stringify(first)!==JSON.stringify(second))throw Error('PIV slots changed during discovery.');
-    return {serial:info.serial,version:info.version,slots:first};
+    return {serial:info.serial,version,slots:first};
   });
 }
 
@@ -568,6 +569,50 @@ async function checkLiveKeys(conn, identity){
     if(meta.sw!==0x9000 || await sha256Hex(pivMetadataToSpki(parseSlotMetadata(meta.data)))!==key.publicKeySha256)
       throw Error('Live public key differs from authenticated manifest; PIN not submitted.');
   }
+}
+
+// Certificate provisioning supplies a reviewed key hash for each slot and a
+// precomputed protocol-specific digest or external mu. One PIN is reused
+// within the operation and the live public mapping is checked before VERIFY.
+async function signProvisioningComponents(identity,components,promptPin,guard){
+  const allowed={0xe3:{tag:0x88,input:64,output:3309},0xe0:{tag:0x81,input:64,output:64},
+    0x14:{tag:0x81,input:48,output:null}};
+  if(typeof guard!=='function'||!Array.isArray(components)||components.length<1||components.length>2||
+     new Set(components.map(c=>c.slot)).size!==components.length)
+    throw Error('Invalid reviewed certificate signing operation.');
+  for(const c of components){
+    const policy=allowed[c.algorithm];
+    if(!policy||!(c.input instanceof Uint8Array)||c.input.length!==policy.input||
+       !identity.slots.some(k=>k.slot===c.slot))throw Error('Invalid certificate signing component.');
+  }
+  return withPivSession(identity.serial,async conn=>{
+    await checkLiveKeys(conn,identity);
+    for(const c of components){
+      const r=await transmitChained(conn,buildGetMetadataApdu(parseInt(c.slot,16)));
+      if(r.sw!==0x9000||parseSlotMetadata(r.data).algorithmId!==c.algorithm)
+        throw Error('Certificate signature slot algorithm changed.');
+    }
+    await guard();
+    const detail=components.map(c=>c.slot.toUpperCase()+' ('+ALGO_NAMES[c.algorithm]+')').join(' + ');
+    const pin=await promptPin({title:'PIV PIN — Issue certificate',
+      detail:'YubiKey · SN# '+identity.serial+' · '+detail+'. Touch if requested.'});
+    await guard();
+    const results=[];
+    for(const c of components){
+      await guard();
+      await verifyPinOnConnection(conn,pin);
+      const policy=allowed[c.algorithm];
+      const response=await transmitCommandChained(conn,0x87,c.algorithm,parseInt(c.slot,16),
+        buildGeneralAuthenticateData(policy.tag,c.input));
+      if(response.sw!==0x9000)throw Error('Certificate signature failed in slot '+c.slot.toUpperCase()+' (SW='+response.sw.toString(16)+').');
+      const signature=parseGeneralAuthenticateResponse(response.data);
+      if(policy.output!==null?signature.length!==policy.output:
+         signature.length<8||signature.length>104||signature[0]!==0x30)
+        throw Error('Invalid certificate signature response.');
+      results.push(signature);
+    }
+    return results;
+  });
 }
 
 async function signDigestViaSmartCard(request, identity, promptPin){
@@ -859,6 +904,25 @@ async function level5VaultPrivateCommand(conn, algorithm, slot, tag, input){
   }
 }
 
+// Beta PIV GET VERSION can report 0.0.1. Read the version from the
+// authenticated Management applet and reselect PIV before any slot checks.
+async function provisioningFirmware(conn,info){
+  if(info.version!=='0.0.1')return info.version;
+  const select=await transmitChained(conn,new Uint8Array([0,0xa4,4,0,8,0xa0,0,0,5,0x27,0x47,0x11,0x17]));
+  if(select.sw!==0x9000)throw Error('Management application unavailable.');
+  const device=await readVaultDeviceInfo(async page=>{
+    const result=await transmitChained(conn,new Uint8Array([0,0x1d,page,0]));
+    if(result.sw!==0x9000)throw Error('Device information unavailable.');
+    return result.data;
+  },info.serial);
+  const piv=await transmitChained(conn,buildSelectPivApdu());
+  if(piv.sw!==0x9000)throw Error('Could not establish a new authenticated PIV session.');
+  const sameCard=await transmitChained(conn,new Uint8Array([0,0xf8,0,0]));
+  if(sameCard.sw!==0x9000||String(parseSerial(sameCard.data))!==String(info.serial))
+    throw Error('YubiKey changed during firmware discovery.');
+  return device.version;
+}
+
 // Level 5 vault wrapping uses the native PIV keys independently of OpenPGP.
 async function level5VaultKeys(conn){
   const meta = await transmitChained(conn, buildGetMetadataApdu(0x9d));
@@ -1033,6 +1097,7 @@ const api = {
   // Shared serial-checked transaction for switching to the FIDO applet.
   withPivSession,
   inspectEmptyPivCandidate,
+  provisioningFirmware,
   encodeBerLength,
   encodeBerTlv,
   buildSelectPivApdu,
@@ -1057,6 +1122,7 @@ const api = {
   listYubiKeys,
   hardwareAuditViaSmartCard,
   signDigestViaSmartCard,
+  signProvisioningComponents,
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,

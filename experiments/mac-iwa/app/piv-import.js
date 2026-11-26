@@ -1,8 +1,8 @@
-// Reviewed Level 3 software-key import over the existing SCP transport.
-// No reset, key generation, PIN change, or management-key change is exposed.
+// Reviewed Level 3 key import and generation over SCP11b.
+// PIV management authentication authorizes empty-slot writes only.
 import {USER_PIV_SLOTS} from './piv-backup-plan.js';
 import {smartcardSigningInput} from './identities/client.js';
-const algorithms={'ML-DSA-65':[0xe3,9,32,1952],'Ed25519':[0xe0,7,32,32],'ML-KEM-768':[0xe6,10,64,1184],'X25519':[0xe1,8,32,32]};
+const algorithms={'ML-DSA-65':[0xe3,9,32,1952],'Ed25519':[0xe0,7,32,32],'ML-KEM-768':[0xe6,10,64,1184],'X25519':[0xe1,8,32,32],'P-384':[0x14,6,48,97]};
 const join=(...parts)=>{const out=new Uint8Array(parts.reduce((n,b)=>n+b.length,0));let at=0;for(const b of parts){out.set(b,at);at+=b.length;}return out;};
 const equal=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const hash=async b=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -20,7 +20,7 @@ async function block(key,data,decrypt=false){
 export function createPivImporter({promptManagement}){
  const p=api(),tlv=p.encodeBerTlv;
  const tx=async(conn,ins,p1,p2,data)=>{const r=await p.transmitCommandChained(conn,ins,p1,p2,data);if(r.sw!==0x9000)throw Error('PIV command '+ins.toString(16)+' failed: SW='+r.sw.toString(16));return r.data;};
- async function inspect(){const s=await p.inspectEmptyPivCandidate();return {...s,supportedAlgorithms:s.version?.startsWith('6.')?Object.keys(algorithms):[]};}
+ async function inspect(serial){const s=await p.inspectEmptyPivCandidate(serial);return {...s,supportedAlgorithms:s.version?.startsWith('6.')?Object.keys(algorithms):[]};}
  async function emptyInside(conn,plan){
   for(const slot of USER_PIV_SLOTS){
    const id=parseInt(slot,16),r=await p.transmitChained(conn,p.buildGetMetadataApdu(id));
@@ -44,34 +44,99 @@ export function createPivImporter({promptManagement}){
    if(!response||!equal(response,expected))throw Error('Management authentication failed.');
   }finally{entered='';for(const b of [key,witness,plain,challenge,expected])b?.fill(0);}
  }
- async function metadata(conn,key){
-  const data=await p.transmitChained(conn,p.buildGetMetadataApdu(parseInt(key.slot,16)));if(data.sw!==0x9000)throw Error('Imported key metadata missing: '+key.slot);
-  const m=p.parseSlotMetadata(data.data),def=algorithms[key.algorithm];
-  let fields=p.parseBerTlv(m.publicKeyBytes);if(fields.has(0x7f49))fields=p.parseBerTlv(fields.get(0x7f49));
-  const raw=fields.get(0x86)||fields.get(0x87)||fields.get(0x88);
-  if(m.algorithmId!==def[0]||!raw||!equal(raw,key.publicKey)||m.pinPolicy!=='always'||m.touchPolicy!==(key.slot==='86'||key.slot==='9c'||key.slot==='9d'?'always':'never'))throw Error('Imported public key or PIN policy mismatch: '+key.slot);
-  return {slot:key.slot,publicKeySha256:await hash(p.pivMetadataToSpki(m))};
+ function readRaw(data){
+  let fields=p.parseBerTlv(data);
+  if(fields.has(0x7f49))fields=p.parseBerTlv(fields.get(0x7f49));
+  return fields.get(0x86)||fields.get(0x87)||fields.get(0x88);
  }
- let verifiedSlots=null;
- async function importAll(plan,material,{guard,completed,signal}){
-  verifiedSlots=null;
-  for(const target of plan.keys){const k=material.find(k=>k.slot===target.slot),d=algorithms[target.component];if(!k||k.algorithm!==target.component||k.seed.length!==d[2]||k.publicKey.length!==d[3])throw Error('Invalid source component');}
+ async function metadata(conn,target,expected,origin){
+  const data=await p.transmitChained(conn,p.buildGetMetadataApdu(parseInt(target.slot,16)));
+  if(data.sw!==0x9000)throw Error('Provisioned key metadata missing: '+target.slot);
+  const live=p.parseSlotMetadata(data.data),def=algorithms[target.component];
+  const raw=readRaw(live.publicKeyBytes);
+  if(live.algorithmId!==def[0]||raw?.length!==def[3]||!equal(raw,expected)||
+     live.pinPolicy!==target.pin||live.touchPolicy!==target.touch||live.origin!==origin)
+   throw Error('Public key, origin or policy mismatch in slot '+target.slot.toUpperCase()+'.');
+  return {slot:target.slot,component:target.component,pin:live.pinPolicy,touch:live.touchPolicy,
+   origin:live.origin,publicKey:raw,publicKeySha256:await hash(p.pivMetadataToSpki(live))};
+ }
+ let verified=null;
+ async function writeAll(plan,material,{guard,completed,attempting,signal},mode){
+  verified=null;
+  const expectedOperation=mode==='generate'?'generate-on-card':'import-existing-software-keys';
+  if(!plan||plan.operation!==expectedOperation||plan.profile!=='level3'||
+     !/^[1-9][0-9]{5,9}$/.test(plan.serial)||!Array.isArray(plan.keys)||
+     ![6,8,10].includes(plan.keys.length)||new Set(plan.keys.map(key=>key.slot)).size!==plan.keys.length||
+     plan.keys.some(key=>!USER_PIV_SLOTS.includes(key.slot)||!Object.hasOwn(algorithms,key.component)||
+      key.pin!=='always'||!['always','never'].includes(key.touch))||
+     typeof guard!=='function'||typeof completed!=='function')throw Error('A reviewed Level 3 slot plan is required.');
+  if(mode==='import'&&(!Array.isArray(material)||material.length!==plan.keys.length))
+   throw Error('Incomplete software key material.');
+  for(const target of mode==='import'?plan.keys:[]){
+   const k=material.find(k=>k.slot===target.slot),d=algorithms[target.component];
+   if(!k||k.algorithm!==target.component||!(k.seed instanceof Uint8Array)||k.seed.length!==d[2]||
+      !(k.publicKey instanceof Uint8Array)||k.publicKey.length!==d[3])throw Error('Invalid source component.');
+  }
   await p.withPivSession(plan.serial,async(conn,info)=>{
-   if(!info.version?.startsWith('6.'))throw Error('PQC YubiKey required.');
-   await emptyInside(conn,plan);await guard();await authenticate(conn,guard);await guard();
+   const version=await p.provisioningFirmware(conn,info);
+   if(!version?.startsWith('6.'))throw Error('PQC YubiKey required.');
+   // An unauthenticated absent-slot response throws here. It must never be
+   // treated as proof that overwriting a card slot is safe.
+   await emptyInside(conn,plan);
+   await guard();
+   await authenticate(conn,guard);
+   await guard();
    const matches=[];
    for(const target of plan.keys){
-    if(signal?.aborted)throw Error('Import cancelled; preserve journal and software keys.');await guard();
-    const k=material.find(k=>k.slot===target.slot),d=algorithms[k.algorithm];
-    const payload=join(tlv(d[1],k.seed),tlv(0xaa,new Uint8Array([3])),tlv(0xab,new Uint8Array([target.touch==='always'?2:1])));
-    try{await tx(conn,0xfe,d[0],parseInt(k.slot,16),payload);}finally{payload.fill(0);}
-    await completed(k.slot);matches.push(await metadata(conn,k));
+    if(signal?.aborted)throw Error('Provisioning cancelled; preserve the journal.');
+    await guard();
+    const definition=algorithms[target.component],slot=parseInt(target.slot,16);
+    const policy=[tlv(0xaa,new Uint8Array([3])),tlv(0xab,new Uint8Array([target.touch==='always'?2:1]))];
+    let expected;
+    await attempting?.(target.slot);
+    await guard();
+    if(mode==='generate'){
+     const response=await tx(conn,0x47,0,slot,tlv(0xac,join(tlv(0x80,new Uint8Array([definition[0]])),...policy)));
+     await completed(target.slot);
+     expected=readRaw(response);
+     if(expected?.length!==definition[3])throw Error('Generated public key response could not be verified.');
+    }else{
+     const key=material.find(key=>key.slot===target.slot);
+     const scalar=tlv(definition[1],key.seed);
+     const payload=join(scalar,...policy);
+     try{await tx(conn,0xfe,definition[0],slot,payload);}
+     finally{scalar.fill(0);payload.fill(0);}
+     await completed(target.slot);
+     expected=key.publicKey;
+    }
+    matches.push(await metadata(conn,target,expected,mode==='generate'?'generated':'imported'));
    }
-   verifiedSlots=matches;
+   verified={serial:plan.serial,operation:plan.operation,rows:matches};
   });
  }
- return {inspect,importAll,getSlots(){if(!verifiedSlots)throw Error('Imports have not been verified.');return structuredClone(verifiedSlots);}};
-}
+ async function readPublicKeys(plan){
+  if(!verified||plan.serial!==verified.serial||plan.operation!==verified.operation||plan.keys.length!==verified.rows.length)
+   throw Error('No matching verified provisioning readback.');
+  return p.withPivSession(plan.serial,async conn=>{
+   const current=[];
+   for(const target of plan.keys){
+    const saved=verified.rows.find(key=>key.slot===target.slot);
+    if(!saved)throw Error('Unreviewed slot.');
+    current.push(await metadata(conn,target,saved.publicKey,saved.origin));
+   }
+   return current;
+  });
+ }
+ return {
+  inspect,readPublicKeys,
+  importAll:(plan,material,options)=>writeAll(plan,material,options,'import'),
+  generateAll:(plan,options)=>writeAll(plan,[],options,'generate'),
+  getSlots(){
+   if(!verified)throw Error('Slot writes have not been verified.');
+   return verified.rows.map(({slot,publicKeySha256})=>({slot,publicKeySha256}));
+  },
+ };
+ }
 // Private operations for a vault-authenticated hardware binding use the same
 // live key hashes, serial checks and masked PIN dialog as existing card keys.
 export async function operateImportedKey(op,request,binding,{signal,guard}={}){

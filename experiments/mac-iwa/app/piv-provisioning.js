@@ -59,14 +59,14 @@ export function createProvisioning({card,vault,journal}){
    for(const key of material||[]){key.seed?.fill?.(0);key.privateKey?.fill?.(0);}material=null;active=false;
   }
  }
- async function removeSoftwareKeys(id,{confirmed=false}={}){
+ async function removeSoftwareKeys(id,{confirmed=false,recovery}={}){
   if(active||!confirmed||!verified||verified.id!==id)fail('Successful hardware verification and separate removal confirmation are required.');
   active=true;const done=verified;verified=null;
   try{
    await vault.assert(done.identity);await vault.assertHardware(done.hardware);
    // Atomic vault mutation must retain public certificates and slot mappings.
    // Earlier exported encrypted backups cannot be revoked by this operation.
-   await vault.removePrivate(done.identity,done.hardware);
+   await vault.removePrivate(done.identity,done.hardware,recovery);
    return {removed:true,serial:done.serial};
   }finally{active=false;}
  }

@@ -23,3 +23,26 @@ test('serial is detected rather than supplied in advance; subsequent review bind
 test('occupied unrelated slots reject even when every destination is empty',()=>{
  for(const slot of ['9a','9e','82','83','95']){const r=request();r.slots.find(s=>s.slot===slot).keyPresent=true;assert.throws(()=>planPivBackup(r),/not empty/);}
 });
+
+test('both modes plan the same optional NIST and S/MIME keys with RFC 9980 as default',async()=>{
+ const {planLevel3Provisioning}=await import('../app/piv-backup-plan.js');
+ const input=request();
+ input.supportedAlgorithms.push('P-384');
+ const options={...input,includeSmime:true,includeExperimentalNist:true};
+ const backup=planLevel3Provisioning(options);
+ const direct=planLevel3Provisioning({...options,mode:'on-card'});
+ assert.equal(backup.operation,'import-existing-software-keys');
+ assert.equal(direct.operation,'generate-on-card');
+ assert.deepEqual(backup.keys,direct.keys);
+ assert.equal(new Set(backup.keys.map(key=>key.slot)).size,10);
+ const cert=backup.certificates;
+ assert.equal(cert.defaultOpenPgp,'rfc9980');
+ assert.deepEqual(cert.experimentalNist.certification,['8a','8b']);
+ assert.deepEqual(cert.experimentalNist.signing,cert.smime.hybrid.signing);
+ assert.deepEqual(cert.experimentalNist.encryption,cert.smime.hybrid.encryption);
+ assert.deepEqual(cert.smime.pure,{signing:['9c'],encryption:['9d']});
+ assert(!cert.experimentalNist.certification.some(slot=>cert.rfc9980.certification.includes(slot)));
+ assert.equal(planPivBackup(options).keys.length,6);
+ input.slots.find(slot=>slot.slot==='8a').keyPresent=true;
+ assert.throws(()=>planLevel3Provisioning(options),/not empty/);
+});

@@ -36,6 +36,18 @@
 <option value="level5-v4-classical">V4 classical — P-521 signing / P-521 encryption</option>
 <option value="level3-v5-hybrid">V5 GnuPG compatibility — Ed25519 signing / LibrePGP ML-KEM-768 + X25519 encryption</option>
 </select><label><input id="software-hardware-entropy" type="checkbox" checked> Mix YubiKey entropy into key generation (one touch; Web Smart Card + SCP required)</label><p>Uses one temporary non-resident credential. A required FIDO PIN is discarded after this operation. Configure the expected key serial in FIDO enrollment settings. Uncheck to use OS randomness alone.</p><button id="software-create">Create in unlocked vault</button>
+<details id="combined-level3-setup">
+<summary>Provision an empty Level 3 YubiKey</summary>
+<label for="combined-level3-mode">Key custody</label>
+<select id="combined-level3-mode">
+ <option value="backup">Create an encrypted backup, then import to the YubiKey</option>
+ <option value="on-card">Generate directly on the YubiKey</option>
+</select>
+<label><input type="checkbox" id="combined-level3-nist"> Also issue experimental OpenPGP v6 NIST P-384</label>
+<p>RFC 9980 stays the default. This also issues pure and hybrid S/MIME certificates.</p>
+<button id="combined-level3-review">Review empty YubiKey…</button>
+</details>
+
 <h4>Import / restore software identity</h4><p>Restore a password-encrypted OpenPGP file, or an IWA v5 .pqidentity backup, without changing its fingerprint. A PQ Mail software .p12 containing the Level 5 OpenPGP keyset can also be imported; its existing certificates and private components are preserved. General S/MIME-only or hardware-reference .p12 files are not OpenPGP identities.</p>
 <label for="software-file">Encrypted OpenPGP file (256 KiB) or PQ Mail OpenPGP .p12 (1 MiB)</label><input id="software-file" type="file" accept=".pgp,.asc,.gpg,.pqidentity,.p12,.pfx">
 <label for="software-password">Existing file password</label><input id="software-password" type="password" autocomplete="off">

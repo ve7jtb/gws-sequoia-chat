@@ -13,7 +13,7 @@ async function harness(entropyCollector){
  await engine.create(wrapper,secret);let saved=structuredClone(engine.record),epoch=1,revision=saved.revision,changed=0,writes=0,calls=[],publicInfo=structuredClone(metadata),override;
  const state=()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]});
  const check=s=>{const now=state();assert(now.unlocked);assert.equal(s.vaultId,now.vaultId);assert.equal(s.revision,now.revision);assert.equal(s.epoch,now.epoch);assert.equal(saved.id,now.vaultId);assert.equal(saved.revision,now.revision);};
- const access={snapshot:state,assertCurrent:async s=>check(s),replaceItems:async(items,s,{signal})=>{check(s);if(signal.aborted)throw Error('cancelled');engine.data.items=items;await engine.save();check(s);if(signal.aborted)throw Error('cancelled');saved=structuredClone(engine.record);revision=saved.revision;writes++;}};
+ const access={verifyRecovery:async proof=>{if(!proof?.verified)throw Error('Recovery verification required');},snapshot:state,assertCurrent:async s=>check(s),replaceItems:async(items,s,{signal})=>{check(s);if(signal.aborted)throw Error('cancelled');engine.data.items=items;await engine.save();check(s);if(signal.aborted)throw Error('cancelled');saved=structuredClone(engine.record);revision=saved.revision;writes++;}};
  const cryptoCall=async(op,input,options)=>{
   calls.push(op);if(override)return override(op,input,options);
   assert.equal(input.encryptedSecret,encryptedSecret);if(input.password!==password)throw Error('Wrong password');
@@ -162,7 +162,9 @@ test('verified backup keeps public binding and removal survives a vault restart'
  const handle=await h.store.saveHardware(selected,{serial:'12345678'},{publicKeysMatch:true,signingVerified:true,decryptionVerified:true,slots});
  assert.equal(handle.identity.hardware.privateRemoved,false);
  assert(h.engine.data.items[0].encryptedSecret);await h.store.assertHardware(handle);
- await h.store.removePrivate(handle.identity,handle);
+ await assert.rejects(h.store.removePrivate(handle.identity,handle),/Recovery verification/);
+ assert.equal(h.engine.data.items[0].encryptedSecret,encryptedSecret);
+ await h.store.removePrivate(handle.identity,handle,{verified:true});
  assert.equal(h.engine.data.items[0].encryptedSecret,'');assert.equal(h.engine.data.items[0].password,'');
  assert.equal(h.engine.data.items[0].public.certificate,certificate);assert.equal(h.engine.data.items[0].hardware.serial,'12345678');
  h.lock();await h.unlock();const restored=await h.store.get(selected.id,account);
@@ -189,4 +191,19 @@ test('locking during entropy collection prevents generation and clears returned 
  h=await harness(async()=>{h.lock();return entropy;});
  await assert.rejects(h.store.create({name:'Cancelled entropy',profile:'level3',entropy:true},account));
  assert(entropy.every(v=>v===0));assert.equal(h.writes,0);assert.equal(h.calls.length,0);
+});
+
+test('optional Level 3 S/MIME secrets are persisted with OpenPGP inside the encrypted vault',async()=>{
+ const h=await harness();
+ h.setCrypto(async()=>({encryptedSecret,public:metadata}));
+ const selected=await h.store.create({name:'Level 3 combined',profile:'level3',includeSmime:true},account);
+ assert.equal(selected.smimeKeys,undefined);
+ const before=h.engine.data.items[0].smimeKeys;
+ assert.equal(before.signing.slot,'83');
+ assert.equal(before.agreement.slot,'82');
+ assert(!JSON.stringify(h.saved).includes(before.signing.privateKey));
+ assert(!JSON.stringify(h.saved).includes(before.agreement.privateKey));
+ h.lock();
+ await h.unlock();
+ assert.deepEqual(h.engine.data.items[0].smimeKeys,before);
 });

@@ -1,3 +1,4 @@
+import {generateLevel3SmimeKeys,sameLevel3SmimeKeys,generateNistCertificationKeys,level3SmimeImportScalar} from '../vault/level3-smime-keys.js';
 // Software identities are authenticated records INSIDE the existing encrypted
 // vault. This module never opens IndexedDB or a native connection itself. Its
 // injected access service owns encryption/CAS persistence and lock epochs.
@@ -32,12 +33,14 @@ async function publicMetadata(value){
  return {version,profile,signingAlgorithm,encryptionAlgorithm,pqSigning,pqEncryption,certificate:value.certificate,certificateHash:value.certificateHash,fingerprint:value.fingerprint,emails,signingFingerprint:value.signingFingerprint,recipientKey:value.recipientKey,algorithms:[...value.algorithms]};
 }
 function itemShape(item){
- if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
+ if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[]),...(item?.smimeKeys?['smimeKeys']:[]),...(item?.nistKeys?['nistKeys']:[]),...(item?.provisioned?['provisioned']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
  label(item.name);
+ if(item.smimeKeys&&(item.public?.profile!=='level3'||item.hardware?.privateRemoved||
+    !sameLevel3SmimeKeys(item.smimeKeys,item.smimeKeys)))throw Error('Invalid Level 3 S/MIME backup keys.');
  if(item.hardware){
-  const h=item.hardware;if(!fields(h,['serial','slots','verified','privateRemoved'])||!/^[1-9][0-9]{5,9}$/.test(h.serial)||h.verified!==true||typeof h.privateRemoved!=='boolean'||!Array.isArray(h.slots)||h.slots.length!==6)throw Error('Invalid hardware backup binding.');
-  for(const k of h.slots)if(!fields(k,['slot','publicKeySha256'])||!['86','87','9c','84','9d','85'].includes(k.slot)||!/^[a-f0-9]{64}$/.test(k.publicKeySha256))throw Error('Invalid hardware slot binding.');
-  if(new Set(h.slots.map(k=>k.slot)).size!==6)throw Error('Duplicate hardware slot binding.');
+  const h=item.hardware;if(!fields(h,['serial','slots','verified','privateRemoved'])||!/^[1-9][0-9]{5,9}$/.test(h.serial)||h.verified!==true||typeof h.privateRemoved!=='boolean'||!Array.isArray(h.slots)||![6,8,10].includes(h.slots.length))throw Error('Invalid hardware backup binding.');
+  for(const k of h.slots)if(!fields(k,['slot','publicKeySha256'])||!['86','87','9c','84','9d','85','82','83','8a','8b'].includes(k.slot)||!/^[a-f0-9]{64}$/.test(k.publicKeySha256))throw Error('Invalid hardware slot binding.');
+  if(new Set(h.slots.map(k=>k.slot)).size!==h.slots.length)throw Error('Duplicate hardware slot binding.');
   if(h.privateRemoved){if(item.encryptedSecret!==''||item.password!=='')throw Error('Removed private keys remain in record.');}else credentials(item.encryptedSecret,item.password);
  }else credentials(item.encryptedSecret,item.password);
  const old=['certificate','certificateHash','fingerprint','emails','signingFingerprint','recipientKey','algorithms'];
@@ -99,7 +102,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   * the vault. Compatibility views are independent entries with explicit labels;
   * the existing v6 default is not replaced by importing an older certificate.
   */
- async function savePrepared(source,name,password,account,s,signal){
+ async function savePrepared(source,name,password,account,s,signal,smimeKeys){
   if(!source||Object.keys(source).some(k=>!['encryptedSecret','public','compatibility'].includes(k)))throw Error('Invalid software creation response.');
   const variants=[source,...(source.compatibility||[])];if(!Array.isArray(source.compatibility||[])||variants.length>4)throw Error('Invalid software certificate set.');
   const existing=recordsIn(s),created=[];if(existing.length+variants.length>16)throw Error('Maximum 16 software identities per vault.');
@@ -110,12 +113,20 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    if([...existing,...created].some(x=>x.public.certificateHash===info.certificateHash))throw Error('This software identity is already saved in the vault.');
    created.push({id:crypto.randomUUID(),name:created.length?label(name.slice(0,72)+' · '+info.profile):name,kind:KIND,version:2,encryptedSecret:value.encryptedSecret,password,public:info});
   }
+  // Keep both P-384 keys in the same authenticated vault commit as the
+  // OpenPGP identity. The portable OpenPGP export remains format-specific.
+  if(smimeKeys){
+   created[0].smimeKeys=smimeKeys;
+   itemShape(created[0]);
+  }
   if(signal.aborted)throw Error('Software creation cancelled.');await access.replaceItems([...s.items,...created],marker(s),{signal});grants.clear();changed();return get('software:'+created[0].id,account);
  }
  async function createIdentity(value,account,{signal}={}){
   if(mutation)throw Error('Another software identity change is in progress.');mutation=true;
   try{return await withController(signal,async signal=>{
-   if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
+   if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[]),...(value?.includeSmime!==undefined?['includeSmime']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
+   if(value.includeSmime!==undefined&&(typeof value.includeSmime!=='boolean'||
+      (value.includeSmime&&value.profile!=='level3')))throw Error('S/MIME backup requires the Level 3 profile.');
    if(value.entropy!==undefined&&typeof value.entropy!=='boolean')throw Error('Invalid entropy option');
    const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result,entropy;const input={profile:value.profile,email:account,name,password};
    try{
@@ -126,7 +137,12 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
      input.hardwareEntropy=btoa(String.fromCharCode(...entropy));
     }
     if(signal.aborted)throw Error('Software creation cancelled');
-    result=await cryptoCall('generate',input,{signal});await check(s);if(result.public?.profile&&result.public.profile!==value.profile)throw Error('Generated profile does not match the request.');return await savePrepared(result,name,password,account,s,signal);}
+    result=await cryptoCall('generate',input,{signal});await check(s);
+    if(result.public?.profile&&result.public.profile!==value.profile)throw Error('Generated profile does not match the request.');
+    const smimeKeys=value.includeSmime?await generateLevel3SmimeKeys():undefined;
+    await check(s);
+    return await savePrepared(result,name,password,account,s,signal,smimeKeys);
+   }
    finally{entropy?.fill(0);input.hardwareEntropy='';input.password='';password='';if(result){result.encryptedSecret='';if(result.compatibility)for(const child of result.compatibility)child.encryptedSecret='';}}
   });}finally{mutation=false;}
  }
@@ -217,6 +233,75 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    }catch(error){for(const key of out)key.seed.fill(0);throw error;}finally{input.password='';input.encryptedSecret='';for(const k of result?.keys||[])k.seed='';}
   });
  }
+ async function prepareCombinedBackup(selected,plan,publicFromSeed){
+  await assert(selected);
+  const state=current();
+  const item=recordsIn(state).find(row=>row.id===selected.identityId);
+  if(!item||item.hardware||!item.smimeKeys)throw Error('Create a fresh Level 3 identity with the S/MIME keys first.');
+  const nist=plan.certificates.experimentalNist;
+  const nistKeys=nist?(item.nistKeys||await generateNistCertificationKeys(publicFromSeed)):undefined;
+  await assert(selected);
+  let bound=selected;
+  if(nistKeys&&!item.nistKeys){
+   await access.replaceItems(state.items.map(row=>row===item?{...item,nistKeys}:row),
+    marker(state),{signal:new AbortController().signal});
+   bound=await get(selected.id,selected.email);
+  }
+  const original=new Set(['86','87','9c','84','9d','85']);
+  const out=await backupMaterial(bound,{...plan,keys:plan.keys.filter(key=>original.has(key.slot))});
+  try{
+   for(const [purpose,key] of Object.entries(item.smimeKeys)){
+    const pub=bytes(key.publicKey).slice(-97);
+    out.push({slot:key.slot,algorithm:'P-384',seed:await level3SmimeImportScalar(purpose,key),publicKey:pub});
+   }
+   if(nistKeys){
+    const {ec,pq}=nistKeys;
+    out.push({slot:pq.slot,algorithm:'ML-DSA-65',seed:bytes(pq.privateKey),publicKey:bytes(pq.publicKey)});
+    out.push({slot:ec.slot,algorithm:'P-384',seed:await level3SmimeImportScalar('certification',ec),publicKey:bytes(ec.publicKey).slice(-97)});
+   }
+   await assert(bound);
+   if(out.length!==plan.keys.length)throw Error('Incomplete combined backup material.');
+   return {material:out,identity:bound};
+  }catch(error){for(const row of out)row.seed.fill(0);throw error;}
+ }
+
+ async function provisioningCertificates(selected){
+  await assert(selected);
+  const state=current();await check(state);
+  const item=recordsIn(state).find(row=>row.id===selected.identityId);
+  return structuredClone(item?.provisioned||null);
+ }
+ async function saveProvisioned({review,plan,readback,certificates,guard}){
+  await guard();
+  const state=current();await check(state);
+  const encoded=btoa(String.fromCharCode(...certificates.rfc9980));
+  const details=await publicMetadata(await inspectPublic(encoded));
+  if(details.profile!=='level3'||!details.emails.includes(review.email))throw Error('Provisioned RFC 9980 identity mismatch.');
+  const hardware={serial:plan.serial,slots:readback.map(({slot,publicKeySha256})=>({slot,publicKeySha256})),
+   verified:true,privateRemoved:plan.operation==='generate-on-card'};
+  const encode=value=>btoa(String.fromCharCode(...value));
+  const provisioned={defaultOpenPgp:'rfc9980',
+   ...(certificates.smime?{smime:Object.fromEntries(Object.entries(certificates.smime).map(([kind,pair])=>
+    [kind,{signing:encode(pair.signing),encryption:encode(pair.encryption)}]))}:{}),
+   ...(certificates.experimentalNist?{experimentalNist:encode(certificates.experimentalNist.certificate)}:{}),
+  };
+  let items;
+  if(hardware.privateRemoved){
+   const item={id:crypto.randomUUID(),kind:KIND,name:label(review.name),version:2,
+    encryptedSecret:'',password:'',public:details,hardware,provisioned};
+   itemShape(item);items=[...state.items,item];
+  }else{
+   const previous=recordsIn(state).find(item=>item.id===review.identity.identityId);
+   if(!previous||previous.hardware||!previous.smimeKeys||details.certificateHash!==previous.public.certificateHash)
+    throw Error('Imported certificate or encrypted backup changed.');
+   const item={...previous,hardware,provisioned};
+   itemShape(item);items=state.items.map(row=>row===previous?item:row);
+  }
+  await guard();
+  await access.replaceItems(items,marker(state),{signal:new AbortController().signal});
+  grants.clear();changed();
+ }
+
  async function saveHardware(selected,plan,proof){
   await assert(selected);const s=current();await check(s);
   if(proof.publicKeysMatch!==true||proof.signingVerified!==true||proof.decryptionVerified!==true||!Array.isArray(proof.slots))throw Error('Verified hardware proof required.');
@@ -226,14 +311,18 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   return {identity:await get(selected.id,selected.email)};
  }
  async function assertHardware(handle){const selected=handle?.identity;await assert(selected);if(!selected.hardware?.verified)throw Error('No verified hardware identity.');}
- async function removePrivate(selected,handle){
+ async function removePrivate(selected,handle,recovery){
   await assertHardware(handle);if(!same(selected,handle.identity))throw Error('Hardware removal review changed.');
   const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);
+  if(item.smimeKeys||item.nistKeys)throw Error('Keep the software copy until the S/MIME hardware keys and certificates are verified.');
+  if(typeof access.verifyRecovery!=='function')throw Error('Independent recovery verification is required.');
+  await access.verifyRecovery(recovery,item,selected.hardware.serial);
+  await check(s);
   // This atomic replacement retains the certificate and card mapping. Old
   // exported backups are independent and may still contain the secret packets.
   const replacement={...item,encryptedSecret:'',password:'',hardware:{...item.hardware,privateRemoved:true}};
   itemShape(replacement);await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
  }
- return {list,get,assert,records,backupMaterial,saveHardware,assertHardware,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
+ return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,saveProvisioned,saveHardware,assertHardware,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
   cancel(){grants.clear();for(const controller of active)controller.abort();}};
 }

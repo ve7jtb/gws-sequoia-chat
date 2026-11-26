@@ -1,3 +1,4 @@
+import {verifyProvisioningRecovery} from './vault/provisioning-recovery.js';
 import {wrapLevel5,openLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
 import {discoverOrCreate,hasMatchingPiv} from './vault/enrollment.js';
@@ -42,6 +43,16 @@ const softwareIdentities=createSoftwareIdentityStore({
    if(!sameVault(expected))throw Error('Software identity vault changed.');const latest=await load();
    if(!sameVault(expected))throw Error('Software identity vault locked or changed.');
    if(!latest||latest.id!==expected.vaultId||latest.revision!==expected.revision){lock();throw Error('Vault changed in another window; unlock the latest copy.');}
+  },
+  async verifyRecovery(recovery,item,targetSerial){
+   if(!engine.unlocked||!record)throw Error('Unlock the vault first.');
+   try{
+    await verifyProvisioningRecovery({...recovery,item,targetSerial,sourceRecord:record,assertPrf:prf});
+    window.directFido?.complete('Recovery backup verified with the separate YubiKey.');
+   }catch(error){
+    window.directFido?.complete(error.message,false);
+    throw error;
+   }
   },
   async replaceItems(items,expected,{signal}={}){
    if(active)throw Error('Finish the current vault operation first.');active=true;
