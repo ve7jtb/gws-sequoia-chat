@@ -2756,3 +2756,7 @@ New-vault FIDO setup checks for an existing credential under the selected RP and
 ### 0.20.31 — silent FIDO discovery
 
 Existing-credential discovery first tries getAssertion with UP=false and UV=false and no PIN authentication. Protected/hidden credential responses fall through to authenticated discovery; they never authorize creation. Vault PRF evaluation still uses the existing UV-protected path. Three silent-discovery regressions passed; hardware confirmation remains pending.
+
+### 0.20.32 — bounded PIV vault probe
+
+Vault wrapping-key discovery stops at the first usable authenticated EC key rather than continuing through unrelated empty slots. Explicit slot selection reads only that slot. This avoids the observed beta empty-slot un-MACed response without relaxing SCP authentication. Thirteen probe/SCP regressions pass; hardware enrollment verification is pending.

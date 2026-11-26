@@ -764,9 +764,15 @@ async function readPublicSnapshotViaSmartCard(serial, includeBundle){
   });
 }
 
-async function readClassicalVaultSlots(conn, serial){
+async function readClassicalVaultSlots(conn, serial, preferredSlot=null){
   const found = [];
-  for(const slot of VAULT_ECDH_SLOTS){
+  // Enrollment needs one wrapping key, not a full inventory. Once a valid
+  // key is found, do not probe unrelated empty slots: some beta firmware
+  // returns an un-MACed 6A88 for those, which correctly closes SCP.
+  // An explicit slot restricts the probe instead of silently selecting another.
+  const candidates=preferredSlot?VAULT_ECDH_SLOTS.filter(s=>s.hex===preferredSlot):VAULT_ECDH_SLOTS;
+  if(preferredSlot&&!candidates.length)throw Error('Unsupported PIV vault slot');
+  for(const slot of candidates){
     const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
     if(meta.sw !== 0x9000) continue;
     const parsed = parseSlotMetadata(meta.data);
@@ -782,6 +788,7 @@ async function readClassicalVaultSlots(conn, serial){
         public: toBase64(spki),
         fingerprint,
       });
+      break; // The authenticated wrapping key is sufficient; preserve SCP.
     }catch(_){
       // Skip slots whose metadata public key cannot be parsed as P-256/P-384.
     }
@@ -791,8 +798,8 @@ async function readClassicalVaultSlots(conn, serial){
 
 async function readVaultMaterialViaSmartCard(options = {}){
   return withPivSession(options.serial || null, async(conn, info)=>{
-    const classicalSlots = await readClassicalVaultSlots(conn, info.serial);
     const preferredSlot = options.slot ? String(options.slot).toLowerCase() : null;
+    const classicalSlots = await readClassicalVaultSlots(conn, info.serial, preferredSlot);
     const classical = preferredSlot
       ? (classicalSlots.find(s=>s.slot === preferredSlot) || null)
       : (classicalSlots[0] || null);
