@@ -50,7 +50,7 @@ function promptPin({serial,rpId,retries,purpose},signal,creating=false){
  el('fido-pin-ok').textContent=creating?'Create credential':'Authorize vault access';
  el('fido-pin-entry').hidden=false;el('fido-pin-ok').hidden=false;el('fido-pin-cancel').hidden=false;
  el('fido-pin-wait').hidden=true;el('fido-pin-done').hidden=true;el('fido-pin-progress').textContent='';
- el('fido-pin-detail').textContent=`Key ${serial} · RP ${rpId} · ${retries} FIDO PIN tries remaining. This is the FIDO PIN, not the PIV PIN. Touch the key after submitting.`;
+ el('fido-pin-detail').textContent=`YubiKey · SN# ${serial} · RP ${rpId} · ${retries} FIDO PIN tries remaining. This is the FIDO PIN, not the PIV PIN. Touch the key after submitting.`;
  return new Promise((resolve,reject)=>{
   let settled=false;
   const finish=(error,pin)=>{if(settled)return;settled=true;input.removeEventListener('keydown',onKeyDown);input.value='';if(error)dialog.close();else stage('Touch your YubiKey','PIN submitted. Keep the key connected and touch it when it flashes.');el('fido-pin-ok').removeEventListener('click',ok);el('fido-pin-cancel').removeEventListener('click',abort);dialog.removeEventListener('cancel',abort);signal.removeEventListener('abort',abort);if(!error){el('fido-pin-cancel').onclick=()=>{cancel();stage('Cancelling','Waiting for the card operation to stop…');};dialog.oncancel=e=>{e.preventDefault();cancel();};}error?reject(error):resolve(pin);};
@@ -78,7 +78,7 @@ window.directFido=Object.freeze({
    const abort=()=>active?.abort();signal?.addEventListener('abort',abort,{once:true});
    try{
     if(signal?.aborted)throw Error('Entropy collection cancelled');await guard();
-    el('fido-pin-detail').textContent='Key '+serial+' · One temporary non-resident credential. Existing credentials and PIV keys are unchanged.';
+    el('fido-pin-detail').textContent='YubiKey · SN# '+serial+' · One temporary non-resident credential. Existing credentials and PIV keys are unchanged.';
     if(!el('fido-pin-dialog').open)el('fido-pin-dialog').showModal();
     stage('Collecting key-generation entropy','Preparing authenticator touch…');
     el('fido-pin-cancel').onclick=abort;el('fido-pin-dialog').oncancel=e=>{e.preventDefault();abort();};

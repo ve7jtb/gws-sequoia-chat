@@ -590,7 +590,7 @@ async function signDigestViaSmartCard(request, identity, promptPin){
     // Authenticate the device/channel and live key before asking for its PIN.
     const pin = await promptPin({
       title: 'PIV PIN — Sign message',
-      detail: `YubiKey ${serial || '(connected)'} · slots 9C (ML-DSA-65) + 84 (Ed25519). Touch if requested.`,
+      detail: `YubiKey · SN# ${serial || '(connected)'} · slots 9C (ML-DSA-65) + 84 (Ed25519). Touch if requested.`,
     });
 
     await verifyPinOnConnection(conn, pin);
@@ -637,7 +637,7 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
     // Authenticate the device/channel and live key before asking for its PIN.
     const pin = await promptPin({
       title: 'PIV PIN — Decrypt',
-      detail: `YubiKey ${serial || '(connected)'} · slots 9D (ML-KEM-768) + 85 (X25519). Touch if requested.`,
+      detail: `YubiKey · SN# ${serial || '(connected)'} · slots 9D (ML-KEM-768) + 85 (X25519). Touch if requested.`,
     });
 
     await verifyPinOnConnection(conn, pin);
@@ -856,7 +856,7 @@ async function ecdhViaSmartCard(request, slotHex, serial, promptPin){
     // Authenticate the device/channel and live key before asking for its PIN.
     const pin = await promptPin({
       title: 'PIV PIN — Unlock vault (ECDH)',
-      detail: `YubiKey ${targetSerial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
+      detail: `YubiKey · SN# ${targetSerial || '(connected)'} · slot ${slotId.toString(16).toUpperCase()} (${algId === 0x11 ? 'ECDH-P256' : 'ECDH-P384'}).`,
     });
 
     await verifyPinOnConnection(conn, pin);
