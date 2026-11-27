@@ -15,6 +15,12 @@ filesystem, network or persistence API.
 - `inspect(json)` is the strict browser request wrapper. Its only accepted
   field is the canonical base64 `bundle`; callers cannot inject authority flags.
 
+The parser accepts the three-key RFC 9980 profile created by backup-first
+provisioning. The optional experimental NIST certificate is carried as opaque,
+signed data in a noncritical `PQMAILB3` extension. The B3 envelope may expand
+to 80 KiB, above the base format's 64 KiB limit, to fit the complete additional
+certificate. The stored single-bank limit remains 64 KiB.
+
 Native authorization reads the committed bank itself, calls `verify`, compares
 all expected SPKIs against live card reads, and rereads the same objects, keys
 and serial before adding live-match evidence. Sharing code does not share a

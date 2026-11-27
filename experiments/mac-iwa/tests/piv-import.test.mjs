@@ -13,12 +13,13 @@ test('packaged WASM matches the AES-192 single-block reference in both direction
  assert.deepEqual(Buffer.from(provisioning_aes192_block(key,cipher,true)),clear);
  assert.throws(()=>provisioning_aes192_block(key.subarray(1),clear,false),/Invalid PIV AES-192 challenge/);
 });
-function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,ssh=false,factoryFlag,selectFactory=false}={}){
+function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,ssh=false,factoryFlag,selectFactory=false,occupiedObject=false,badObject=false}={}){
  const context={Uint8Array,TextEncoder,TextDecoder,atob,btoa,crypto};context.globalThis=context;vm.createContext(context);vm.runInContext(fs.readFileSync(new URL('../app/smartcard-piv.js',import.meta.url),'utf8'),context);
  const p=context.SequoiaSmartCardPiv,t=p.encodeBerTlv,join=(...a)=>new Uint8Array(a.flatMap(x=>[...x]));
  const imports=[],plain=Buffer.alloc(16,9),slots=new Map();
  const key=selectFactory?Buffer.from([1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8]):Buffer.alloc(24,5);
- let prompt=0,offeredFactory;
+ let prompt=0,offeredFactory,sessions=0;const objects=new Map(),writes=[];
+ if(occupiedObject)objects.set(0x5f5000,Uint8Array.of(1));
  const crypt=(v,decrypt=false)=>{const c=(decrypt?createDecipheriv:createCipheriv)('aes-192-ecb',key,null);c.setAutoPadding(false);return new Uint8Array(Buffer.concat([c.update(v),c.final()]));};
  const material=['86','87','9c','84','9d','85'].map((slot,i)=>{const algorithm=['ML-DSA-65','Ed25519','ML-DSA-65','Ed25519','ML-KEM-768','X25519'][i];return {slot,algorithm,seed:new Uint8Array(algorithm==='ML-KEM-768'?64:32).fill(i+1),publicKey:new Uint8Array(algorithm==='ML-DSA-65'?1952:algorithm==='ML-KEM-768'?1184:32).fill(i+10)};});
  if(extended)material.push(...[
@@ -30,12 +31,17 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
  if(ssh)material.push({slot:'8c',algorithm:'ML-DSA-44',seed:new Uint8Array(32).fill(61),publicKey:new Uint8Array(1312).fill(62)},{slot:'8d',algorithm:'Ed25519',seed:new Uint8Array(32).fill(63),publicKey:new Uint8Array(32).fill(64)});
  const inspect=async()=>({serial:'12345678',version:'6.0.0',slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
  const meta=id=>{const k=material.find(k=>parseInt(k.slot,16)===id),a=slots.get(id),publicKey=k.publicKey.slice();if(wrongPublic)publicKey[0]^=1;return join(t(1,new Uint8Array([a.alg])),t(2,new Uint8Array([3,a.touch])),t(3,new Uint8Array([a.origin])),t(4,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,publicKey)));};
- const stub={...p,inspectEmptyPivCandidate:inspect,
+ const stub={...p,inspectEmptyPivCandidate:inspect,readPivDataObject:async(_conn,tag)=>objects.get(tag)??null,
   readProvisioningInventory:async()=>{const inventory=await inspect();
    if(occupied)inventory.slots.find(row=>row.slot===occupied.toString(16)).keyPresent=true;
    return inventory;
-  },withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
-  if(a[1]===0xcb)return {sw:0x6a82};assert.equal(a[1],0xf7);
+  },withPivSession:async(serial,fn)=>{assert.equal(serial,'12345678');sessions++;return fn({}, {serial,version:'6.0.0'});},transmitChained:async(c,a)=>{
+  if(a[1]===0xcb){
+   const tag=(a[7]<<16)|(a[8]<<8)|a[9];
+   const value=objects.get(tag);
+   return value?{sw:0x9000,data:t(0x53,value)}:{sw:0x6a82};
+  }
+  assert.equal(a[1],0xf7);
   if(a[3]===0x9b)return {sw:0x9000,data:join(t(1,new Uint8Array([10])),
    ...(factoryFlag===undefined?[]:[t(5,Uint8Array.of(factoryFlag))]))};
   if(a[3]===occupied)return {sw:0x9000,data:new Uint8Array()};
@@ -52,6 +58,16 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
    slots.set(p2,{alg:fields.get(0x80)[0],touch:fields.get(0xab)[0],origin:1});
    return {sw:0x9000,data:t(0x7f49,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,k.publicKey))};
   }
+  if(ins===0xdb){
+   assert.equal(p1,0x3f);assert.equal(p2,0xff);
+   assert.equal(imports.length,material.length);
+   const fields=p.parseBerTlv(data),selector=fields.get(0x5c);
+   const tag=(selector[0]<<16)|(selector[1]<<8)|selector[2];
+   writes.push(tag);const value=fields.get(0x53).slice();
+   if(badObject)value[0]^=1;
+   objects.set(tag,value);
+   return {sw:0x9000,data:new Uint8Array()};
+  }
   assert.equal(ins,0xfe);const fields=p.parseBerTlv(data),k=material.find(k=>parseInt(k.slot,16)===p2);assert.deepEqual([...fields.get(k.algorithm.startsWith('ML-DSA')?9:k.algorithm.startsWith('ML-KEM')?10:k.algorithm==='Ed25519'?7:k.algorithm==='P-384'?6:8)],[...k.seed]);
   assert.equal(fields.get(0xaa)[0],3);imports.push(p2);slots.set(p2,{alg:p1,touch:fields.get(0xab)[0],origin:2});return {sw:0x9000,data:new Uint8Array()};
  }};
@@ -60,7 +76,7 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
   assert.equal(length,24);prompt++;offeredFactory=allowFactory;
   return selectFactory?FACTORY_MANAGEMENT_KEY:key.toString('hex');
  }});
- return {importer,material,imports,get offeredFactory(){return offeredFactory;},get prompt(){return prompt;},async plan(){return planPivBackup({profile:'level3',...await importer.inspect()});}};
+ return {importer,material,imports,writes,get sessions(){return sessions;},get offeredFactory(){return offeredFactory;},get prompt(){return prompt;},async plan(){return planPivBackup({profile:'level3',...await importer.inspect()});}};
 }
 test('import authenticates AES management key, writes six exact seeds, matches public keys and policies',async()=>{
  const h=harness(),plan=await h.plan(),done=[];await h.importer.importAll(plan,h.material,{guard:async()=>{},completed:async slot=>done.push(slot)});
@@ -126,4 +142,27 @@ for(const mode of ['backup','on-card'])test('SSH pair '+mode+' preserves distinc
  assert.equal(rows.find(k=>k.slot==='8d').touch,'never');
  assert(rows.every(k=>k.pin==='always'));
  assert.equal(plan.certificates.smime.pure.signing[0],'9c');
+});
+
+test('backup commits the manifest last in the same authenticated key-import session',async()=>{
+ for(const flags of [{},{occupiedObject:true},{badObject:true}]){
+  const h=harness(flags),plan=await h.plan(),attempted=[],readBack=[];
+  const bundle=new Uint8Array(4097);bundle.set(new TextEncoder().encode('PQMZIP01'));
+  const run=h.importer.importAll(plan,h.material,{bundle,guard:async()=>{},completed:async()=>{},
+   bundleAttempting:async tag=>attempted.push(tag),bundleCompleted:async tag=>readBack.push(tag)});
+  if(flags.occupiedObject){
+   await assert.rejects(run,/already exists/);
+   assert.deepEqual(h.imports,[]);assert.deepEqual(h.writes,[]);assert.equal(h.prompt,0);
+  }else if(flags.badObject){
+   await assert.rejects(run,/readback did not match/);
+   assert.deepEqual(attempted,[0x5f5001]);assert.deepEqual(readBack,[]);
+   assert.throws(()=>h.importer.getSlots());
+  }else{
+   assert.equal((await run).length,6);
+   assert.deepEqual(h.writes,[0x5f5001,0x5f5002,0x5f5003,0x5f5000]);
+   assert.deepEqual(attempted,h.writes);assert.deepEqual(readBack,h.writes);
+   assert.equal(h.prompt,1);
+  }
+  assert.equal(h.sessions,1);
+ }
 });

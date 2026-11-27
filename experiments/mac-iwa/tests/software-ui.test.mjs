@@ -155,3 +155,43 @@ test('SSH identity offers public export and another-card provisioning without ex
  const text=f.get('software-identities').children.flatMap(n=>n.children).map(n=>n.textContent).join('\n');
  assert.match(text,/12345678, 87654321/);
 });
+
+test('only a fresh empty inventory can supersede a completed backup journal',async t=>{
+ const f=fixture(t);
+ const {default:fs}=await import('node:fs');
+ const {default:init}=await import('../app/wasm/sequoia_iwa_verify.js');
+ const {USER_PIV_SLOTS}=await import('../app/piv-backup-plan.js');
+ await init({module_or_path:fs.readFileSync(new URL('../app/wasm/sequoia_iwa_verify_bg.wasm',import.meta.url))});
+ const saved={serial:'12345678',state:'saved'};
+ let occupied=true,review;
+ t.mock.method(globalThis,'confirm',message=>{review=message;return false;});
+ const previous={SequoiaSmartCardPiv:globalThis.SequoiaSmartCardPiv,SequoiaSecureChannel:globalThis.SequoiaSecureChannel};
+ const storage=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
+ t.after(()=>{
+  for(const [key,value] of Object.entries(previous))value===undefined?delete globalThis[key]:globalThis[key]=value;
+  if(storage)Object.defineProperty(globalThis,'localStorage',storage);
+  else delete globalThis.localStorage;
+ });
+ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{
+  getItem:()=>JSON.stringify(saved),setItem:()=>assert.fail('Declining review cannot change the journal'),
+ }});
+ globalThis.SequoiaSecureChannel={isRequired:()=>true};
+ globalThis.SequoiaSmartCardPiv={inspectEmptyPivCandidate:async()=>({
+  serial:saved.serial,version:'6.0.0',
+  slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:occupied&&slot==='9c',certificatePresent:false})),
+ })};
+ f.window.SequoiaSmartCardPiv=globalThis.SequoiaSmartCardPiv;
+ f.get('combined-level3-mode').value='backup';
+ await f.get('combined-level3-review').onclick();
+ assert.equal(review,undefined);
+ assert.match(f.messages.at(-1).message,/not empty/);
+ occupied=false;
+ await f.get('combined-level3-review').onclick();
+ assert.match(review,/card is now empty/);
+ assert.equal(f.creates.length,0);
+ saved.state='writing-bundle';
+ review=undefined;
+ await f.get('combined-level3-review').onclick();
+ assert.equal(review,undefined);
+ assert.match(f.messages.at(-1).message,/provisioning journal/);
+});

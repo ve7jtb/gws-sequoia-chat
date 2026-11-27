@@ -1,5 +1,23 @@
 # Sequoia Chat Lab — experimental IWA
 
+## Backup-first Level 3 certificate issuance (0.20.51 Testing)
+
+The backup-first path preserves the RFC 9980 fingerprint and verifies it against
+the software keys selected for import. It issues and verifies the four S/MIME
+certificates and, if selected, the experimental NIST v6 certificate in software.
+Certificate issuance uses no PIV PIN or touch. Generating keys still uses the
+configured FIDO entropy step. The IWA stages the verified public bundle in the
+encrypted vault, then imports the keys, writes the public bundle and checks
+card readback in one SCP11b management session. The bundle index is written
+last. Direct on-card generation still uses the card to sign its certificates.
+Web Smart Card PIV prompts submit only 6–8 printable ASCII characters. Invalid
+input stays in the dialog and never reaches the card.
+
+The optional experimental certificate is preserved in a signed,
+noncritical extension. It is not activated as an experimental signing or
+decryption identity during bundle restore. Older readers may need an update
+to accept the new three-key RFC 9980 view or the extension payload.
+
 ## Level 3 certificate signing validation (0.20.50)
 
 On 2026-11-27, the signed Testing build completed certificate-only recovery

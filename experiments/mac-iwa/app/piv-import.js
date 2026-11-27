@@ -1,6 +1,7 @@
 // Reviewed Level 3 key import and generation over SCP11b.
 // PIV management authentication authorizes empty-slot writes only.
 import {USER_PIV_SLOTS} from './piv-backup-plan.js';
+import {provisioningBundleObjects} from './provisioning/public-bundle.js';
 import {smartcardSigningInput} from './identities/client.js';
 // The explicit UI action is distinct from an empty or mistyped custom key.
 export const FACTORY_MANAGEMENT_KEY=Symbol('Factory PIV management key');
@@ -72,7 +73,15 @@ export function createPivImporter({promptManagement}){
    origin:live.origin,publicKey:raw,publicKeySha256:await hash(p.pivMetadataToSpki(live))};
  }
  let verified=null;
- async function writeAll(plan,material,{guard,completed,attempting,signal},mode){
+ async function plannedPublicKeys(plan,material){
+  return Promise.all(plan.keys.map(async target=>{
+   const key=material.find(row=>row.slot===target.slot&&row.algorithm===target.component);
+   if(!key)throw Error('Missing reviewed software key for slot '+target.slot+'.');
+   const spki=p.pivMetadataToSpki({algorithmId:algorithms[target.component][0],publicKeyBytes:tlv(0x86,key.publicKey)});
+   return {...target,origin:'imported',publicKey:key.publicKey,publicKeySha256:await hash(spki)};
+  }));
+ }
+ async function writeAll(plan,material,{guard,completed,attempting,signal,bundle,bundleAttempting,bundleCompleted},mode){
   verified=null;
   const expectedOperation=mode==='generate'?'generate-on-card':'import-existing-software-keys';
   if(!plan||plan.operation!==expectedOperation||plan.profile!=='level3'||
@@ -88,14 +97,25 @@ export function createPivImporter({promptManagement}){
    if(!k||k.algorithm!==target.component||!(k.seed instanceof Uint8Array)||k.seed.length!==d[2]||
       !(k.publicKey instanceof Uint8Array)||k.publicKey.length!==d[3])throw Error('Invalid source component.');
   }
-  await p.withPivSession(plan.serial,async(conn,info)=>{
-   const {version,slots}=await p.readProvisioningInventory(conn,info);
+  const objects=bundle===undefined?[]:await provisioningBundleObjects(bundle);
+  if(objects.length&&(mode!=='import'||typeof bundleAttempting!=='function'||typeof bundleCompleted!=='function'))
+   throw Error('Public bundle writes require a journaled software key import.');
+  return p.withPivSession(plan.serial,async(conn,info)=>{
+   const {version,slots,factoryPivStorage}=await p.readProvisioningInventory(conn,info);
    if(!version?.startsWith('6.'))throw Error('PQC YubiKey required.');
    if(slots.length!==USER_PIV_SLOTS.length||USER_PIV_SLOTS.some(slot=>
     !slots.some(row=>row.slot===slot&&row.keyPresent===false&&row.certificatePresent===false)))
     throw Error('Card is not verifiably empty.');
 
    await guard();
+   // Beta0 reports a complete factory-only storage inventory. Other
+   // firmware must independently prove the target data objects are absent.
+   if(!factoryPivStorage){
+    for(const {tag} of objects){
+     await guard();
+     if(await p.readPivDataObject(conn,tag)!==null)throw Error('A certificate bundle data object already exists.');
+    }
+   }
    await authenticate(conn,guard);
    await guard();
    const matches=[];
@@ -123,7 +143,18 @@ export function createPivImporter({promptManagement}){
     }
     matches.push(await metadata(conn,target,expected,mode==='generate'?'generated':'imported'));
    }
+   for(const {tag,bytes} of objects){
+    await guard();
+    await bundleAttempting(tag);
+    await guard();
+    const selector=Uint8Array.of(tag>>>16,tag>>>8,tag);
+    await tx(conn,0xdb,0x3f,0xff,join(tlv(0x5c,selector),tlv(0x53,bytes)));
+    const live=await p.readPivDataObject(conn,tag);
+    if(!live||!equal(live,bytes))throw Error('Certificate bundle object readback did not match.');
+    await bundleCompleted(tag);
+   }
    verified={serial:plan.serial,operation:plan.operation,rows:matches};
+   return matches;
   });
  }
  // Recovery reads metadata only and checks the imported origin and policies.
@@ -155,7 +186,7 @@ export function createPivImporter({promptManagement}){
   });
  }
  return {
-  inspect,readPublicKeys,verifyImportedKeys,
+  inspect,readPublicKeys,verifyImportedKeys,plannedPublicKeys,
   importAll:(plan,material,options)=>writeAll(plan,material,options,'import'),
   generateAll:(plan,options)=>writeAll(plan,[],options,'generate'),
   getSlots(){

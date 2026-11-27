@@ -55,30 +55,39 @@ function createHardwareTransport(deps = {}){
     const titleEl = document.getElementById('smartcard-pin-title');
     const detailEl = document.getElementById('smartcard-pin-detail');
     const inputEl = document.getElementById('smartcard-pin-input');
+    const hint = document.getElementById('smartcard-pin-hint');
     const okBtn = document.getElementById('smartcard-pin-ok');
     const cancelBtn = document.getElementById('smartcard-pin-cancel');
-    if(!dialog || !inputEl || !okBtn || !cancelBtn){
+    if(!dialog || !inputEl || !okBtn || !cancelBtn || !hint){
       return Promise.reject(Error('Web Smart Card PIN dialog is unavailable.'));
     }
     titleEl.textContent = title || 'Enter YubiKey PIV PIN';
     detailEl.textContent = detail || '';
     inputEl.value = '';
     return new Promise((resolve, reject)=>{
+      const validPin = value=>/^[\x20-\x7e]{6,8}$/.test(value);
+      const updatePin = (showError=false)=>{
+        const valid = validPin(inputEl.value);
+        okBtn.disabled = !valid;
+        hint.textContent = !valid && (showError === true || inputEl.value)
+          ? 'Enter 6 to 8 printable ASCII characters.' : '';
+        return valid;
+      };
       const cleanup = (close=true)=>{
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
         dialog.removeEventListener('cancel', onCancel);
         inputEl.removeEventListener('keydown', onKeyDown);
+        inputEl.removeEventListener('input', updatePin);
         inputEl.value = '';
+        hint.textContent = '';
         if(close && dialog.open) dialog.close();
       };
       const onOk = ()=>{
+        // Both Enter and the button validate locally, including pasted
+        // overlong input. Invalid input keeps the operation at the dialog.
+        if(!updatePin(true)) return;
         const pin = inputEl.value;
-        if(!/^[\x20-\x7e]{6,8}$/.test(pin)){
-          cleanup();
-          reject(Error('PIV PIN must be 6 to 8 printable ASCII characters.'));
-          return;
-        }
         cleanup(!onSubmitted);
         try{
           onSubmitted?.();
@@ -89,18 +98,22 @@ function createHardwareTransport(deps = {}){
         }
       };
       const onKeyDown = (ev)=>{
-        if(ev.key === 'Enter'){ ev.preventDefault(); onOk(); }
+        if(ev.key === 'Enter' && !ev.isComposing){
+          ev.preventDefault();
+          if(!ev.repeat) onOk();
+        }
       };
       const onCancel = ()=>{
         cleanup();
         reject(Error('PIV PIN entry cancelled; no card operation was attempted.'));
       };
-      okBtn.disabled = false;
+      updatePin();
       cancelBtn.disabled = false;
       okBtn.addEventListener('click', onOk);
       cancelBtn.addEventListener('click', onCancel);
       dialog.addEventListener('cancel', onCancel);
       inputEl.addEventListener('keydown', onKeyDown);
+      inputEl.addEventListener('input', updatePin);
       dialog.showModal();
       inputEl.focus();
     });

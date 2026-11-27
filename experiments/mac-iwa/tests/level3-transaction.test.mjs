@@ -27,9 +27,20 @@ function fixture(mode,{badCertificate=false,includeSsh=false}={}){
   }
  }
  const options={review:{plan,name:'Test',email,identity:{certificate}},confirmed:true,guard:async()=>{},
+  createSoftwareSigner:async()=>({sign:async ({format,slots})=>{
+   events.push('software signature');
+   if(format==='openpgp-nist-draft-05')return {mldsa:new Uint8Array(3309),ecdsa:new Uint8Array(96)};
+   return slots.length===1?new Uint8Array(3309):Uint8Array.from({length:3317},(_,i)=>i===3309?0x30:0);
+  },signBundle:async()=>new Uint8Array(3309)}),
+  inspectBundle:async()=>({bundleSignatureVerified:true,serial,slots:rows.filter(row=>!['8a','8b','8c','8d'].includes(row.slot))}),
   journal:{save:async record=>journal.push(structuredClone(record))},
-  card:{inspect:async()=>blank,readPublicKeys:async()=>rows,
-   importAll:async(plan,keys,options)=>{events.push('import');assert.equal(keys,material);await mutate(plan,options);},
+  card:{inspect:async()=>blank,readPublicKeys:async()=>rows,plannedPublicKeys:async()=>rows,
+   importAll:async(plan,keys,options)=>{events.push('import');assert.equal(keys,material);assert(options.bundle.length>0);
+    await mutate(plan,options);
+    await options.bundleAttempting(0x5f5000);
+    await options.bundleCompleted(0x5f5000);
+    return rows;
+   },
    generateAll:async(plan,options)=>{events.push('generate');await mutate(plan,options);}},
   piv:{async signProvisioningComponents(_identity,components){
    events.push('sign');
@@ -39,6 +50,7 @@ function fixture(mode,{badCertificate=false,includeSsh=false}={}){
   verify:{rfc9980:async()=>true,experimentalNist:async()=>true,smime:async()=>!badCertificate},
   inspectRfc9980:async()=>({supported:true,profile:'level3',emails:[email]}),
   vault:{prepareBackup:async()=>{events.push('encrypted backup');return material;},
+   async stageCertificates(){events.push('staged verified certificates');},
    async saveCertificates({certificates}){
     events.push('save');
     assert.equal(certificates.defaultOpenPgp,'rfc9980');
@@ -54,18 +66,28 @@ for(const mode of ['backup','on-card']){
  test(mode+' transaction journals writes, verifies certificates and commits them together',async()=>{
   const f=fixture(mode);
   assert.equal((await provisionLevel3(f.options)).defaultOpenPgp,'rfc9980');
-  assert.deepEqual(f.events.slice(0,mode==='backup'?2:1),mode==='backup'?['encrypted backup','import']:['generate']);
+  if(mode==='backup'){
+   assert.equal(f.events[0],'encrypted backup');
+   assert.equal(f.events.filter(e=>e==='software signature').length,9);
+   assert(!f.events.includes('sign'));
+   assert.deepEqual(f.events.slice(-3),['staged verified certificates','import','save']);
+  }else{
+   assert.equal(f.events[0],'generate');
+   assert(f.events.includes('sign'));
+   assert(!f.events.includes('software signature'));
+  }
   assert.equal(f.events.at(-1),'save');
   assert.equal(f.journal.at(-1).state,'saved');
   assert.equal(f.slotWrites.length,10);
   if(mode==='backup')assert(f.material.every(row=>!row.seed.some(Boolean)));
  });
 }
-test('a rejected signature leaves a resume journal and never saves the certificate set',async()=>{
+test('a rejected software signature prevents any card mutation or final vault commit',async()=>{
  const f=fixture('backup',{badCertificate:true});
  await assert.rejects(provisionLevel3(f.options),/verification failed/);
  assert(!f.events.includes('save'));
- assert.equal(f.journal.at(-1).state,'issuing');
+ assert.deepEqual(f.journal,[]);
+ assert.deepEqual(f.slotWrites,[]);
  assert(f.material.every(row=>!row.seed.some(Boolean)));
 });
 
@@ -112,4 +134,17 @@ for(const mode of ['backup','on-card'])test('complete SSH '+mode+' transaction j
  assert.equal(f.journal.at(-1).includeSsh,true);
  assert.deepEqual(f.slotWrites.slice(-2),['8c','8d']);
  assert.equal(f.journal.at(-1).state,'saved');
+});
+
+test('a signed bundle with a different source public key cannot reach card import',async()=>{
+ const f=fixture('backup'),inspect=f.options.inspectBundle;
+ f.options.inspectBundle=async()=>{
+  const bundle=await inspect();
+  bundle.slots=bundle.slots.map(slot=>slot.slot==='84'?{...slot,publicKeySha256:'e'.repeat(64)}:slot);
+  return bundle;
+ };
+ await assert.rejects(provisionLevel3(f.options),/does not match the reviewed software keys/);
+ assert.deepEqual(f.slotWrites,[]);
+ assert(!f.events.includes('staged verified certificates'));
+ assert(f.material.every(row=>!row.seed.some(Boolean)));
 });

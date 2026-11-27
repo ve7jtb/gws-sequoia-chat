@@ -3,6 +3,7 @@ import {generateLevel3SmimeKeys,sameLevel3SmimeKeys,generateNistCertificationKey
 // vault. This module never opens IndexedDB or a native connection itself. Its
 // injected access service owns encryption/CAS persistence and lock epochs.
 import {validateSshKeys,sshPublicLine} from '../vault/ssh-keys.js';
+import {b64} from '../vault/core.js';
 const KIND='software OpenPGP identity',MAX_SECRET=349528;
 export const SOFTWARE_PROFILES=Object.freeze(['level3','level5','level3-v4-hybrid','level3-v4-classical','level5-v4-hybrid','level5-v4-classical','level3-v5-hybrid']);
 const profileVersion=profile=>profile.includes('-v4-')?4:profile.includes('-v5-')?5:6;
@@ -34,7 +35,7 @@ async function publicMetadata(value){
  return {version,profile,signingAlgorithm,encryptionAlgorithm,pqSigning,pqEncryption,certificate:value.certificate,certificateHash:value.certificateHash,fingerprint:value.fingerprint,emails,signingFingerprint:value.signingFingerprint,recipientKey:value.recipientKey,algorithms:[...value.algorithms]};
 }
 function itemShape(item){
- if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[]),...(item?.smimeKeys?['smimeKeys']:[]),...(item?.nistKeys?['nistKeys']:[]),...(item?.sshKeys?['sshKeys']:[]),...(item?.hardwareCopies?['hardwareCopies']:[]),...(item?.provisioned?['provisioned']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
+ if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[]),...(item?.smimeKeys?['smimeKeys']:[]),...(item?.nistKeys?['nistKeys']:[]),...(item?.sshKeys?['sshKeys']:[]),...(item?.hardwareCopies?['hardwareCopies']:[]),...(item?.provisioned?['provisioned']:[]),...(item?.stagedProvisioning?['stagedProvisioning']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
  label(item.name);
  if(item.sshKeys){if(item.hardware?.privateRemoved||item.public?.profile!=='level3')throw Error('Invalid SSH custody');validateSshKeys(item.sshKeys);}
  if(item.hardwareCopies){
@@ -287,7 +288,31 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   const item=recordsIn(state).find(row=>row.id===selected.identityId);
   return structuredClone(item?.provisioned||null);
  }
- async function saveProvisioned({review,plan,readback,certificates,guard}){
+ // Store the public set beside the encrypted source keys before the card
+ // changes. Interrupted imports retain that exact bundle and its source.
+ function provisionedCertificates(plan,readback,certificates){
+  const encode=value=>btoa(String.fromCharCode(...value));
+  return {defaultOpenPgp:'rfc9980',
+   ...(plan.ssh?{ssh:{...plan.ssh,publicKey:sshPublicLine(readback.find(k=>k.slot==='8c').publicKey,readback.find(k=>k.slot==='8d').publicKey)}}:{}),
+   ...(certificates.smime?{smime:Object.fromEntries(Object.entries(certificates.smime).map(([kind,pair])=>
+    [kind,{signing:encode(pair.signing),encryption:encode(pair.encryption)}]))}:{}),
+   ...(certificates.experimentalNist?{experimentalNist:encode(certificates.experimentalNist.certificate)}:{}),
+  };
+ }
+ async function stageProvisioningCertificates({review,plan,readback,certificates,bundle,guard}){
+  await guard();
+  await assert(review.identity);
+  const state=current();await check(state);
+  const item=recordsIn(state).find(row=>row.id===review.identity.identityId);
+  if(!item?.smimeKeys||item.hardware?.privateRemoved)throw Error('Software source keys are unavailable.');
+  if(item.stagedProvisioning&&item.stagedProvisioning.serial!==plan.serial)
+   throw Error('This identity has a staged import for another YubiKey. Review that provisioning run first.');
+  const stagedProvisioning={serial:plan.serial,bundle:b64(bundle),certificates:provisionedCertificates(plan,readback,certificates)};
+  await guard();
+  await access.replaceItems(state.items.map(row=>row===item?{...item,stagedProvisioning}:row),
+   marker(state),{signal:new AbortController().signal});
+ }
+ async function saveProvisioned({review,plan,readback,certificates,bundle,guard}){
   await guard();
   const state=current();await check(state);
   const encoded=btoa(String.fromCharCode(...certificates.rfc9980));
@@ -295,13 +320,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   if(details.profile!=='level3'||!details.emails.includes(review.email))throw Error('Provisioned RFC 9980 identity mismatch.');
   const hardware={serial:plan.serial,slots:readback.map(({slot,publicKeySha256})=>({slot,publicKeySha256})),
    verified:true,privateRemoved:plan.operation==='generate-on-card'};
-  const encode=value=>btoa(String.fromCharCode(...value));
-  const provisioned={defaultOpenPgp:'rfc9980',
-   ...(plan.ssh?{ssh:{...plan.ssh,publicKey:sshPublicLine(readback.find(k=>k.slot==='8c').publicKey,readback.find(k=>k.slot==='8d').publicKey)}}:{}),
-   ...(certificates.smime?{smime:Object.fromEntries(Object.entries(certificates.smime).map(([kind,pair])=>
-    [kind,{signing:encode(pair.signing),encryption:encode(pair.encryption)}]))}:{}),
-   ...(certificates.experimentalNist?{experimentalNist:encode(certificates.experimentalNist.certificate)}:{}),
-  };
+  const provisioned=provisionedCertificates(plan,readback,certificates);
   let items;
   if(hardware.privateRemoved){
    const item={id:crypto.randomUUID(),kind:KIND,name:label(review.name),version:2,
@@ -315,6 +334,12 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    const copies=[...(previous.hardwareCopies|| (previous.hardware?[previous.hardware]:[]))].filter(h=>h.serial!==hardware.serial);
    copies.push(hardware);
    const item={...previous,hardware:previous.hardware||hardware,hardwareCopies:copies,provisioned};
+   if(bundle){
+    const staged=previous.stagedProvisioning;
+    if(staged?.serial!==plan.serial||staged.bundle!==b64(bundle)||!same(staged.certificates,provisioned))
+     throw Error('Staged certificates changed before import completed.');
+    delete item.stagedProvisioning;
+   }
    itemShape(item);items=state.items.map(row=>row===previous?item:row);
   }
   await guard();
@@ -354,6 +379,6 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   const replacement={...item,encryptedSecret:'',password:'',hardware:{...item.hardware,privateRemoved:true}};
   itemShape(replacement);await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
  }
- return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,saveProvisioned,saveHardware,assertHardware,verifyRecoveryBackup,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
+ return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,stageProvisioningCertificates,saveProvisioned,saveHardware,assertHardware,verifyRecoveryBackup,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
   cancel(){grants.clear();for(const controller of active)controller.abort();}};
 }

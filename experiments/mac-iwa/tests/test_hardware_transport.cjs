@@ -13,7 +13,51 @@ vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(__dirname + '/../app/hardware-transport.js', 'utf8'), ctx);
 const { createHardwareTransport } = ctx;
 
+// Exercise the actual browser prompt's event handlers without a physical card.
+async function testBrowserPinValidation() {
+  const ids = ['dialog', 'title', 'detail', 'input', 'ok', 'cancel', 'hint'];
+  const elements = Object.fromEntries(ids.map(id => ['smartcard-pin-' + id, new EventTarget()]));
+  const el = id => elements['smartcard-pin-' + id];
+  const dialog = el('dialog'), input = el('input'), ok = el('ok');
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; };
+  input.focus = () => {};
+  ctx.document = { getElementById: id => elements[id] };
+  const transport = createHardwareTransport();
+  let submissions = 0;
+  const pending = transport.promptPin({}, () => { submissions++; });
+  assert.equal(ok.disabled, true);
+  function enter(options = {}) {
+    const event = new Event('keydown', {cancelable: true});
+    Object.assign(event, {key: 'Enter', ...options});
+    input.dispatchEvent(event);
+  }
+  for (const pin of ['', '1', '12345', '123456789', '12345é']) {
+    input.value = pin;
+    input.dispatchEvent(new Event('input'));
+    enter();
+    ok.dispatchEvent(new Event('click'));
+    assert.equal(submissions, 0);
+    assert.equal(ok.disabled, true);
+    assert.equal(dialog.open, true);
+    assert.match(el('hint').textContent, /6 to 8/);
+    assert.equal(input.value, pin);
+  }
+  input.value = '12345678';
+  input.dispatchEvent(new Event('input'));
+  assert.equal(ok.disabled, false);
+  enter({repeat: true});
+  enter({isComposing: true});
+  assert.equal(submissions, 0);
+  enter();
+  ok.dispatchEvent(new Event('click'));
+  assert.equal(await pending, '12345678');
+  assert.equal(submissions, 1);
+  assert.equal(input.value, '');
+  delete ctx.document;
+}
 (async () => {
+  await testBrowserPinValidation();
   const mem = new Map();
   const storage = { getItem: k => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
   const nativeCalls = [];
@@ -127,7 +171,7 @@ const { createHardwareTransport } = ctx;
   // Exercise the production PIN dialog through its actual submission handler.
   // The modal must stay open with a cleared PIN all the way into the card call.
   const elements = new Map();
-  for(const id of ['dialog','entry','wait','status','title','detail','input','ok','cancel']){
+  for(const id of ['dialog','entry','wait','status','hint','title','detail','input','ok','cancel']){
     elements.set('smartcard-pin-'+id,Object.assign(new EventTarget(),{
       hidden:id==='wait',open:false,value:'',focus(){},
       showModal(){this.open=true;},close(){this.open=false;},

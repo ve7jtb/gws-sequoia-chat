@@ -253,6 +253,23 @@ pub fn provisioning_verify_mldsa65(public: &[u8], msg: &[u8], context: &[u8], si
     VerifyingKey::<MlDsa65>::decode(&public).verify_with_context(msg, context, &signature)
 }
 
+/// Sign a local provisioning transcript with an explicit FIPS 204 context.
+#[wasm_bindgen]
+pub fn provisioning_sign_mldsa65(seed: Vec<u8>, msg: &[u8], context: &[u8]) -> Result<Vec<u8>, JsValue> {
+    use ml_dsa::{MlDsa65, SigningKey};
+    use zeroize::Zeroizing;
+
+    let seed = Zeroizing::new(seed);
+    if msg.len() > 80 * 1024 || context.len() > 255 {
+        return Err(JsValue::from_str("Invalid provisioning signature transcript"));
+    }
+    let seed = seed.as_slice().try_into().map_err(|_| JsValue::from_str("Invalid signing seed"))?;
+    SigningKey::<MlDsa65>::from_seed(&seed).expanded_key()
+        .sign_deterministic(msg, context)
+        .map(|signature| signature.encode().to_vec())
+        .map_err(|_| JsValue::from_str("Provisioning signature failed"))
+}
+
 /// Derive the public portion of one independently generated certification seed.
 #[wasm_bindgen]
 pub fn provisioning_mldsa65_public(seed: &[u8]) -> Result<Vec<u8>, JsValue> {

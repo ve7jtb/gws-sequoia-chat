@@ -46,7 +46,9 @@ assert.deepEqual(Array.from(verifyApdu), [
   0x00, 0x20, 0x00, 0x80, 0x08,
   0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0xFF, 0xFF,
 ]);
-assert.throws(() => piv.buildVerifyPinApdu(new TextEncoder().encode('12345')));
+for(const malformed of ['12345','123456789','12345é','12345\n']){
+  assert.throws(() => piv.buildVerifyPinApdu(new TextEncoder().encode(malformed)), /6 to 8 printable ASCII/);
+}
 
 // 4. Command chaining for 1088-byte ML-KEM-768 ciphertext GENERAL AUTHENTICATE
 const mlkemCt = new Uint8Array(1088).fill(0x5A);

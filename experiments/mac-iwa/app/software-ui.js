@@ -157,7 +157,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   const withNist=existingRow?existingRow.hasNist:$('combined-level3-nist').checked;
   const withSsh=existingRow?existingRow.hasSsh:$('combined-level3-ssh').checked;
   const [{planLevel3Provisioning},{createPivImporter},{managementPrompt},{provisionLevel3},
-   {createCertificateVerifier,certificationPublicKey},{inspectIdentity}]=await Promise.all([
+   {createCertificateVerifier,certificationPublicKey},{inspectIdentity,inspectBundle}]=await Promise.all([
    import('./piv-backup-plan.js'),import('./piv-import.js'),import('./piv-backup-ui.js'),
    import('./provisioning/level3-transaction.js'),import('./provisioning/certificate-verifier.js'),
    import('./identities/client.js'),
@@ -175,14 +175,24 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   guard();
   const journalKey='sequoia-level3-provisioning:'+plan.serial;
   const existing=localStorage.getItem(journalKey);
-  if(existing&&JSON.parse(existing).state!=='prepared')
+  const previousJournal=existing?JSON.parse(existing):null;
+  // A completed run can be superseded after a PIV reset. The live empty-card
+  // review has already passed, and the importer repeats it before any writes.
+  const reprovision=mode==='backup'&&previousJournal?.state==='saved'&&previousJournal.serial===plan.serial;
+  if(previousJournal&&previousJournal.state!=='prepared'&&!reprovision)
    throw Error('This YubiKey has a provisioning journal. Review that run before trying again.');
   const slots=plan.keys.map(key=>key.slot.toUpperCase()+' '+key.component+' (PIN always, touch '+key.touch+')').join('\n');
   const custody=mode==='backup'?'The software keys remain in the encrypted vault. Export it with a separate recovery YubiKey.':
    'The private keys will be generated on the card. Backups can recover the public certificates and slot mappings.';
-  if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody))return;
+  const previousNotice=reprovision?'\n\nThis card is now empty. Confirm to start a new run for the same serial.':'';
+  if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody+previousNotice))return;
   const review={email,name,plan,...(existingRow?{identity:await ctx.get(existingRow.id,email)}:{})};
-  await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,confirmed:true,guard,
+  await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,inspectBundle,confirmed:true,guard,
+   createSoftwareSigner:async material=>{
+    say('Issuing and verifying certificates in software. No PIV PIN or touch is required.');
+    const {createLevel3SoftwareSigner}=await import('./provisioning/software-signer.js');
+    return createLevel3SoftwareSigner(material);
+   },
    withTouch:window.hardwareTransport.withCertificateTouch,
    journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
    vault:{
@@ -193,12 +203,16 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
      review.identity=prepared.identity;
      return prepared.material;
     },
+    async stageCertificates(input){
+     await ctx.stageProvisioningCertificates(input);
+     say('Certificates verified. Importing keys and the public certificate bundle in one card management session.');
+    },
     saveCertificates:input=>ctx.saveProvisioned(input),
    },
   });
   await changed();
   await refresh();
-  say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates'+(withSsh?' and SSH public key':'')+' in the encrypted vault. Use Complete encrypted backup to preserve all software components.');
+  say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates'+(withSsh?' and SSH public key':'')+' in the encrypted vault'+(mode==='backup'?' and verified the bundle on the YubiKey':'')+'. Use Complete encrypted backup to preserve all software components.');
  }
  // Per-identity export uses a new password only for the portable file. It does
  // not reveal the random password stored by the vault or overwrite that source.

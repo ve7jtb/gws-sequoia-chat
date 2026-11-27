@@ -108,8 +108,9 @@ function buildGetMetadataApdu(slotId){
 }
 
 function buildVerifyPinApdu(pinBytes){
-  if(!pinBytes || pinBytes.length < 6 || pinBytes.length > 8){
-    throw Error('PIV PIN must be 6 to 8 ASCII characters.');
+  if(!pinBytes || pinBytes.length < 6 || pinBytes.length > 8 ||
+     !pinBytes.every(byte=>byte>=0x20 && byte<=0x7e)){
+    throw Error('PIV PIN must be 6 to 8 printable ASCII characters.');
   }
   const apdu = new Uint8Array(13);
   apdu.set([0x00, 0x20, 0x00, 0x80, 0x08], 0);
@@ -524,7 +525,7 @@ async function readProvisioningInventory(conn,info){
     const certificate=await readPivDataObject(conn,0x5fff01);
     if(key.sw!==0x9000||!parseSlotMetadata(key.data).publicKeyBytes.length||!certificate?.length)
       throw Error('Could not verify both factory PIV attestation entries.');
-    return {version:device.version,slots:ALL_24_SLOTS.map(({hex})=>({slot:hex,keyPresent:false,certificatePresent:false}))};
+    return {version:device.version,factoryPivStorage:true,slots:ALL_24_SLOTS.map(({hex})=>({slot:hex,keyPresent:false,certificatePresent:false}))};
   }
   const slots=[];
   for(const slot of ALL_24_SLOTS){
@@ -586,8 +587,9 @@ async function hardwareAuditViaSmartCard(identity){
 
 async function verifyPinOnConnection(conn, pinStr){
   const pinBytes = new TextEncoder().encode(pinStr);
-  const apdu = buildVerifyPinApdu(pinBytes);
+  let apdu;
   try{
+    apdu = buildVerifyPinApdu(pinBytes);
     const res = splitSw(await conn.transmit(apdu));
     const sw = (res.sw1 << 8) | res.sw2;
     if(sw === 0x9000) return;
@@ -599,7 +601,7 @@ async function verifyPinOnConnection(conn, pinStr){
     throw Error('PIV PIN verification failed: SW=0x' + sw.toString(16));
   }finally{
     pinBytes.fill(0);
-    apdu.fill(0);
+    apdu?.fill(0);
   }
 }
 
@@ -1185,6 +1187,7 @@ const api = {
   withPivSession,
   inspectEmptyPivCandidate,
   readProvisioningInventory,
+  readPivDataObject,
   encodeBerLength,
   encodeBerTlv,
   buildSelectPivApdu,

@@ -48,6 +48,9 @@ pub fn current_time()->Result<u32>{
  #[cfg(not(target_arch="wasm32"))] {Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs().try_into()?)}
 }
 const MAX: usize = 65_536;
+// B3 with both complete v6 certificate views can expand above 64 KiB.
+// The on-card limit and each certificate/extension field stay at 64 KiB.
+const MAX_EXTENDED_ENVELOPE: usize = 80 * 1024;
 struct Profile {
     serial: u32,
     slots: [u8; 4],
@@ -65,6 +68,7 @@ pub struct VerifiedBundle {
     compatibility: Option<Cert>,
     keys: BTreeMap<u8, Vec<u8>>,
     bundle_hash: String,
+    optional_extensions: bool,
 }
 #[derive(Clone, Copy)]
 enum Operation {
@@ -112,8 +116,11 @@ impl<'a> Reader<'a> {
         Ok(u32::from_be_bytes(self.take(4)?.try_into()?))
     }
     fn blob(&mut self) -> Result<&'a [u8]> {
+        self.bounded_blob(MAX)
+    }
+    fn bounded_blob(&mut self, limit: usize) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;
-        ensure!(n <= MAX, "Oversized bundle field");
+        ensure!(n <= limit, "Oversized bundle field");
         self.take(n)
     }
     fn end(self) -> Result<()> {
@@ -129,7 +136,7 @@ fn unpack(stored: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader(stored);
     r.magic(b"PQMZIP01")?;
     let size = r.u32()? as usize;
-    ensure!((1..=MAX).contains(&size), "Invalid expanded bundle size");
+    ensure!((1..=MAX_EXTENDED_ENVELOPE).contains(&size), "Invalid expanded bundle size");
     let mut output = vec![0; size + 1];
     let mut z = Decompress::new(true);
     let status = z.decompress(r.0, &mut output, FlushDecompress::Finish)?;
@@ -313,8 +320,14 @@ fn pgp_bindings(
         }
     }
     ensure!(
-        slots.len() == if separated { 8 } else { 4 }
-            && cert.keys().count() == if separated { 5 } else { 2 },
+        if separated {
+            // New cards can carry only the three RFC 9980 keys. The older
+            // extended v6 profile adds both legacy keys together.
+            (slots.len() == 6 && cert.keys().count() == 3 && compat.is_none())
+                || (slots.len() == 8 && cert.keys().count() == 5)
+        } else {
+            slots.len() == 4 && cert.keys().count() == 2
+        },
         "Incomplete or invalid Level 3 certificate"
     );
     if let Some(compat) = compat {
@@ -436,16 +449,17 @@ pub fn verify(stored: &[u8]) -> Result<VerifiedBundle> {
     let bytes = unpack(stored)?;
     let mut r = Reader(&bytes);
     r.magic(b"PQMAILS1")?;
-    let payload = r.blob()?;
+    let payload = r.bounded_blob(MAX_EXTENDED_ENVELOPE)?;
     let signer = r.u32()? as usize;
     let signature = r.blob()?;
     r.end()?;
     let mut r = Reader(payload);
     let version = r.take(8)?;
     ensure!(
-        version == b"PQMAILB1" || version == b"PQMAILB2",
+        version == b"PQMAILB1" || version == b"PQMAILB2" || version == b"PQMAILB3",
         "Unsupported bundle payload"
     );
+    ensure!(version == b"PQMAILB3" || bytes.len() <= MAX, "Oversized base bundle envelope");
     let count = r.u32()? as usize;
     ensure!(
         (2..=16).contains(&count) && signer < count,
@@ -462,7 +476,7 @@ pub fn verify(stored: &[u8]) -> Result<VerifiedBundle> {
             sign: r.blob()?.to_vec(),
             enc: r.blob()?.to_vec(),
             pgp: r.blob()?.to_vec(),
-            compat: if version == b"PQMAILB2" {
+            compat: if version != b"PQMAILB1" {
                 r.blob()?.to_vec()
             } else {
                 Vec::new()
@@ -474,6 +488,23 @@ pub fn verify(stored: &[u8]) -> Result<VerifiedBundle> {
             pure = true
         };
         profiles.push(p);
+    }
+    let mut optional_extensions = false;
+    if version == b"PQMAILB3" {
+        // Unsupported optional extensions stay opaque. They are covered by
+        // the envelope signature but never supply active roles or mappings.
+        let count = r.u32()?;
+        ensure!(count <= 32, "Too many bundle extensions");
+        optional_extensions = count > 0;
+        let mut types = BTreeSet::new();
+        for _ in 0..count {
+            let name = r.blob()?;
+            ensure!(name.len() <= 192 && name.starts_with(b"https://") &&
+                name.len() > 8 && name.iter().all(|byte| byte.is_ascii_graphic()) &&
+                types.insert(name), "Invalid or duplicate bundle extension");
+            ensure!(r.take(1)? == [0], "Unsupported critical bundle extension or flags");
+            r.blob()?;
+        }
     }
     r.end()?;
     ensure!(pure && hybrid, "Missing pure or hybrid S/MIME profile");
@@ -513,6 +544,7 @@ pub fn verify(stored: &[u8]) -> Result<VerifiedBundle> {
         compatibility,
         keys,
         bundle_hash: format!("{:x}", Sha256::digest(stored)),
+        optional_extensions,
     })
 }
 
@@ -621,6 +653,9 @@ impl VerifiedBundle {
             "File freshness is not established; live public keys have not been checked."
                 .to_string(),
         ];
+        if verified.optional_extensions {
+            warnings.push("This bundle contains signed optional material that is not activated by this reader.".into());
+        }
         if verified.compatibility.is_none() {
             warnings.push(
                 "This bundle has no v4 compatibility certificate; none was created or inferred"
@@ -706,7 +741,7 @@ mod tests {
                     sign: r.blob()?.to_vec(),
                     enc: r.blob()?.to_vec(),
                     pgp: r.blob()?.to_vec(),
-                    compat: if version == b"PQMAILB2" {
+                    compat: if version != b"PQMAILB1" {
                         r.blob()?.to_vec()
                     } else {
                         Vec::new()
