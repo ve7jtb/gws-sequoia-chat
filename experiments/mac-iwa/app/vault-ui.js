@@ -1,3 +1,4 @@
+import {createSshTrustStore} from './ssh/trust.js';
 import {verifyProvisioningRecovery} from './vault/provisioning-recovery.js';
 import {wrapLevel5,openLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
@@ -12,7 +13,7 @@ const engine=new Vault();let record=null,revision=0,active=false,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',{createScriptURL:u=>{if(u!=='/vault/worker.js')throw Error();return u;}});
 function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker(workerPolicy?workerPolicy.createScriptURL('/vault/worker.js'):'/vault/worker.js',{type:'module'});const t=setTimeout(()=>{w.terminate();reject(Error('Vault cryptography timed out.'));},30000);w.onmessage=({data})=>{clearTimeout(t);w.terminate();data.ok?resolve(data.result):reject(Error(data.error));};w.onerror=()=>{clearTimeout(t);w.terminate();reject(Error('Vault cryptography failed.'));};w.postMessage({op,input});});}
-function lock(){softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
+function lock(){window.sshTrust?.cancel();softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
  // Publish only presentation state; the startup screen never receives vault secrets.
  window.vaultStartupState=()=>({exists:!!record,unlocked:engine.unlocked&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type})),defaultId:record?.default,status:el('vault-status').textContent});
@@ -34,10 +35,7 @@ function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lo
 // object, content key or password-bearing item list. Persistence remains the
 // same encrypted IndexedDB record and compare-and-swap revision used by PIV/PRF.
 const sameVault=expected=>engine.unlocked&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
-const softwareIdentities=createSoftwareIdentityStore({
- inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,hardwareCall:operateImportedKey,entropyCollector:options=>window.directFido.entropy(options),
- changed:()=>window.dispatchEvent(new Event('iwa-software-identities-changed')),
- access:{
+const identityVaultAccess={
   snapshot:()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),
   async assertCurrent(expected){
    if(!sameVault(expected))throw Error('Software identity vault changed.');const latest=await load();
@@ -62,8 +60,13 @@ const softwareIdentities=createSoftwareIdentityStore({
     engine.data={...engine.data,items};await engine.save();guard();await commit({guard,signal});
    }catch(e){if(engine.unlocked)lock();throw e;}finally{active=false;}
   }
- }
+ };
+const softwareIdentities=createSoftwareIdentityStore({
+ inspectPublic:inspectIdentity,cryptoCall:softwareCrypto,hardwareCall:operateImportedKey,entropyCollector:options=>window.directFido.entropy(options),
+ changed:()=>window.dispatchEvent(new Event('iwa-software-identities-changed')),
+ access:identityVaultAccess
 });
+window.sshTrust= createSshTrustStore(identityVaultAccess);
 window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);window.directFido?.complete(e.message,false);}finally{active=false;render();}}
 async function pivSecret(w){

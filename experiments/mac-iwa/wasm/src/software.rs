@@ -862,6 +862,45 @@ fn call(input: &str, op: fn(serde_json::Value) -> Result<serde_json::Value>) -> 
     ensure!(input.len() <= 400000, "Software request limit");
     Ok(serde_json::to_string(&op(serde_json::from_str(input)?)?)?)
 }
+/// Explicit classical SSH compatibility for an imported Ed25519 OpenPGP key.
+/// This never extracts the Ed25519 component of a hybrid key. The existing
+/// loader validates certification, binding, expiry, revocation and all public/
+/// secret correspondences before we derive the SSH representation or sign.
+fn ssh_compat(mut v: serde_json::Value) -> Result<serde_json::Value> {
+    fields(&v, &["encryptedSecret", "password", "message"])?;
+    let message = B64.decode(text(&v, "message")?)?;
+    ensure!(message.len() <= 65536, "SSH transcript limit");
+    let mut loaded = load(&mut v)?;
+    ensure!(loaded.info["version"] == 4, "Explicit v4 compatibility required");
+    let fingerprint = text(&loaded.info, "signingFingerprint")?.to_owned();
+    let pair = loaded.pair(&fingerprint)?;
+    let mut seed = Zeroizing::new([0u8;32]);
+    pair.secret().map(|secret| -> Result<()> {
+        match secret {
+            mpi::SecretKeyMaterial::EdDSA { scalar } => {
+                ensure!(scalar.value().len() <= 32, "Ed25519 seed size");
+                seed[32-scalar.value().len()..].copy_from_slice(scalar.value());
+            },
+            mpi::SecretKeyMaterial::Ed25519 { x } => seed.copy_from_slice(x.as_ref()),
+            _ => bail!("Only standalone Ed25519 compatibility keys are supported"),
+        }
+        Ok(())
+    })?;
+    let signer = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let mut public = Vec::new();
+    for value in [b"ssh-ed25519".as_slice(),signer.verifying_key().as_bytes().as_slice()] {
+        public.extend_from_slice(&(value.len() as u32).to_be_bytes());public.extend_from_slice(value);
+    }
+    use ed25519_dalek::Signer as _;
+    let signature = if message.is_empty() {String::new()} else {
+        B64.encode(signer.sign(&message).to_bytes())
+    };
+    Ok(serde_json::json!({"publicKey":B64.encode(public),"signature":signature}))
+}
+#[wasm_bindgen]
+pub fn software_ssh_compat(input: &str) -> Result<String, JsValue> {
+    call(input, ssh_compat).map_err(|_| JsValue::from_str("SSH compatibility signing rejected"))
+}
 /// Inspect an encrypted software identity; return only canonical public data.
 #[wasm_bindgen]
 pub fn software_inspect(input: &str) -> Result<String, JsValue> {

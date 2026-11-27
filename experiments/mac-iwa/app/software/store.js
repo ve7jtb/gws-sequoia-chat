@@ -1,3 +1,4 @@
+import {signSoftwareSsh} from '../ssh/client.js';
 import {generateLevel3SmimeKeys,sameLevel3SmimeKeys,generateNistCertificationKeys,level3SmimeImportScalar} from '../vault/level3-smime-keys.js';
 // Software identities are authenticated records INSIDE the existing encrypted
 // vault. This module never opens IndexedDB or a native connection itself. Its
@@ -75,7 +76,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  const marker=s=>({vaultId:s.vaultId,revision:s.revision,epoch:s.epoch});
  async function check(s){const now=current();if(!same(marker(now),marker(s)))throw Error('Software identity vault changed; start again.');await access.assertCurrent(marker(s));if(!same(marker(current()),marker(s)))throw Error('Software identity vault changed; start again.');}
  function recordsIn(s){const records=s.items.filter(x=>x?.kind===KIND);if(records.length>16||new Set(records.map(x=>x.id)).size!==records.length)throw Error('Invalid software identity inventory.');return records.map(itemShape);}
- function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,hasSsh:!!item.sshKeys,hasSmime:!!item.smimeKeys,hasNist:!!item.nistKeys,cardSerials:(item.hardwareCopies|| (item.hardware?[item.hardware]:[])).map(h=>h.serial),hasSshPublic:!!item.provisioned?.ssh,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
+ function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,hasSsh:!!item.sshKeys,hasSmime:!!item.smimeKeys,hasNist:!!item.nistKeys,cardSerials:(item.hardwareCopies|| (item.hardware?[item.hardware]:[])).map(h=>h.serial),hasSshPublic:!!item.provisioned?.ssh||!!item.sshKeys,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
  async function withController(signal,fn){const c=new AbortController();active.add(c);const abort=()=>c.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)c.abort();try{if(c.signal.aborted)throw Error('Software operation cancelled.');return await fn(c.signal);}finally{signal?.removeEventListener('abort',abort);active.delete(c);}}
  async function list(account){
   account=mailbox(account);if(!access.snapshot()?.unlocked)return {choices:[],revision:0};const s=current(),choices=[];await check(s);
@@ -288,7 +289,9 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   await assert(selected);
   const state=current();await check(state);
   const item=recordsIn(state).find(row=>row.id===selected.identityId);
-  return structuredClone(item?.provisioned||null);
+  const provisioned=structuredClone(item?.provisioned||{});
+  if(item?.sshKeys)provisioned.ssh={algorithm:'ssh-mldsa44-ed25519',signing:['8c','8d'],publicKey:sshPublicLine(bytes(item.sshKeys.pq.publicKey),bytes(item.sshKeys.ed.publicKey))};
+  return Object.keys(provisioned).length?provisioned:null;
  }
  // Store the public set beside the encrypted source keys before the card
  // changes. Interrupted imports retain that exact bundle and its source.
@@ -381,6 +384,35 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   const replacement={...item,encryptedSecret:'',password:'',hardware:{...item.hardware,privateRemoved:true}};
   itemShape(replacement);await access.replaceItems(s.items.map(x=>x===item?replacement:x),marker(s),{signal:new AbortController().signal});grants.clear();changed();
  }
- return {list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,stageProvisioningCertificates,saveProvisioned,saveHardware,assertHardware,verifyRecoveryBackup,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
+ // Imported standalone Ed25519 keys are an explicit classical compatibility
+ // route, never the classical half of a composite key. Passwords stay in the
+ // vault and worker; the UI receives only an SSH public key or signature.
+ async function sshCompatibility(selected,message=new Uint8Array(),{signal}={}){
+  if(!(message instanceof Uint8Array)||message.length>65536)throw Error('Invalid SSH transcript.');
+  const s=current();await check(s);await assert(selected);const item=recordsIn(s).find(i=>'software:'+i.id===selected.id);
+  if(!item||item.public.version!==4||!item.public.signingAlgorithm.includes('Ed25519')||item.hardware?.privateRemoved)throw Error('Select an imported standalone v4 Ed25519 software identity.');
+  return withController(signal,async activeSignal=>{
+   const result=await cryptoCall('ssh-compat',{encryptedSecret:item.encryptedSecret,password:item.password,message:btoa(String.fromCharCode(...message))},{signal:activeSignal});
+   await check(s);return {publicKey:bytes(result.publicKey),signature:bytes(result.signature)};
+  });
+ }
+ async function sshHardware(selected,serial){
+  const s=current();await check(s);await assert(selected);const item=recordsIn(s).find(i=>'software:'+i.id===selected.id);
+  const binding=(item?.hardwareCopies||(item?.hardware?[item.hardware]:[])).find(h=>h.serial===serial);
+  if(!binding?.verified||!['8c','8d'].every(slot=>binding.slots.some(k=>k.slot===slot)))throw Error('No verified SSH mapping for this YubiKey.');
+  await check(s);return {serial,slots:structuredClone(binding.slots.filter(k=>['8c','8d'].includes(k.slot)))};
+ }
+ // SSH uses only the dedicated 8c/8d pair; OpenPGP component keys cannot
+ // accidentally become a classical fallback for a composite SSH identity.
+ async function signSsh(selected,message,{signal}={}){
+  if(!(message instanceof Uint8Array)||message.length<32||message.length>65536)throw Error('Invalid SSH transcript.');
+  const s=current();await check(s);await assert(selected);const item=recordsIn(s).find(i=>'software:'+i.id===selected.id);
+  if(!item?.sshKeys)throw Error('Software SSH keys unavailable for this identity.');validateSshKeys(item.sshKeys);
+  const ml=bytes(item.sshKeys.pq.seed),ed=bytes(item.sshKeys.ed.seed);
+  const publicKey=bytes(sshPublicLine(bytes(item.sshKeys.pq.publicKey),bytes(item.sshKeys.ed.publicKey)).split(' ')[1]);
+  try{return await withController(signal,async activeSignal=>{const signature=await signSoftwareSsh({ml,ed,publicKey,message,signal:activeSignal});await check(s);return signature;});}
+  finally{ml.fill(0);ed.fill(0);}
+ }
+ return {sshHardware,sshCompatibility,signSsh,list,get,assert,records,backupMaterial,prepareCombinedBackup,provisioningCertificates,stageProvisioningCertificates,saveProvisioned,saveHardware,assertHardware,verifyRecoveryBackup,removePrivate,import:importIdentity,create:createIdentity,importP12,export:exportIdentity,remove,native,nativeBinding:softwareIdentityBinding,validateMaterial,
   cancel(){grants.clear();for(const controller of active)controller.abort();}};
 }

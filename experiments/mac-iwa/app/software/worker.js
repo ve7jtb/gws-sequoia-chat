@@ -2,14 +2,14 @@
 // network transport, persistent storage or trusted-contact API. Imported secret
 // packets are unlocked only within WASM for this operation; the owner terminates
 // this worker on every exit and on vault lock/navigation.
-import init,{software_inspect,software_sign,software_decapsulate,software_generate,software_export,software_backup_material,software_import_p12,software_p12_verify_mac} from '../wasm/sequoia_iwa_verify.js';
+import init,{software_ssh_compat,software_inspect,software_sign,software_decapsulate,software_generate,software_export,software_backup_material,software_import_p12,software_p12_verify_mac} from '../wasm/sequoia_iwa_verify.js';
 import {decodePqMailP12} from './p12.js';
 let used=false;
 self.onmessage=async({data})=>{
  if(used)return;used=true;let input=data?.input;const id=data?.id;
  try{
-  if(!data||Object.keys(data).sort().join(',')!=='id,input,op'||typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||!['inspect','sign','decapsulate','generate','export','backup-material','import-p12'].includes(data.op)||JSON.stringify(input).length>(data.op==='import-p12'?1500000:400000))throw Error();
-  await init();const functions={inspect:software_inspect,sign:software_sign,decapsulate:software_decapsulate,generate:software_generate,export:software_export,'backup-material':software_backup_material};
+  if(!data||Object.keys(data).sort().join(',')!=='id,input,op'||typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||!['inspect','sign','decapsulate','generate','export','backup-material','import-p12','ssh-compat'].includes(data.op)||JSON.stringify(input).length>(data.op==='import-p12'?1500000:400000))throw Error();
+  await init();const functions={'ssh-compat':software_ssh_compat,inspect:software_inspect,sign:software_sign,decapsulate:software_decapsulate,generate:software_generate,export:software_export,'backup-material':software_backup_material};
   let result;
   if(data.op==='import-p12'){
    if(!input||Object.keys(input).sort().join(',')!=='newPassword,p12,password')throw Error();

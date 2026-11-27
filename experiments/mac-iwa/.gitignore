@@ -14,3 +14,7 @@ app/wasm-fixtures.json
 app/wasm-wide/
 
 app/vendor/
+
+# Built by ssh-engine/build.sh with the pinned Go modules.
+app/ssh/engine.wasm
+app/ssh/wasm_exec.js

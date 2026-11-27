@@ -1,5 +1,62 @@
 # Sequoia Chat Lab — experimental IWA
 
+## SSH terminal preview (0.20.55, local build; not published)
+
+The **SSH** tab appears after vault unlock. Its terminal runs SSH in a Go WASM
+worker over IWA Direct Sockets; xterm.js renders the PTY locally. It does not
+invoke a system SSH client, extension, or native SSH agent. Lock, navigation,
+and Disconnect terminate the worker/socket. Terminal scrollback is memory-only.
+No port forwarding, agent forwarding, X11 forwarding or automatic server key
+installation is implemented.
+
+Authentication choices:
+
+- **Dedicated composite SSH pair:** ML-DSA-44 + Ed25519 from the encrypted
+  software vault, or Web Smart Card using an existing verified 8c/8d mapping
+  and its bound YubiKey serial. Card operations check both live public keys
+  before requesting the PIN, use the existing touch policies, and never retry
+  private operations automatically. The composite transcript follows
+  [draft-ietf-sshm-composite-sigs-01](https://datatracker.ietf.org/doc/html/draft-ietf-sshm-composite-sigs-01).
+  Both signature components are verified locally before transmission. There is
+  no fallback to the Ed25519 half of the composite. The server must support
+  this experimental user-authentication algorithm.
+- **Existing OpenPGP software identity:** use **Import existing OpenPGP software
+  identity** to open Identities → Import / restore, supply its encrypted
+  secret-key file and passphrase, and save it in the encrypted vault. Supported
+  standalone v4 Ed25519 identities appear as an explicit **classical SSH**
+  choice with a warning. This preserves the OpenPGP fingerprint and lets a user
+  connect to a compatible existing account before manually authorizing a new
+  SSH public key. It never changes server authorization or host trust by itself.
+  The current importer requires the supported complete two-key v4 profile;
+  RSA, signing-only exports, arbitrary multi-subkey layouts, and standalone
+  v6 classical profiles are not yet supported for SSH.
+
+Review and import an OpenSSH `known_hosts` file (up to 1 MiB) before connecting.
+The review shows host patterns, algorithms and SHA-256 fingerprints. Trust stays
+inside the encrypted vault and travels in complete encrypted backups. Hashed
+hostnames, wildcard exclusions, nondefault ports and revocations are enforced
+before any authentication signature. Unknown/changed/revoked hosts are refused.
+`@cert-authority` records are preserved, but host-certificate authentication is
+currently refused rather than applying incomplete CA/principal checks. Import
+reviews are single-use and bound to the vault revision. No server is trusted
+from its banner; the separate transport probe remains unauthenticated.
+
+Validation on 2026-11-27: **419 Node tests passed, one optional test skipped**.
+Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
+host-trust rejection before signing, and corrupted composite components.
+The compiled WASM engine independently completed an Ed25519 SSH login and PTY
+round trip against that local server. OpenPGP-to-SSH Ed25519 signatures were
+verified with Node's independent cryptographic API; wrong passphrases and
+attempted hybrid-component extraction were rejected. Simulated card tests
+check the 8c/8d mapping and composite transcript. No physical YubiKey operation
+was performed: live composite server interoperability and physical PIN/touch
+SSH authentication remain to be tested. This build is not installed or published.
+
+Build the additional engine with Go 1.27.4 or later in its supported line:
+`GO_BIN=/path/to/go experiments/mac-iwa/ssh-engine/build.sh`, then run the normal
+WASM and IWA builds. The Go modules are pinned by `go.mod`/`go.sum`; xterm.js
+6.0.0 is pinned by the npm lockfile. See [SSH engine testing](ssh-engine/README.md).
+
 ## Backup-first Level 3 hardware validation (0.20.53)
 
 On 2026-11-27, backup-first provisioning completed on a wiped YubiKey 6 Beta 0,

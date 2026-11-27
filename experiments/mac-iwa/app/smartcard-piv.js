@@ -697,6 +697,84 @@ async function signProvisioningComponents(identity,components,promptPin,guard,be
   },{exclusive:true,trace});
 }
 
+// Dedicated SSH operation: fixed slots and transcript lengths; no provisioning.
+async function signSshComponents(identity,components,promptPin,guard,beforeSign,onStall){
+  const allowed={0xe2:{tag:0x88,input:64,output:2420},0xe0:{tag:0x81,input:127,output:64}};
+  if(typeof guard!=='function'||!Array.isArray(components)||components.length!==2||
+     new Set(components.map(c=>c.slot)).size!==components.length)
+    throw Error('Invalid reviewed SSH signing operation.');
+  for(const c of components){
+    const policy=allowed[c.algorithm];
+    if(!policy||!(c.input instanceof Uint8Array)||c.input.length!==policy.input||
+       !identity.slots.some(k=>k.slot===c.slot)||c.slot!==(c.algorithm===0xe2?'8c':'8d'))throw Error('Invalid SSH signing component.');
+  }
+  // Check the serial and expected public keys before the PIN prompt, then
+  // release PC/SC. Reopen and recheck under a fresh SCP session after entry.
+  // Human input must not leave a browser-owned transaction idle.
+  await withPivSession(identity.serial,conn=>checkLiveKeys(conn,identity));
+  await guard();
+  const detail=components.map(c=>c.slot.toUpperCase()+' ('+ALGO_NAMES[c.algorithm]+')').join(' + ');
+  const pin=await promptPin({title:'PIV PIN — SSH authentication',
+    detail:'YubiKey · SN# '+identity.serial+' · '+detail+'. Touch if requested.'});
+  await guard();
+  let signing=false,lastFrame;
+  // Keep the connection and operation lock held while transmit is pending.
+  // Web Smart Card cannot cancel an in-flight SCardTransmit. A timer can
+  // explain the stall, but must not make another PIN or sign attempt possible.
+  async function trace(conn,apdu){
+    if(!signing)return conn.transmit(apdu);
+    const instruction=apdu[1]===0x87?'GENERAL AUTHENTICATE':apdu[1]===0xc0?'GET RESPONSE':'card command';
+    const count=lastFrame?(lastFrame.count+1):1;
+    const started=performance.now();
+    lastFrame={instruction,count,started,status:null};
+    const timer=setTimeout(()=>onStall?.({instruction,count}),20000);
+    try{
+      const response=await conn.transmit(apdu),result=splitSw(response);
+      lastFrame.status=((result.sw1<<8)|result.sw2).toString(16).padStart(4,'0').toUpperCase();
+      return response;
+    }finally{clearTimeout(timer);}
+  }
+  return withPivSession(identity.serial,async conn=>{
+    await checkLiveKeys(conn,identity);
+    const touchPolicies=new Map();
+    for(const c of components){
+      const r=await transmitChained(conn,buildGetMetadataApdu(parseInt(c.slot,16)));
+      const meta=r.sw===0x9000?parseSlotMetadata(r.data):null;
+      if(meta?.algorithmId!==c.algorithm)throw Error('SSH signature slot algorithm changed.');
+      touchPolicies.set(c.slot,meta.touchPolicy);
+    }
+    const results=[];
+    for(const c of components){
+      await guard();
+      await verifyPinOnConnection(conn,pin);
+      await beforeSign?.({slot:c.slot,algorithm:ALGO_NAMES[c.algorithm],touchPolicy:touchPolicies.get(c.slot)});
+      await guard();
+      const policy=allowed[c.algorithm];
+      // Report only the slot and elapsed command time, never the PIN, APDU
+      // body or key material. Timing helps distinguish a timeout from denial.
+      const started=performance.now();
+      let response;
+      signing=true;lastFrame=null;
+      try{
+        response=await transmitCommandChained(conn,0x87,c.algorithm,parseInt(c.slot,16),
+          buildGeneralAuthenticateData(policy.tag,c.input));
+      }catch(error){
+        const frame=lastFrame;
+        const transport=frame?' ['+frame.instruction+' frame '+frame.count+', '+
+          Math.round(performance.now()-frame.started)+' ms, '+(frame.status?'SW='+frame.status:'no response')+']':'';
+        throw Error(error.message+' [PIN verified; signing command '+Math.round(performance.now()-started)+' ms]'+transport,{cause:error});
+      }finally{signing=false;}
+      if(response.sw!==0x9000)throw Error('SSH signature failed in slot '+c.slot.toUpperCase()+' (SW='+response.sw.toString(16)+').');
+      const signature=parseGeneralAuthenticateResponse(response.data);
+      if(policy.output!==null?signature.length!==policy.output:
+         signature.length<8||signature.length>104||signature[0]!==0x30)
+        throw Error('Invalid SSH signature response.');
+      results.push(signature);
+    }
+    return results;
+  },{exclusive:true,trace});
+}
+
 async function signDigestViaSmartCard(request, identity, promptPin){
   const serial = identity?.serial ? String(identity.serial) : null;
   const digestBytes = fromBase64(request.digest);
@@ -1213,6 +1291,7 @@ const api = {
   hardwareAuditViaSmartCard,
   signDigestViaSmartCard,
   signProvisioningComponents,
+  signSshComponents,
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
   readVaultMaterialViaSmartCard,

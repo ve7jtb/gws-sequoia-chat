@@ -9,7 +9,7 @@ const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','cha
 let ownEmail="";
 let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount,legacyAccountEmail;
 let certificateReview=null,managementReview=null;
-let identityUi,softwareUi,ownIdentityStore,hardwareIdentitySelection,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
+let sshUi,identityUi,softwareUi,ownIdentityStore,hardwareIdentitySelection,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
 let sendIdentities=[],decryptionChoice=null,identityListGeneration=0;
 let hardwareTestAbort=null,hardwareTestReport=null,softwareTestAbort=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
@@ -315,7 +315,7 @@ function serviceLabels(){
  $('open-help').textContent=(mail?'Verify against the selected trusted sender certificate.':'The attached certificate must match this trusted contact.')+' Choose the matching hardware or unlocked software identity next.';
  $('decrypt').textContent='Decrypt '+name;
 }
-function tab(name){if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
+function tab(name){if(name==='ssh'){if(!window.vaultIsUnlocked?.())return;sshUi?.refresh().catch(e=>say(e.message,true));}if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));if(b.dataset.tab==='identities'){identityUi?.refresh().catch(e=>say(e.message,true));softwareUi?.refresh().catch(e=>say(e.message,true));}}));
 function clearAccountSession(){
  window.dispatchEvent(new Event('iwa-account-changed'));
@@ -404,6 +404,7 @@ async function bootstrap(){
    }finally{softwareTestAbort=null;}
   }});
  await refreshCertificates();
+ const {initializeSsh}=await import('./ssh/ui.js');sshUi=initializeSsh({window,document});await sshUi.refresh();
  await refreshAccount();await softwareUi.refresh();
  say(ownEmail?'Ready. Local certificates and account settings are available; unlock the vault and sign in to Google.':'Ready. Configure your Google account in Account. Contacts, saved identities and the existing vault are available.');tab(ownEmail?'inbox':'account-settings');
 }
