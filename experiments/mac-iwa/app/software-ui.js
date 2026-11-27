@@ -147,6 +147,28 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    await changed();await refresh();say('Software identity created in the encrypted vault. Use Export encrypted identity to make a portable backup. No hardware keys or recipient trust changed.');
   }finally{importController=null;}
  });
+ // Browser confirm() can be suppressed in a standalone IWA. Keep the
+ // empty-card review in the app and require the explicit provisioning button.
+ function confirmBackupProvisioning({serial,slots,custody,previousNotice}){
+  const dialog=$('combined-level3-confirm'),cancel=$('combined-level3-cancel');
+  const submit=$('combined-level3-provision');
+  $('combined-level3-confirm-title').textContent='Provision empty YubiKey SN# '+serial+'?';
+  $('combined-level3-confirm-slots').textContent=slots;
+  $('combined-level3-confirm-custody').textContent=custody+previousNotice;
+  dialog.showModal();
+  cancel.focus();
+  return new Promise(resolve=>{
+   const finish=approved=>{
+    submit.onclick=null;cancel.onclick=null;dialog.oncancel=null;dialog.onclose=null;
+    if(dialog.open)dialog.close();
+    resolve(approved);
+   };
+   submit.onclick=()=>finish(true);
+   cancel.onclick=()=>finish(false);
+   dialog.oncancel=event=>{event.preventDefault();finish(false);};
+   dialog.onclose=()=>finish(false);
+  });
+ }
  $('combined-level3-review').onclick=()=>run(()=>provisionCombined());
  // A second card imports the same retained seeds; it never creates a replacement identity.
  async function provisionCombined(existingRow){
@@ -185,7 +207,11 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   const custody=mode==='backup'?'The software keys remain in the encrypted vault. Export it with a separate recovery YubiKey.':
    'The private keys will be generated on the card. Backups can recover the public certificates and slot mappings.';
   const previousNotice=reprovision?'\n\nThis card is now empty. Confirm to start a new run for the same serial.':'';
-  if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody+previousNotice))return;
+  const approved=mode==='backup'
+   ?await confirmBackupProvisioning({serial:plan.serial,slots,custody,previousNotice})
+   :confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody);
+  if(!approved){say('Provisioning cancelled before any card write.');return;}
+  guard();
   const review={email,name,plan,...(existingRow?{identity:await ctx.get(existingRow.id,email)}:{})};
   await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,inspectBundle,confirmed:true,guard,
    createSoftwareSigner:async material=>{

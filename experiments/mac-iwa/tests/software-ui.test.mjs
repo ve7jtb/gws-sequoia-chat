@@ -163,8 +163,9 @@ test('only a fresh empty inventory can supersede a completed backup journal',asy
  const {USER_PIV_SLOTS}=await import('../app/piv-backup-plan.js');
  await init({module_or_path:fs.readFileSync(new URL('../app/wasm/sequoia_iwa_verify_bg.wasm',import.meta.url))});
  const saved={serial:'12345678',state:'saved'};
- let occupied=true,review;
- t.mock.method(globalThis,'confirm',message=>{review=message;return false;});
+ let occupied=true;
+ t.mock.method(globalThis,'confirm',()=>assert.fail('Backup review must not call browser confirm()'));
+ const dialog=f.get('combined-level3-confirm');
  const previous={SequoiaSmartCardPiv:globalThis.SequoiaSmartCardPiv,SequoiaSecureChannel:globalThis.SequoiaSecureChannel};
  const storage=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
  t.after(()=>{
@@ -183,15 +184,20 @@ test('only a fresh empty inventory can supersede a completed backup journal',asy
  f.window.SequoiaSmartCardPiv=globalThis.SequoiaSmartCardPiv;
  f.get('combined-level3-mode').value='backup';
  await f.get('combined-level3-review').onclick();
- assert.equal(review,undefined);
+ assert.equal(dialog.open,undefined);
  assert.match(f.messages.at(-1).message,/not empty/);
  occupied=false;
- await f.get('combined-level3-review').onclick();
- assert.match(review,/card is now empty/);
+ const reviewed=f.get('combined-level3-review').onclick();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(dialog.open,true);
+ assert.match(f.get('combined-level3-confirm-title').textContent,/12345678/);
+ assert.match(f.get('combined-level3-confirm-custody').textContent,/card is now empty/);
  assert.equal(f.creates.length,0);
+ f.get('combined-level3-cancel').onclick();
+ await reviewed;
+ assert.equal(dialog.open,false);
  saved.state='writing-bundle';
- review=undefined;
  await f.get('combined-level3-review').onclick();
- assert.equal(review,undefined);
+ assert.equal(dialog.open,false);
  assert.match(f.messages.at(-1).message,/provisioning journal/);
 });
