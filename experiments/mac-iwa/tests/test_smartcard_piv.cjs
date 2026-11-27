@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { webcrypto } = require('node:crypto');
 
 const ctx = {
-  Uint8Array, Array, Map, Error, TextEncoder,
+  Uint8Array, Array, Map, Error, TextEncoder, setTimeout, clearTimeout,
   btoa: s => Buffer.from(s, 'binary').toString('base64'),
   atob: s => Buffer.from(s, 'base64').toString('binary'),
   crypto: webcrypto,
@@ -129,11 +129,11 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
     const hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',
       piv.pivMetadataToSpki(piv.parseSlotMetadata(metadata)))).toString('hex');
     const response=data=>new Uint8Array([...data,0x90,0]);
-    let transactions=0,active=false,deny=false;
+    let transactions=0,active=false,deny=false,chain=false,watchdog;
     ctx.performance=performance;
     ctx.navigator={smartCard:{establishContext:async()=>({
       listReaders:async()=>['YubiKey'],
-      connect:async()=>({connection:{
+      connect:async(_reader,mode)=>{events.push(mode);return {connection:{
         status:async()=>({answerToReset:new Uint8Array()}),
         startTransaction:async fn=>{
           assert.equal(active,false);active=true;events.push('transaction '+(++transactions));
@@ -150,22 +150,32 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
             case 0x87:
               events.push('sign');
               if(deny)throw Error('Card declined command [INS=87 P1=E3 P2=9C, final command, SW=6982]');
+              if(chain)return new Uint8Array([0x61,0x00]);
               return response(piv.encodeBerTlv(0x7c,piv.encodeBerTlv(0x82,new Uint8Array(3309))));
+            case 0xc0:
+              watchdog();
+              throw Error('Reader disconnected');
             default:assert.fail('Unexpected APDU');
           }
         }
-      }})
+      }};}
     })}};
     const sign=()=>piv.signProvisioningComponents({serial:String(serial),slots:[{slot:'9c',publicKeySha256:hash}]},
       [{slot:'9c',algorithm:0xe3,input:new Uint8Array(64)}],
       async()=>{assert.equal(active,false);events.push('entered PIN');return '123456';},async()=>{},
-      async info=>{assert.equal(info.touchPolicy,'always');events.push('show touch');});
+      async info=>{assert.equal(info.touchPolicy,'always');events.push('show touch');},
+      info=>events.push('pending '+info.instruction+' '+info.count));
     const [signature]=await sign();
     assert.equal(signature.length,3309);
-    assert.deepEqual(events,['transaction 1','key check','released','entered PIN',
-      'transaction 2','key check','key check','PIN verified','show touch','sign','released']);
+    assert.deepEqual(events,['shared','transaction 1','key check','released','entered PIN',
+      'exclusive','key check','key check','PIN verified','show touch','sign']);
     deny=true;
-    await assert.rejects(sign(),/SW=6982.*PIN verified; signing command [0-9]+ ms/);
+    await assert.rejects(sign(),/SW=6982.*PIN verified; signing command [0-9]+ ms.*GENERAL AUTHENTICATE frame 1.*no response/);
+    deny=false;chain=true;
+    ctx.setTimeout=callback=>{watchdog=callback;return 0;};
+    await assert.rejects(sign(),/Reader disconnected.*GET RESPONSE frame 2.*no response/);
+    assert.equal(events.at(-1),'pending GET RESPONSE 2');
+    ctx.setTimeout=setTimeout;
     delete ctx.navigator;
   }
 

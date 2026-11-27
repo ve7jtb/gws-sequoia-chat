@@ -177,6 +177,10 @@ function createHardwareTransport(deps = {}){
         status.textContent='PIN verified for slot '+slot.toUpperCase()+' ('+algorithm+'). '+
           (touch?'Touch '+key+' promptly when it flashes.':'Keep '+key+' connected.');
         if(touch)await paintTouchPrompt();
+      }:undefined,certificate?({instruction,count})=>{
+        if(!showing)return;
+        title.textContent='YubiKey response pending';
+        status.textContent='Still waiting for '+instruction+' (frame '+count+'). If the key has stopped flashing or never flashed, remove it to end this attempt.';
       }:undefined);
     }catch(error){
       // Chromium may preserve only the message from a transaction callback.
@@ -195,7 +199,7 @@ function createHardwareTransport(deps = {}){
         ?'YubiKey declined the operation. If you missed the flash, '+retry+' and touch the key promptly.'
         :`${name} was declined. Start a fresh unlock to open a new secure card session.`;
       const timing=/\[PIN verified; signing command [0-9]+ ms\]/.exec(error.message)?.[0];
-      throw Error(summary+' Diagnostic: '+diagnostic+' (unauthenticated status).'+(timing?' '+timing:''),{cause:error});
+      throw Error(summary+' Diagnostic: '+diagnostic+' (unauthenticated status).'+(timing?' '+error.message.slice(error.message.indexOf(timing)):''),{cause:error});
     }finally{
       if(showing){
         dialog.removeEventListener('cancel',preventCancel);

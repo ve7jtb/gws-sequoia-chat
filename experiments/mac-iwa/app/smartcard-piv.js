@@ -360,7 +360,7 @@ async function sha256Hex(bytes){
   return toHex(digest);
 }
 
-async function withPivSession(expectedSerial, fn){
+async function withPivSession(expectedSerial, fn, {exclusive=false,trace}={}){
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
   }
@@ -376,18 +376,20 @@ async function withPivSession(expectedSerial, fn){
     let pivSelected = false;
     let operationStarted = false;
     try{
-      const opened = await ctx.connect(reader, 'shared', {preferredProtocols:['t1','t0']});
+      const opened = await ctx.connect(reader, exclusive?'exclusive':'shared', {preferredProtocols:['t1','t0']});
       conn = opened.connection;
       const st = await conn.status();
       let result;
       let matched = true;
-      await conn.startTransaction(async()=>{
+      const operate=async()=>{
         // Establish manufacturer trust before PIV selection or any PIN/private
         // operation. The wrapper renews SCP on the later CTAP applet SELECT.
         // Raw connection ownership stays here for transaction/disconnect APIs.
+        // Expose only transmit to the channel and trace command headers only.
+        const raw=trace?{transmit:apdu=>trace(conn,apdu)}:conn;
         if(!global.SequoiaSecureChannel && global.document?.getElementById('secure-yubikey-connection'))throw Error('Secure-channel policy is not ready');
-        secured = await global.SequoiaSecureChannel?.acquire(conn);
-        const channel = secured?.connection || conn;
+        secured = await global.SequoiaSecureChannel?.acquire(raw);
+        const channel = secured?.connection || raw;
         const sel = await transmitChained(channel, buildSelectPivApdu());
         if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
         pivSelected = true;
@@ -402,7 +404,12 @@ async function withPivSession(expectedSerial, fn){
         operationStarted = true;
         result = await fn(channel, {reader, allReaders: readers, activeProtocol: opened.activeProtocol, state: st.state, atr: toHex(st.answerToReset), version, serial});
         return 'leave';
-      });
+      };
+      // An exclusive handle already owns the reader. Avoid a nested PC/SC
+      // transaction for certificate signing on browsers whose transaction
+      // cleanup can otherwise wait indefinitely on the pending transmit.
+      if(exclusive)await operate();
+      else await conn.startTransaction(operate);
       if(matched) return result;
     }catch(e){
       lastError = e;
@@ -610,7 +617,7 @@ async function checkLiveKeys(conn, identity){
 // Certificate provisioning supplies a reviewed key hash for each slot and a
 // precomputed protocol-specific digest or external mu. One PIN is reused
 // within the operation and the live public mapping is checked before VERIFY.
-async function signProvisioningComponents(identity,components,promptPin,guard,beforeSign){
+async function signProvisioningComponents(identity,components,promptPin,guard,beforeSign,onStall){
   const allowed={0xe3:{tag:0x88,input:64,output:3309},0xe0:{tag:0x81,input:64,output:64},
     0x14:{tag:0x81,input:48,output:null}};
   if(typeof guard!=='function'||!Array.isArray(components)||components.length<1||components.length>2||
@@ -630,6 +637,23 @@ async function signProvisioningComponents(identity,components,promptPin,guard,be
   const pin=await promptPin({title:'PIV PIN — Issue certificate',
     detail:'YubiKey · SN# '+identity.serial+' · '+detail+'. Touch if requested.'});
   await guard();
+  let signing=false,lastFrame;
+  // Keep the connection and operation lock held while transmit is pending.
+  // Web Smart Card cannot cancel an in-flight SCardTransmit. A timer can
+  // explain the stall, but must not make another PIN or sign attempt possible.
+  async function trace(conn,apdu){
+    if(!signing)return conn.transmit(apdu);
+    const instruction=apdu[1]===0x87?'GENERAL AUTHENTICATE':apdu[1]===0xc0?'GET RESPONSE':'card command';
+    const count=lastFrame?(lastFrame.count+1):1;
+    const started=performance.now();
+    lastFrame={instruction,count,started,status:null};
+    const timer=setTimeout(()=>onStall?.({instruction,count}),20000);
+    try{
+      const response=await conn.transmit(apdu),result=splitSw(response);
+      lastFrame.status=((result.sw1<<8)|result.sw2).toString(16).padStart(4,'0').toUpperCase();
+      return response;
+    }finally{clearTimeout(timer);}
+  }
   return withPivSession(identity.serial,async conn=>{
     await checkLiveKeys(conn,identity);
     const touchPolicies=new Map();
@@ -650,12 +674,16 @@ async function signProvisioningComponents(identity,components,promptPin,guard,be
       // body or key material. Timing helps distinguish a timeout from denial.
       const started=performance.now();
       let response;
+      signing=true;lastFrame=null;
       try{
         response=await transmitCommandChained(conn,0x87,c.algorithm,parseInt(c.slot,16),
           buildGeneralAuthenticateData(policy.tag,c.input));
       }catch(error){
-        throw Error(error.message+' [PIN verified; signing command '+Math.round(performance.now()-started)+' ms]',{cause:error});
-      }
+        const frame=lastFrame;
+        const transport=frame?' ['+frame.instruction+' frame '+frame.count+', '+
+          Math.round(performance.now()-frame.started)+' ms, '+(frame.status?'SW='+frame.status:'no response')+']':'';
+        throw Error(error.message+' [PIN verified; signing command '+Math.round(performance.now()-started)+' ms]'+transport,{cause:error});
+      }finally{signing=false;}
       if(response.sw!==0x9000)throw Error('Certificate signature failed in slot '+c.slot.toUpperCase()+' (SW='+response.sw.toString(16)+').');
       const signature=parseGeneralAuthenticateResponse(response.data);
       if(policy.output!==null?signature.length!==policy.output:
@@ -664,7 +692,7 @@ async function signProvisioningComponents(identity,components,promptPin,guard,be
       results.push(signature);
     }
     return results;
-  });
+  },{exclusive:true,trace});
 }
 
 async function signDigestViaSmartCard(request, identity, promptPin){
