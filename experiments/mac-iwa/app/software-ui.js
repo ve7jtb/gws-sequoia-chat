@@ -26,9 +26,9 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   for(const row of rows){
    const box=document.createElement('div');box.className='contact';const text=document.createElement('p');
    text.textContent=row.name+(row.hardware?.privateRemoved?' · YubiKey '+row.hardware.serial+' (vault public binding) · OpenPGP v':' · Software (experimental) · OpenPGP v')+(row.version||6)+'\n'+(row.signingAlgorithm||'ML-DSA-65 + Ed25519')+' signing · '+(row.encryptionAlgorithm||'ML-KEM-768 + X25519')+' encryption\n'+row.fingerprint+'\n'+(row.emails||[]).join(', ')+'\n'+warning(row);box.append(text);
-   const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
-   if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
-   if(row.profile==='level3'&&row.hasSmime&&!row.hardware?.privateRemoved)button('Provision another empty YubiKey…',()=>provisionCombined(row));
+   const button=(label,fn,options)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn,options);box.append(b);};
+   if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{const provisioned=await backup(row);await refresh();return provisioned;},{offerUnlock:true});
+   if(row.profile==='level3'&&row.hasSmime&&!row.hardware?.privateRemoved)button('Provision another empty YubiKey…',()=>provisionCombined(row),{offerUnlock:true});
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
    if(row.profile==='level3'&&row.hasSmime&&!row.hardware?.privateRemoved)button('Resume Level 3 certificate signing…',()=>resumeCertificates(row));
    if(row.hardware?.verified&&!row.hardware.privateRemoved)button('Verify encrypted vault backup…',async()=>{
@@ -64,11 +64,19 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    target.append(box);
   }
  }
- async function run(fn){
+ async function run(fn,{offerUnlock=false}={}){
   if(isBusy())return say('Finish the current operation first.',true);
-  setBusy(true);try{window.vaultGate?.();if(!window.vaultIsUnlocked?.())throw Error('Unlock or create the encrypted vault first.');await fn();}
+  let provisioned;
+  setBusy(true);try{window.vaultGate?.();if(!window.vaultIsUnlocked?.())throw Error('Unlock or create the encrypted vault first.');provisioned=await fn();}
   catch(error){say(error.message,true);$('software-test-result').textContent='Operation stopped. No automatic retry.';}
   finally{setBusy(false);$('software-test-export').disabled=!reviewReport;}
+  if(!offerUnlock||!provisioned)return;
+  // Enrollment can call the card through the regular vault dispatcher, so
+  // offer it only after successful provisioning and release of the UI lock.
+  try{
+   if(await window.offerProvisionedVaultUnlock(provisioned))
+    say('YubiKey provisioned and added as a vault unlock method.');
+  }catch(error){say('YubiKey provisioned. Vault unlock method could not be added: '+error.message,true);}
  }
  async function resumeCertificates(row){
   const email=account(),started=generation,ctx=provider();
@@ -169,7 +177,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    dialog.onclose=()=>finish(false);
   });
  }
- $('combined-level3-review').onclick=()=>run(()=>provisionCombined());
+ $('combined-level3-review').onclick=()=>run(()=>provisionCombined(),{offerUnlock:true});
  // A second card imports the same retained seeds; it never creates a replacement identity.
  async function provisionCombined(existingRow){
   const email=account(),name=existingRow?.name||$('software-name').value.trim(),started=generation;
@@ -213,7 +221,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   if(!approved){say('Provisioning cancelled before any card write.');return;}
   guard();
   const review={email,name,plan,...(existingRow?{identity:await ctx.get(existingRow.id,email)}:{})};
-  await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,inspectBundle,confirmed:true,guard,
+  const provisioned=await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,inspectBundle,confirmed:true,guard,
    createSoftwareSigner:async material=>{
     say('Issuing and verifying certificates in software. No PIV PIN or touch is required.');
     const {createLevel3SoftwareSigner}=await import('./provisioning/software-signer.js');
@@ -242,6 +250,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   await changed();
   await refresh();
   say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates'+(withSsh?' and SSH public key':'')+' in the encrypted vault'+(mode==='backup'?' and verified the bundle on the YubiKey':'')+'. Use Complete encrypted backup to preserve all software components.');
+  return {serial:provisioned.serial,type:mode==='backup'?'piv':'prf'};
  }
  // Per-identity export uses a new password only for the portable file. It does
  // not reveal the random password stored by the vault or overwrite that source.

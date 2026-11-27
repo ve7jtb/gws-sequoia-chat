@@ -110,7 +110,11 @@ window.directFido=Object.freeze({
   });
  },
  creationSaved(){localStorage.removeItem('iwa-fido-creation-recovery:'+packageRp());},
- enrollmentBinding:()=>({rpId:el('fido-rp').value,serial:selectedSerial()}),
+ // Provisioning binds a specific device and uses the current IWA RP. The
+ // manual vault controls still use their selected serial and RP settings.
+ enrollmentBinding:(serial=null)=>serial
+  ?{rpId:packageRp(),serial}
+  :{rpId:el('fido-rp').value,serial:selectedSerial()},
  async prf(binding){
   if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card transport first.');
   return run(async options=>{

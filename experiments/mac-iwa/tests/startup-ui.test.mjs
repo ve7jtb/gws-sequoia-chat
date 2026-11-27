@@ -24,6 +24,17 @@ test('existing vault starts locked with FIDO/PIV selection and delegates only ex
  f.el('startup-method').value='p';f.el('startup-unlock').click();
  assert.equal(f.el('vault-methods').value,'p');assert.equal(f.el('vault-unlock').clicks,1);
 });
+test('startup distinguishes PIV keys with the same name by their serials',()=>{
+ const methods=[
+  {id:'a',name:'YubiKey',type:'piv',serial:'12345678'},
+  {id:'b',name:'YubiKey',type:'piv',serial:'87654321'},
+  {id:'c',name:'YubiKey SN# 99999999',type:'piv',serial:'99999999'},
+ ];
+ const f=fixture({...locked,methods,defaultId:'b'});
+ assert.deepEqual(f.el('startup-method').children.map(option=>option.textContent),
+  ['YubiKey · SN# 12345678 · PIV','YubiKey · SN# 87654321 · PIV','YubiKey SN# 99999999 · PIV']);
+ assert.equal(f.el('startup-method').value,'b');
+});
 test('empty instance offers restore/create without automatic hardware writes',()=>{
  const f=fixture({exists:false,unlocked:false,methods:[]});assert.equal(f.el('startup-new').hidden,false);
  assert.equal(f.el('startup-login').hidden,true);f.el('startup-key').click();

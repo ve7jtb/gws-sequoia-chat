@@ -1,3 +1,5 @@
+import {unlockMethodLabel} from './vault/labels.js';
+
 // Startup is a presentation router, not an authorization boundary. Existing
 // vault/card gates still validate every operation; no private material enters
 // this module. Reuse the original controls so onboarding cannot bypass their
@@ -37,7 +39,9 @@ export function mountStartup(doc,win){
   select.replaceChildren();
   for(const method of state.methods){
    const option=doc.createElement('option');option.value=method.id;
-   option.textContent=method.name+' · '+(method.type==='piv'?'PIV':'FIDO PRF');select.append(option);
+   option.textContent=method.type==='piv'
+    ?unlockMethodLabel({...method,binding:{serial:method.serial}})
+    :method.name+' · FIDO PRF';select.append(option);
   }
   select.value=state.methods.some(m=>m.id===selected)?selected:state.defaultId;
   el('startup-unlock').disabled=!state.methods.length;

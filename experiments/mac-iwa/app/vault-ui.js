@@ -2,13 +2,14 @@ import {createSshTrustStore} from './ssh/trust.js';
 import {verifyProvisioningRecovery} from './vault/provisioning-recovery.js';
 import {wrapLevel5,openLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
-import {discoverOrCreate,hasMatchingPiv} from './vault/enrollment.js';
+import {confirmUnlockEnrollment,discoverOrCreate,hasMatchingPiv,requireAttachedUnlockMethod} from './vault/enrollment.js';
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap,classicalOpen} from './vault/piv.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
 import {operateImportedKey} from './piv-import.js';
 import {inspectIdentity} from './identities/client.js';
+import {discoverIdentityDevices} from './identities/devices.js';
 const engine=new Vault();let record=null,revision=0,active=false,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',{createScriptURL:u=>{if(u!=='/vault/worker.js')throw Error();return u;}});
@@ -16,12 +17,12 @@ function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker
 function lock(){window.sshTrust?.cancel();softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
  // Publish only presentation state; the startup screen never receives vault secrets.
- window.vaultStartupState=()=>({exists:!!record,unlocked:engine.unlocked&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type})),defaultId:record?.default,status:el('vault-status').textContent});
+ window.vaultStartupState=()=>({exists:!!record,unlocked:engine.unlocked&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type,...(w.type==='piv'?{serial:w.binding.serial}:{})})),defaultId:record?.default,status:el('vault-status').textContent});
  // Unlock completes after its component request releases the general UI lock.
  // Refresh this control here too, so it becomes usable immediately on success.
  el('vault-lock').disabled=!engine.unlocked;
  el('vault-unlocked').hidden=!engine.unlocked;el('vault-unlock').hidden=!record||engine.unlocked;
- el('vault-methods').replaceChildren();for(const w of record?.wrappers||[]){const o=document.createElement('option');o.value=w.id;o.textContent=w.name+' · '+(w.type==='piv'?'PIV':'FIDO PRF')+(w.id===record.default?' (default)':'');el('vault-methods').append(o);}if(record)el('vault-methods').value=record.default;
+ el('vault-methods').replaceChildren();for(const w of record?.wrappers||[]){const o=document.createElement('option');o.value=w.id;o.textContent=(w.type==='piv'?unlockMethodLabel(w):w.name+' · FIDO PRF')+(w.id===record.default?' (default)':'');el('vault-methods').append(o);}if(record)el('vault-methods').value=record.default;
  el('vault-method-list').replaceChildren();if(engine.unlocked)for(const w of record.wrappers){const row=document.createElement('div');row.textContent=unlockMethodLabel(w);for(const [label,fn] of [['Rename',async()=>{const name=prompt('Name for this unlock method',w.name);if(name!==null){await engine.rename(w.id,name);await commit();}}],['Remove',async()=>{if(confirm('Remove this vault unlock method? This does not delete any credential or token key.')){await engine.remove(w.id);await commit();}}]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);row.append(b);}el('vault-method-list').append(row);}
  el('vault-items').replaceChildren();if(engine.unlocked)for(const item of engine.data.items){const row=document.createElement('p');row.textContent=item.name+' · '+item.kind+' (encrypted at rest)';el('vault-items').append(row);}
  el('vault-state').textContent=record?(engine.unlocked?'Unlocked — auto-locks after five minutes of inactivity.':'Locked — choose an enrolled method.'):'No IWA vault yet. Use PIV by default, or FIDO PRF for software-only credentials.';
@@ -82,42 +83,137 @@ async function pivSecret(w){
  try{return bytes(v.secret);}finally{delete v.secret;}
 }
 async function prf(w){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
-async function enroll(type,check,create=false,expectedSerial=null){
+async function checkExistingUnlockDevice(check){
+ check();
+ if(!record)return;
+ await requireAttachedUnlockMethod(record.wrappers,()=>discoverIdentityDevices(call,{allowEmpty:true}));
+ check();
+}
+async function enroll(type,check,{create=false,expectedSerial=null,
+ name=el('vault-name').value.trim(),makeDefault=type==='piv',requireHybrid=false,
+ confirmCreate=()=>confirm('No FIDO credential exists for this IWA on the selected key. Create a new discoverable PRF credential?')}={}){
  if(record&&!engine.unlocked)throw Error('Unlock the existing vault before adding another method.');
- const name=el('vault-name').value.trim();if(!name||name.length>80)throw Error('Enter an unlock-method name (1–80 characters).');
+ if(!name||name.length>80)throw Error('Enter an unlock-method name (1–80 characters).');
+ await checkExistingUnlockDevice(check);
  const vaultId=record?.id||crypto.randomUUID(),w={id:crypto.randomUUID(),name,type,binding:{}};let secret;
  try{
   if(type==='piv'){
-   const selectedSerial=expectedSerial||el('fido-serial').value.trim();
-   const material=await call('chat-vault-material',selectedSerial?{serial:selectedSerial}:{});
+   const material=await call('chat-vault-material',expectedSerial?{serial:expectedSerial}:{});
+   check();
+   if(requireHybrid&&material.classicalAllowed)throw Error('Expected a verified hybrid vault key.');
    if(expectedSerial&&String(material.serial)!==String(expectedSerial))throw Error('Wrong YubiKey for PIV enrollment.');
-   if(material.classicalAllowed){if(!material.classical)throw Error('No classical PIV vault key configured. Configure an existing public key and slot first; no keys will be generated.');if(!confirm('Classical ECDH protects this vault. Its encrypted backup is not post-quantum resistant. Continue?'))return;const result=await classicalWrap(material.classical);w.binding=result.binding;try{secret=await classicalOpen(w.binding,call);if(!secret.every((b,i)=>b===result.secret[i]))throw Error('PIV ECDH enrollment verification failed.');}finally{result.secret.fill(0);}
+   if(material.classicalAllowed){
+    if(!material.classical)throw Error('No classical PIV vault wrapping key is available.');
+    if(!await confirmUnlockEnrollment(document,window,{
+     title:'Use classical PIV protection?',
+     detail:'This YubiKey uses classical ECDH. A vault backup protected by this method is not post-quantum resistant.',
+     action:'Use classical protection',
+    }))return;
+    check();
+    const result=await classicalWrap(material.classical);
+    w.binding=result.binding;
+    try{
+     check();
+     secret=await classicalOpen(w.binding,call);
+     if(!secret.every((byte,index)=>byte===result.secret[index]))throw Error('PIV ECDH enrollment verification failed.');
+    }finally{result.secret.fill(0);}
    }else if(material.level5){
     const result=await wrapLevel5(material,input=>wasm('level5-encapsulate',input));
     w.binding=result.binding;
     try{
-     secret=await pivSecret(w);
+     check();secret=await pivSecret(w);
      if(!secret.every((byte,index)=>byte===result.secret[index]))throw Error('Level 5 vault verification failed.');
     }finally{result.secret.fill(0);}
    }else{
     if(!material.certificate)throw Error('No verified supported hybrid vault certificate is available. YK6 setup never falls back to classical wrapping.');
-    const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
+    const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;check();secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
    }
    if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint||x.binding.kemPublic)===(w.binding.recipientKey||w.binding.fingerprint||w.binding.kemPublic)))throw Error('This PIV key already unlocks the vault.');
-  }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding():{})};if(create){
+  }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding(expectedSerial):{})};if(create){
     // Discover first under this exact RP and serial; never turn cancellation,
     // wrong PIN, transport loss or unsupported PRF into credential creation.
     const found=await discoverOrCreate({
      assertExisting:async()=>({secret:await prf(w)}),
-     confirmCreate:()=>confirm('No FIDO credential exists for this IWA on the selected key. Create a new discoverable PRF credential?'),
-     createNew:async()=>{const r=await window.directFido.create(w.binding,name,vaultId);w.binding=r.binding;try{return {secret:bytes(r.secret)};}finally{delete r.secret;}}
+     confirmCreate,
+     createNew:async()=>{await checkExistingUnlockDevice(check);const r=await window.directFido.create(w.binding,name,vaultId);w.binding=r.binding;try{return {secret:bytes(r.secret)};}finally{delete r.secret;}}
     });secret=found.result.secret;create=found.created;
    }else secret=await prf(w);if(record?.wrappers.some(x=>x.type==='prf'&&x.binding.credentialId===w.binding.credentialId))throw Error('This passkey already unlocks the vault.');}
-  check();if(record)await engine.add(w,secret);else await engine.create(w,secret,vaultId);check();await commit();if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. You may remove the key. Lock the vault to test a fresh unlock.');
+  // Authenticator prompts can outlast a USB swap. Recheck immediately
+  // before storing the wrapper, while there is still nothing to persist.
+  await checkExistingUnlockDevice(check);
+  if(record)await engine.add(w,secret,{makeDefault});else await engine.create(w,secret,vaultId);
+  check();await commit();if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. You may remove the key. Lock the vault to test a fresh unlock.');
  }finally{secret?.fill(0);}
 }
-el('vault-create-prf').onclick=()=>run(c=>enroll('prf',c,true));
-el('vault-add-piv').onclick=()=>run(c=>enroll('piv',c));el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
+// Run after provisioning has released the general UI lock. Enrollment is a
+// separate, optional transaction with its own vault epoch and card check.
+window.offerProvisionedVaultUnlock=async({serial,type})=>{
+ if(typeof serial!=='string'||!/^[1-9][0-9]{5,9}$/.test(serial)||!['piv','prf'].includes(type))
+  throw Error('Invalid provisioned YubiKey.');
+ if(!record||!engine.unlocked)throw Error('Unlock the vault to add a method.');
+ if(active||busy)throw Error('Finish the current vault operation first.');
+ const label=type==='piv'?'hybrid PIV':'FIDO PRF';
+ const name='YubiKey SN# '+serial;
+ let enrolled=false,failure,credentialDeclined=false;
+ await run(async checkEpoch=>{
+  const check=()=>{
+   checkEpoch();
+   if(window.hardwareTransport?.getMode()!=='smartcard')throw Error('Use Web Smart Card to enroll the reviewed YubiKey.');
+  };
+  if(!await confirmUnlockEnrollment(document,window,{
+   title:'Add '+name+' as a vault unlock method?',
+   detail:label+' will unlock this vault alongside its existing methods. Keep an enrolled YubiKey connected. Your current default stays selected.',
+   action:'Add unlock method',
+  }))return;
+  try{
+   check();
+   await enroll(type,check,{expectedSerial:serial,name,create:type==='prf',makeDefault:false,requireHybrid:type==='piv',
+    async confirmCreate(){
+     check();
+     // The previous FIDO operation ended with NO_CREDENTIALS. Dismiss its
+     // status so this separate credential-creation consent is visible.
+     el('fido-pin-dialog').close();
+     const approved=await confirmUnlockEnrollment(document,window,{
+      title:'Create a FIDO PRF credential on '+name+'?',
+      detail:'This card has no discoverable credential for this IWA. Creating one requires a separate PIN and touch.',
+      action:'Create FIDO credential',
+     });
+     check();
+     credentialDeclined=!approved;
+     return approved;
+    },
+   });
+   enrolled=true;
+  }catch(error){if(!credentialDeclined)failure=error;}
+ });
+ if(failure)throw failure;
+ return enrolled;
+};
+el('vault-create-prf').onclick=()=>run(c=>enroll('prf',c,{create:true}));
+async function enrollConnectedPiv(check,requestedSerial){
+ // The native helper has a configured identity. Web Smart Card can enroll
+ // an unknown connected device after independently authenticating its keys.
+ if(window.hardwareTransport?.getMode()!=='smartcard')return enroll('piv',check);
+ let serial=requestedSerial;
+ if(!serial){
+  const devices=await discoverIdentityDevices(call);
+  check();
+  serial=await confirmUnlockEnrollment(document,window,{
+   title:'Add a PIV vault unlock method',
+   detail:'Choose a connected YubiKey. Keep an enrolled YubiKey connected while adding a method.',
+   action:'Continue with this YubiKey',devices,
+  });
+  if(!serial)return;
+ }
+ const checkTransport=()=>{
+  check();
+  if(window.hardwareTransport?.getMode()!=='smartcard')throw Error('Use Web Smart Card to enroll the selected YubiKey.');
+ };
+ checkTransport();
+ return enroll('piv',checkTransport,{expectedSerial:serial});
+}
+el('vault-add-piv').onclick=()=>run(c=>enrollConnectedPiv(c));
+el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
 el('vault-unlock').onclick=()=>run(async check=>{const fresh=await load();if(fresh){record=fresh;revision=fresh.revision;}validate(record);const w=structuredClone(record.wrappers.find(w=>w.id===el('vault-methods').value));if(!w)throw Error('Select an unlock method.');let secret;try{secret=w.type==='piv'?await pivSecret(w):await prf(w);check();await engine.unlock(record,w.id,secret);check();tell('Vault unlocked.');if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. You may remove the key.');window.dispatchEvent(new Event('iwa-vault-unlocked'));}finally{secret?.fill(0);}});
 el('vault-lock').onclick=()=>{lock();tell('Vault locked.');};
 el('vault-store').onclick=()=>run(async check=>{if(!engine.unlocked)throw Error('Unlock first.');const file=el('vault-file').files[0],name=el('vault-item-name').value.trim();if(!name||name.length>100)throw Error('Enter an item name.');let item;if(file){if(!/\.(p12|pfx)$/i.test(file.name)||file.size>1000000)throw Error('Choose a .p12/.pfx up to 1 MB.');item={id:crypto.randomUUID(),name,kind:'password-protected .p12',file:b64(await file.arrayBuffer()),password:el('vault-password').value};if(!item.password)throw Error('Enter the existing .p12 password.');}else{const value=el('vault-secret').value;if(!value||value.length>65536)throw Error('Enter a secret up to 64 KiB.');item={id:crypto.randomUUID(),name,kind:'secret setting',value};}check();engine.data.items.push(item);await engine.save();await commit();el('vault-password').value=el('vault-secret').value=el('vault-file').value='';tell('Saved encrypted in the IWA vault. This does not select a software signing identity or change gws credentials.');});
@@ -142,7 +238,8 @@ window.createStartupVault=async({name,serial,method,classical=false})=>{
  if(method!=='existing-piv'&&!/^[1-9][0-9]{0,9}$/.test(serial))throw Error('Enter the connected YubiKey serial.');
  el('vault-name').value=name;el('fido-serial').value=serial;el('vault-classical').checked=classical;
  return run(async check=>{
-  await enroll(method==='existing-piv'?'piv':'prf',check,method==='new-prf');
+  if(method==='existing-piv')await enrollConnectedPiv(check,serial);
+  else await enroll('prf',check,{create:method==='new-prf'});
   if(method==='existing-piv'||!engine.unlocked)return;
   // The read-only probe follows successful FIDO protection. Failure leaves
   // that verified vault intact and never attempts PIV provisioning or login.
@@ -151,6 +248,6 @@ window.createStartupVault=async({name,serial,method,classical=false})=>{
   if(!hasMatchingPiv(material,serial))return;
   if(!confirm('This YubiKey already has a usable PIV wrapping key. Also configure PIV unlocking for this vault? No keys will be created or changed.'))return;
   el('vault-classical').checked=!!material.classicalAllowed;
-  await enroll('piv',check,false,serial);
+  await enroll('piv',check,{expectedSerial:serial});
  });
 };

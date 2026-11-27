@@ -65,14 +65,13 @@ export class Vault {
   const value=await open(key,box,['Sequoia IWA complete backup',2,header]);
   this.assertLive(epoch,key,record);return value;
  }
- async add(w,secret){
+ async add(w,secret,{makeDefault=w.type==='piv'}={}){
   if(!this.unlocked)throw Error('Unlock the vault before enrolling another method.');
   if(this.record.wrappers.length>=16||this.record.wrappers.some(x=>x.type===w.type&&JSON.stringify(x.binding)===JSON.stringify(w.binding)))throw Error('Unlock method already enrolled or limit reached.');
   const epoch=this.epoch,key=this.key,record=this.record,k=await wrappingKey(record,w,secret);
   try{this.assertLive(epoch,key,record);w={...w,box:await seal(k,{key:b64(key)},context(record,w))};}finally{k.fill(0);}
   this.assertLive(epoch,key,record);this.record.wrappers.push(w);
-  // Enrolling a PIV key makes it the default, without removing existing PRF wraps.
-  if(w.type==='piv')this.record.default=w.id;
+  if(makeDefault)this.record.default=w.id;
   return this.save();
  }
  async save(){

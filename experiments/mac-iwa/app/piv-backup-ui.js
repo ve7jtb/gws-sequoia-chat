@@ -88,8 +88,9 @@ export function createBackupUi({provider,account,test,say,changed}){
   const summary=review.plan.keys.map(k=>k.slot.toUpperCase()+': '+k.component+' ('+k.role+'), PIN always, touch '+k.touch).join('\n');
   if(!confirm('Detected empty YubiKey '+review.plan.serial+'\n\nImport the EXISTING Level 3 software keys (no new keys generated):\n'+summary+'\n\nFingerprint: '+identity.fingerprint+'\n\nThis writes six empty slots. An interrupted import must not be blindly retried. Keep the software copy until verification passes. Proceed?'))return;
   try{
-   await controller.provision(review.id,{confirmed:true});await changed();
+   const provisioned=await controller.provision(review.id,{confirmed:true});await changed();
    say('Hardware backup verified. Export an encrypted vault backup before using Verify hardware backup / remove software keys.');
+   return {serial:provisioned.serial,type:'prf'};
   }catch(error){say('Provisioning stopped. Keep the software keys and journal; do not reset or repeat after partial writes. '+error.message,true);throw error;}
  };
 }
