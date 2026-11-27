@@ -16,6 +16,13 @@ const api=()=>{if(!globalThis.SequoiaSecureChannel?.isRequired())throw Error('Ke
 // from unverified ciphertext or use padding errors as authentication success.
 async function block(key,data,decrypt=false){
  if(data.length!==16)throw Error('Invalid management challenge');
+ // Chromium WebCrypto cannot import AES-192. Use the existing RustCrypto
+ // WASM implementation for the single mutual-authentication block only.
+ if(key.length===24){
+  const {default:init,provisioning_aes192_block}=await import('./wasm/sequoia_iwa_verify.js');
+  await init();
+  return provisioning_aes192_block(key,data,decrypt);
+ }
  const k=await crypto.subtle.importKey('raw',key,'AES-CBC',false,['encrypt','decrypt']),zero=new Uint8Array(16);
  if(!decrypt)return new Uint8Array(await crypto.subtle.encrypt({name:'AES-CBC',iv:zero},k,data)).slice(0,16);
  const pad=new Uint8Array(await crypto.subtle.encrypt({name:'AES-CBC',iv:data},k,new Uint8Array(16).fill(16))).slice(0,16);

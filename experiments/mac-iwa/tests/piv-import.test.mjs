@@ -1,5 +1,18 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';import {createCipheriv,createDecipheriv} from 'node:crypto';
 import {createPivImporter,FACTORY_MANAGEMENT_KEY} from '../app/piv-import.js';import {planPivBackup,planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
+// Node cannot fetch file: URLs. Initialize the same packaged verifier the
+// browser loads, so the management tests exercise the Chromium fallback path.
+import initVerifier,{provisioning_aes192_block} from '../app/wasm/sequoia_iwa_verify.js';
+await initVerifier({module_or_path:fs.readFileSync(new URL('../app/wasm/sequoia_iwa_verify_bg.wasm',import.meta.url))});
+
+test('packaged WASM matches the AES-192 single-block reference in both directions',()=>{
+ const key=Buffer.from('000102030405060708090a0b0c0d0e0f1011121314151617','hex');
+ const clear=Buffer.from('00112233445566778899aabbccddeeff','hex');
+ const cipher=Buffer.from('dda97ca4864cdfe06eaf70a0ec0d7191','hex');
+ assert.deepEqual(Buffer.from(provisioning_aes192_block(key,clear,false)),cipher);
+ assert.deepEqual(Buffer.from(provisioning_aes192_block(key,cipher,true)),clear);
+ assert.throws(()=>provisioning_aes192_block(key.subarray(1),clear,false),/Invalid PIV AES-192 challenge/);
+});
 function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,factoryFlag,selectFactory=false}={}){
  const context={Uint8Array,TextEncoder,TextDecoder,atob,btoa,crypto};context.globalThis=context;vm.createContext(context);vm.runInContext(fs.readFileSync(new URL('../app/smartcard-piv.js',import.meta.url),'utf8'),context);
  const p=context.SequoiaSmartCardPiv,t=p.encodeBerTlv,join=(...a)=>new Uint8Array(a.flatMap(x=>[...x]));

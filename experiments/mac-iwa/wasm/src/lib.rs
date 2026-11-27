@@ -214,6 +214,32 @@ pub fn decrypt_with_session_key(input:&str)->Result<String,JsValue>{
  run().map_err(|_|JsValue::from_str("Decryption request rejected"))
 }
 
+/// Process one AES-192 block for the PIV management mutual challenge.
+#[wasm_bindgen]
+pub fn provisioning_aes192_block(
+    key: Vec<u8>,
+    input: Vec<u8>,
+    decrypt: bool,
+) -> Result<Vec<u8>, JsValue> {
+    use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
+    use zeroize::Zeroizing;
+
+    let key = Zeroizing::new(key);
+    let input = Zeroizing::new(input);
+    if key.len() != 24 || input.len() != 16 {
+        return Err(JsValue::from_str("Invalid PIV AES-192 challenge"));
+    }
+    let cipher = aes::Aes192::new(GenericArray::from_slice(&key));
+    let mut output = input.to_vec();
+    let block = GenericArray::from_mut_slice(&mut output);
+    if decrypt {
+        cipher.decrypt_block(block);
+    } else {
+        cipher.encrypt_block(block);
+    }
+    Ok(output)
+}
+
 /// Verify one public ML-DSA-65 certificate signature and explicit context.
 #[wasm_bindgen]
 pub fn provisioning_verify_mldsa65(public: &[u8], msg: &[u8], context: &[u8], signature: &[u8]) -> bool {
