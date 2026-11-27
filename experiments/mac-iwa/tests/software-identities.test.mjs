@@ -214,3 +214,19 @@ test('optional Level 3 S/MIME secrets are persisted with OpenPGP inside the encr
  await h.unlock();
  assert.deepEqual(h.engine.data.items[0].smimeKeys,before);
 });
+
+// The real vault encrypts the auxiliary seeds, while public snapshots expose
+// only capability flags. PRF is mandatory even if the UI is bypassed.
+test('SSH creation requires PRF and encrypted restart preserves both distinct seeds',async()=>{
+ const contribution=new Uint8Array(32).fill(91),h=await harness(async()=>contribution);
+ const sshKeys={version:1,entropy:'prf-mixed-v1',pq:{slot:'8c',algorithm:'ML-DSA-44',seed:b64(new Uint8Array(32).fill(11)),publicKey:b64(new Uint8Array(1312).fill(12))},ed:{slot:'8d',algorithm:'Ed25519',seed:b64(new Uint8Array(32).fill(21)),publicKey:b64(new Uint8Array(32).fill(22))}};
+ const expected=structuredClone(sshKeys);
+ await assert.rejects(h.store.create({name:'SSH',profile:'level3',includeSsh:true},account),/PRF/);
+ h.setCrypto(async(op,input)=>{assert.equal(op,'generate');assert.equal(input.includeSsh,true);assert.equal(atob(input.hardwareEntropy).length,32);return {encryptedSecret,public:metadata,sshKeys};});
+ const selected=await h.store.create({name:'SSH',profile:'level3',includeSsh:true,entropy:true},account);
+ assert(selected.hasSsh);assert(!('sshKeys'in selected));assert(contribution.every(x=>x===0));
+ assert.equal(sshKeys.pq.seed,'');assert.equal(sshKeys.ed.seed,'');
+ assert(!JSON.stringify(h.saved).includes(expected.pq.seed));
+ h.lock();await h.unlock();
+ assert.deepEqual(h.engine.data.items[0].sshKeys,expected);
+});

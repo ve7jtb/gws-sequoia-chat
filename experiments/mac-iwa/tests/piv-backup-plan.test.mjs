@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {planPivBackup,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
+import {planPivBackup,planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
 // Synthetic serial only: these tests perform no card discovery or mutation.
 const request=()=>({profile:'level3',serial:'12345678',expectedSerial:'12345678',supportedAlgorithms:['ML-DSA-65','ML-KEM-768','Ed25519','X25519'],slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
 test('backup plan keeps certification, signing and encryption roles distinct',()=>{
@@ -45,4 +45,17 @@ test('both modes plan the same optional NIST and S/MIME keys with RFC 9980 as de
  assert.equal(planPivBackup(options).keys.length,6);
  input.slots.find(slot=>slot.slot==='8a').keyPresent=true;
  assert.throws(()=>planLevel3Provisioning(options),/not empty/);
+});
+
+// SSH is independent of existing message keys and never adds a certificate.
+test('SSH addition fails closed on unsupported ML-DSA-44 or occupied slots',()=>{
+ const slots=USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}));
+ const input={profile:'level3',serial:'12345678',includeSmime:true,includeSsh:true,slots,supportedAlgorithms:['ML-DSA-65','ML-KEM-768','Ed25519','X25519','P-384']};
+ assert.throws(()=>planLevel3Provisioning(input),/ML-DSA-44/);
+ input.supportedAlgorithms.push('ML-DSA-44');
+ const plan=planLevel3Provisioning(input);
+ assert.deepEqual(plan.ssh.signing,['8c','8d']);assert.equal(plan.keys.length,10);
+ assert.deepEqual(plan.certificates.smime.pure.signing,['9c']);
+ input.slots.find(k=>k.slot==='8c').keyPresent=true;
+ assert.throws(()=>planLevel3Provisioning(input),/not empty/);
 });

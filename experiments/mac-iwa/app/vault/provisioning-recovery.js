@@ -20,7 +20,9 @@ export async function verifyProvisioningRecovery({file,methodId,targetSerial,sou
   if(!item.encryptedSecret||!item.password||restored?.encryptedSecret!==item.encryptedSecret||
      restored?.password!==item.password||restored?.public?.certificateHash!==item.public.certificateHash||
      !sameLevel3SmimeKeys(item.smimeKeys,restored?.smimeKeys)||
-     JSON.stringify(item.nistKeys)!==JSON.stringify(restored?.nistKeys))
+     JSON.stringify(item.nistKeys)!==JSON.stringify(restored?.nistKeys)||
+     JSON.stringify(item.sshKeys)!==JSON.stringify(restored?.sshKeys)||
+     JSON.stringify(item.hardwareCopies)!==JSON.stringify(restored?.hardwareCopies))
    throw Error('The backup does not contain the current private identity. Export a fresh encrypted vault backup.');
  }finally{
   secret?.fill(0);

@@ -4,12 +4,12 @@ import {p384} from '@noble/curves/nist.js';
 import {provisionLevel3} from '../app/provisioning/level3-transaction.js';
 import {planLevel3Provisioning,USER_PIV_SLOTS} from '../app/piv-backup-plan.js';
 
-function fixture(mode,{badCertificate=false}={}){
+function fixture(mode,{badCertificate=false,includeSsh=false}={}){
  const serial='12345678',email='test@example.invalid';
  const blank={serial,slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false})),
-  supportedAlgorithms:['ML-DSA-65','Ed25519','ML-KEM-768','X25519','P-384']};
- const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:true,...blank});
- const lengths={'ML-DSA-65':1952,Ed25519:32,'ML-KEM-768':1184,X25519:32,'P-384':97};
+  supportedAlgorithms:['ML-DSA-44','ML-DSA-65','Ed25519','ML-KEM-768','X25519','P-384']};
+ const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:true,includeSsh,...blank});
+ const lengths={'ML-DSA-44':1312,'ML-DSA-65':1952,Ed25519:32,'ML-KEM-768':1184,X25519:32,'P-384':97};
  const events=[],slotWrites=[],journal=[];
  const rows=plan.keys.map((rule,index)=>{
   const publicKey=new Uint8Array(lengths[rule.component]).fill(index+1);
@@ -102,5 +102,14 @@ test('certificate-only recovery checks all imported public keys and never enters
  assert.equal(f.events[0],'verify live keys');
  assert(f.events.includes('touch prompt'));
  assert.equal(f.events.at(-1),'save');
+ assert.equal(f.journal.at(-1).state,'saved');
+});
+
+for(const mode of ['backup','on-card'])test('complete SSH '+mode+' transaction journals all twelve keys',async()=>{
+ const f=fixture(mode,{includeSsh:true});
+ await provisionLevel3(f.options);
+ assert.equal(f.slotWrites.length,12);
+ assert.equal(f.journal.at(-1).includeSsh,true);
+ assert.deepEqual(f.slotWrites.slice(-2),['8c','8d']);
  assert.equal(f.journal.at(-1).state,'saved');
 });

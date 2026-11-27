@@ -37,8 +37,8 @@ export function planLevel3Provisioning({slots,supportedAlgorithms,...options}){
 
 // Certificate-only recovery verifies each occupied slot against this layout.
 export function level3Layout({profile,serial,expectedSerial,
- mode='backup',includeSmime=false,includeExperimentalNist=false}){
- if(!['backup','on-card'].includes(mode)||typeof includeSmime!=='boolean'||typeof includeExperimentalNist!=='boolean')
+ mode='backup',includeSmime=false,includeExperimentalNist=false,includeSsh=false}){
+ if(!['backup','on-card'].includes(mode)||typeof includeSmime!=='boolean'||typeof includeExperimentalNist!=='boolean'||typeof includeSsh!=='boolean')
   throw Error('Unknown Level 3 provisioning option.');
  if(!/^[1-9][0-9]{5,9}$/.test(serial)||(expectedSerial!==undefined&&serial!==expectedSerial))throw Error('Connected YubiKey does not match the selected backup device.');
  // Do not import the supported half of a composite and quietly omit the other
@@ -57,6 +57,9 @@ export function level3Layout({profile,serial,expectedSerial,
   {role:'nist-certification',component:'ML-DSA-65',slot:'8a',touch:'always'},
   {role:'nist-certification',component:'P-384',slot:'8b',touch:'never'},
  );
+ // Independent SSH pair: the PQ component enforces user presence.
+ if(includeSsh)keys.push({role:'ssh-signing',component:'ML-DSA-44',slot:'8c',touch:'always'},
+  {role:'ssh-signing',component:'Ed25519',slot:'8d',touch:'never'});
  const plan={version:1,serial,profile,operation:mode==='backup'
   ?'import-existing-software-keys':'generate-on-card',keys:keys.map(k=>({...k,pin:'always'}))};
  // Leave the existing six-key import plan byte-for-byte compatible.
@@ -68,5 +71,6 @@ export function level3Layout({profile,serial,expectedSerial,
   ...(includeExperimentalNist?{experimentalNist:{draft:5,signatureAlgorithm:41,kemAlgorithm:37,
    certification:['8a','8b'],signing:['9c',LEVEL3_SMIME_SLOTS.signing],encryption:['9d',LEVEL3_SMIME_SLOTS.agreement]}}:{}),
  };
+ if(includeSsh)plan.ssh={algorithm:'ssh-mldsa44-ed25519',signing:['8c','8d']};
  return plan;
 }

@@ -43,6 +43,7 @@
  <option value="backup">Create an encrypted backup, then import to the YubiKey</option>
  <option value="on-card">Generate directly on the YubiKey</option>
 </select>
+<label><input type="checkbox" id="combined-level3-ssh" checked> Include SSH ML-DSA-44 (touch required) + Ed25519 in slots 8c/8d; no additional certificate</label>
 <label><input type="checkbox" id="combined-level3-nist"> Also issue experimental OpenPGP v6 NIST P-384</label>
 <p>RFC 9980 stays the default. This also issues pure and hybrid S/MIME certificates.</p>
 <button id="combined-level3-review">Review empty YubiKey…</button>

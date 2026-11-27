@@ -2,6 +2,7 @@ import {generateLevel3SmimeKeys,sameLevel3SmimeKeys,generateNistCertificationKey
 // Software identities are authenticated records INSIDE the existing encrypted
 // vault. This module never opens IndexedDB or a native connection itself. Its
 // injected access service owns encryption/CAS persistence and lock epochs.
+import {validateSshKeys,sshPublicLine} from '../vault/ssh-keys.js';
 const KIND='software OpenPGP identity',MAX_SECRET=349528;
 export const SOFTWARE_PROFILES=Object.freeze(['level3','level5','level3-v4-hybrid','level3-v4-classical','level5-v4-hybrid','level5-v4-classical','level3-v5-hybrid']);
 const profileVersion=profile=>profile.includes('-v4-')?4:profile.includes('-v5-')?5:6;
@@ -33,13 +34,18 @@ async function publicMetadata(value){
  return {version,profile,signingAlgorithm,encryptionAlgorithm,pqSigning,pqEncryption,certificate:value.certificate,certificateHash:value.certificateHash,fingerprint:value.fingerprint,emails,signingFingerprint:value.signingFingerprint,recipientKey:value.recipientKey,algorithms:[...value.algorithms]};
 }
 function itemShape(item){
- if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[]),...(item?.smimeKeys?['smimeKeys']:[]),...(item?.nistKeys?['nistKeys']:[]),...(item?.provisioned?['provisioned']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
+ if(!fields(item,['id','name','kind','version','encryptedSecret','password','public',...(item?.hardware?['hardware']:[]),...(item?.smimeKeys?['smimeKeys']:[]),...(item?.nistKeys?['nistKeys']:[]),...(item?.sshKeys?['sshKeys']:[]),...(item?.hardwareCopies?['hardwareCopies']:[]),...(item?.provisioned?['provisioned']:[])])||item.kind!==KIND||![1,2].includes(item.version)||typeof item.id!=='string'||!/^[a-f0-9-]{36}$/.test(item.id))throw Error('Stored software identity is malformed.');
  label(item.name);
+ if(item.sshKeys){if(item.hardware?.privateRemoved||item.public?.profile!=='level3')throw Error('Invalid SSH custody');validateSshKeys(item.sshKeys);}
+ if(item.hardwareCopies){
+  if(!Array.isArray(item.hardwareCopies)||item.hardwareCopies.length>32||new Set(item.hardwareCopies.map(h=>h?.serial)).size!==item.hardwareCopies.length)throw Error('Invalid card copies');
+  for(const copy of item.hardwareCopies){const candidate={...item,hardware:copy};delete candidate.hardwareCopies;itemShape(candidate);}
+ }
  if(item.smimeKeys&&(item.public?.profile!=='level3'||item.hardware?.privateRemoved||
     !sameLevel3SmimeKeys(item.smimeKeys,item.smimeKeys)))throw Error('Invalid Level 3 S/MIME backup keys.');
  if(item.hardware){
-  const h=item.hardware;if(!fields(h,['serial','slots','verified','privateRemoved'])||!/^[1-9][0-9]{5,9}$/.test(h.serial)||h.verified!==true||typeof h.privateRemoved!=='boolean'||!Array.isArray(h.slots)||![6,8,10].includes(h.slots.length))throw Error('Invalid hardware backup binding.');
-  for(const k of h.slots)if(!fields(k,['slot','publicKeySha256'])||!['86','87','9c','84','9d','85','82','83','8a','8b'].includes(k.slot)||!/^[a-f0-9]{64}$/.test(k.publicKeySha256))throw Error('Invalid hardware slot binding.');
+  const h=item.hardware;if(!fields(h,['serial','slots','verified','privateRemoved'])||!/^[1-9][0-9]{5,9}$/.test(h.serial)||h.verified!==true||typeof h.privateRemoved!=='boolean'||!Array.isArray(h.slots)||![6,8,10,12].includes(h.slots.length))throw Error('Invalid hardware backup binding.');
+  for(const k of h.slots)if(!fields(k,['slot','publicKeySha256'])||!['86','87','9c','84','9d','85','82','83','8a','8b','8c','8d'].includes(k.slot)||!/^[a-f0-9]{64}$/.test(k.publicKeySha256))throw Error('Invalid hardware slot binding.');
   if(new Set(h.slots.map(k=>k.slot)).size!==h.slots.length)throw Error('Duplicate hardware slot binding.');
   if(h.privateRemoved){if(item.encryptedSecret!==''||item.password!=='')throw Error('Removed private keys remain in record.');}else credentials(item.encryptedSecret,item.password);
  }else credentials(item.encryptedSecret,item.password);
@@ -68,7 +74,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  const marker=s=>({vaultId:s.vaultId,revision:s.revision,epoch:s.epoch});
  async function check(s){const now=current();if(!same(marker(now),marker(s)))throw Error('Software identity vault changed; start again.');await access.assertCurrent(marker(s));if(!same(marker(current()),marker(s)))throw Error('Software identity vault changed; start again.');}
  function recordsIn(s){const records=s.items.filter(x=>x?.kind===KIND);if(records.length>16||new Set(records.map(x=>x.id)).size!==records.length)throw Error('Invalid software identity inventory.');return records.map(itemShape);}
- function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
+ function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,hasSsh:!!item.sshKeys,hasSmime:!!item.smimeKeys,hasNist:!!item.nistKeys,cardSerials:(item.hardwareCopies|| (item.hardware?[item.hardware]:[])).map(h=>h.serial),hasSshPublic:!!item.provisioned?.ssh,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
  async function withController(signal,fn){const c=new AbortController();active.add(c);const abort=()=>c.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)c.abort();try{if(c.signal.aborted)throw Error('Software operation cancelled.');return await fn(c.signal);}finally{signal?.removeEventListener('abort',abort);active.delete(c);}}
  async function list(account){
   account=mailbox(account);if(!access.snapshot()?.unlocked)return {choices:[],revision:0};const s=current(),choices=[];await check(s);
@@ -103,7 +109,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   * the existing v6 default is not replaced by importing an older certificate.
   */
  async function savePrepared(source,name,password,account,s,signal,smimeKeys){
-  if(!source||Object.keys(source).some(k=>!['encryptedSecret','public','compatibility'].includes(k)))throw Error('Invalid software creation response.');
+  if(!source||Object.keys(source).some(k=>!['encryptedSecret','public','compatibility','sshKeys','smimeKeys','nistKeys'].includes(k)))throw Error('Invalid software creation response.');
   const variants=[source,...(source.compatibility||[])];if(!Array.isArray(source.compatibility||[])||variants.length>4)throw Error('Invalid software certificate set.');
   const existing=recordsIn(s),created=[];if(existing.length+variants.length>16)throw Error('Maximum 16 software identities per vault.');
   for(const value of variants){
@@ -115,8 +121,10 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   }
   // Keep both P-384 keys in the same authenticated vault commit as the
   // OpenPGP identity. The portable OpenPGP export remains format-specific.
+  if(source.sshKeys)created[0].sshKeys=structuredClone(validateSshKeys(source.sshKeys));
+  if(source.nistKeys)created[0].nistKeys=structuredClone(source.nistKeys);
   if(smimeKeys){
-   created[0].smimeKeys=smimeKeys;
+   created[0].smimeKeys=structuredClone(smimeKeys);
    itemShape(created[0]);
   }
   if(signal.aborted)throw Error('Software creation cancelled.');await access.replaceItems([...s.items,...created],marker(s),{signal});grants.clear();changed();return get('software:'+created[0].id,account);
@@ -124,11 +132,13 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  async function createIdentity(value,account,{signal}={}){
   if(mutation)throw Error('Another software identity change is in progress.');mutation=true;
   try{return await withController(signal,async signal=>{
-   if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[]),...(value?.includeSmime!==undefined?['includeSmime']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
+   if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[]),...(value?.includeSmime!==undefined?['includeSmime']:[]),...(value?.includeSsh!==undefined?['includeSsh']:[]),...(value?.includeNist!==undefined?['includeNist']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
    if(value.includeSmime!==undefined&&(typeof value.includeSmime!=='boolean'||
       (value.includeSmime&&value.profile!=='level3')))throw Error('S/MIME backup requires the Level 3 profile.');
+   if(value.includeSsh!==undefined&&(typeof value.includeSsh!=='boolean'||(value.includeSsh&&(value.profile!=='level3'||value.entropy!==true))))throw Error('SSH provisioning requires Level 3 with PRF-mixed entropy.');
+   if(value.includeNist!==undefined&&(typeof value.includeNist!=='boolean'||(value.includeNist&&(value.profile!=='level3'||value.entropy!==true))))throw Error('NIST provisioning requires PRF-mixed entropy.');
    if(value.entropy!==undefined&&typeof value.entropy!=='boolean')throw Error('Invalid entropy option');
-   const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result,entropy;const input={profile:value.profile,email:account,name,password};
+   const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result,entropy;const input={profile:value.profile,email:account,name,password,...(value.includeSsh?{includeSsh:true}:{}),...(value.entropy&&value.includeSmime?{includeSmime:true}:{}),...(value.includeNist?{includeNist:true}:{})};
    try{
     if(value.entropy){
      if(typeof entropyCollector!=='function')throw Error('Hardware entropy service unavailable');
@@ -139,11 +149,14 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
     if(signal.aborted)throw Error('Software creation cancelled');
     result=await cryptoCall('generate',input,{signal});await check(s);
     if(result.public?.profile&&result.public.profile!==value.profile)throw Error('Generated profile does not match the request.');
-    const smimeKeys=value.includeSmime?await generateLevel3SmimeKeys():undefined;
+    if(value.includeSsh&&!result.sshKeys)throw Error('SSH generation returned no keys');
+    if(value.includeNist&&!result.nistKeys)throw Error('NIST generation returned no keys');
+    if(value.entropy&&value.includeSmime&&!result.smimeKeys)throw Error('S/MIME generation returned no mixed-entropy keys');
+    const smimeKeys=value.includeSmime?(result.smimeKeys||await generateLevel3SmimeKeys()):undefined;
     await check(s);
     return await savePrepared(result,name,password,account,s,signal,smimeKeys);
    }
-   finally{entropy?.fill(0);input.hardwareEntropy='';input.password='';password='';if(result){result.encryptedSecret='';if(result.compatibility)for(const child of result.compatibility)child.encryptedSecret='';}}
+   finally{entropy?.fill(0);input.hardwareEntropy='';input.password='';password='';if(result){for(const k of [...Object.values(result.smimeKeys||{}),...Object.values(result.nistKeys||{})])k.privateKey='';if(result.sshKeys){result.sshKeys.pq.seed='';result.sshKeys.ed.seed='';}result.encryptedSecret='';if(result.compatibility)for(const child of result.compatibility)child.encryptedSecret='';}}
   });}finally{mutation=false;}
  }
  async function importP12(value,account,{signal}={}){
@@ -237,7 +250,8 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   await assert(selected);
   const state=current();
   const item=recordsIn(state).find(row=>row.id===selected.identityId);
-  if(!item||item.hardware||!item.smimeKeys)throw Error('Create a fresh Level 3 identity with the S/MIME keys first.');
+  if(!item||item.hardware?.privateRemoved||!item.smimeKeys)throw Error('Create a fresh Level 3 identity with the S/MIME keys first.');
+  if(plan.ssh&&!item.sshKeys)throw Error('This identity has no SSH seeds. Create a new PRF-mixed identity; existing keys are never silently regenerated.');
   const nist=plan.certificates.experimentalNist;
   if(existingOnly&&nist&&!item.nistKeys)throw Error('This staged identity has no NIST certification keys.');
   const nistKeys=nist?(item.nistKeys||await generateNistCertificationKeys(publicFromSeed)):undefined;
@@ -260,6 +274,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
     out.push({slot:pq.slot,algorithm:'ML-DSA-65',seed:bytes(pq.privateKey),publicKey:bytes(pq.publicKey)});
     out.push({slot:ec.slot,algorithm:'P-384',seed:await level3SmimeImportScalar('certification',ec),publicKey:bytes(ec.publicKey).slice(-97)});
    }
+   if(plan.ssh){for(const key of Object.values(validateSshKeys(item.sshKeys)).filter(k=>k?.slot))out.push({slot:key.slot,algorithm:key.algorithm,seed:bytes(key.seed),publicKey:bytes(key.publicKey)});}
    await assert(bound);
    if(out.length!==plan.keys.length)throw Error('Incomplete combined backup material.');
    return {material:out,identity:bound};
@@ -282,6 +297,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    verified:true,privateRemoved:plan.operation==='generate-on-card'};
   const encode=value=>btoa(String.fromCharCode(...value));
   const provisioned={defaultOpenPgp:'rfc9980',
+   ...(plan.ssh?{ssh:{...plan.ssh,publicKey:sshPublicLine(readback.find(k=>k.slot==='8c').publicKey,readback.find(k=>k.slot==='8d').publicKey)}}:{}),
    ...(certificates.smime?{smime:Object.fromEntries(Object.entries(certificates.smime).map(([kind,pair])=>
     [kind,{signing:encode(pair.signing),encryption:encode(pair.encryption)}]))}:{}),
    ...(certificates.experimentalNist?{experimentalNist:encode(certificates.experimentalNist.certificate)}:{}),
@@ -293,9 +309,12 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    itemShape(item);items=[...state.items,item];
   }else{
    const previous=recordsIn(state).find(item=>item.id===review.identity.identityId);
-   if(!previous||previous.hardware||!previous.smimeKeys||details.certificateHash!==previous.public.certificateHash)
+   if(!previous||previous.hardware?.privateRemoved||!previous.smimeKeys||details.certificateHash!==previous.public.certificateHash)
     throw Error('Imported certificate or encrypted backup changed.');
-   const item={...previous,hardware,provisioned};
+   // Keep every verified serial binding while retaining one default binding.
+   const copies=[...(previous.hardwareCopies|| (previous.hardware?[previous.hardware]:[]))].filter(h=>h.serial!==hardware.serial);
+   copies.push(hardware);
+   const item={...previous,hardware:previous.hardware||hardware,hardwareCopies:copies,provisioned};
    itemShape(item);items=state.items.map(row=>row===previous?item:row);
   }
   await guard();
@@ -326,7 +345,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  async function removePrivate(selected,handle,recovery){
   await assertHardware(handle);if(!same(selected,handle.identity))throw Error('Hardware removal review changed.');
   const s=current();await check(s);const item=recordsIn(s).find(x=>x.id===selected.identityId);
-  if(item.smimeKeys||item.nistKeys)throw Error('Keep the software copy until the S/MIME hardware keys and certificates are verified.');
+  if(item.smimeKeys||item.nistKeys||item.sshKeys)throw Error('Keep the software copy until the S/MIME hardware keys and certificates are verified.');
   if(typeof access.verifyRecovery!=='function')throw Error('Independent recovery verification is required.');
   await access.verifyRecovery(recovery,item,selected.hardware.serial);
   await check(s);

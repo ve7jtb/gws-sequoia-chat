@@ -18,7 +18,7 @@ export async function provisionLevel3({review,card,piv,vault,verify,inspectRfc99
   if(signal?.aborted)throw Error('Provisioning cancelled.');
  };
  const options={profile:'level3',mode,serial:review.plan.serial,expectedSerial:review.plan.serial,
-  includeSmime:!!review.plan.certificates.smime,includeExperimentalNist:!!review.plan.certificates.experimentalNist};
+  includeSsh:!!review.plan.ssh,includeSmime:!!review.plan.certificates.smime,includeExperimentalNist:!!review.plan.certificates.experimentalNist};
  const plan=resume?level3Layout(options):planLevel3Provisioning({...options,...await card.inspect(review.plan.serial)});
  if(JSON.stringify(plan)!==JSON.stringify(review.plan))throw Error('The reviewed plan changed.');
  if((plan.certificates.smime&&typeof verify.smime!=='function')||
@@ -30,7 +30,7 @@ export async function provisionLevel3({review,card,piv,vault,verify,inspectRfc99
     !Array.isArray(resume.completed)||JSON.stringify(resume.completed)!==JSON.stringify(slots)||
     (resume.identityId&&resume.identityId!==review.identity?.identityId)||!review.identity))
   throw Error('Certificate recovery requires a complete matching import journal.');
- const record=resume?structuredClone(resume):{version:1,serial:plan.serial,operation:plan.operation,completed:[],state:'prepared',attempted:null};
+ const record=resume?structuredClone(resume):{version:1,serial:plan.serial,operation:plan.operation,completed:[],state:'prepared',attempted:null,includeSsh:!!plan.ssh};
  let material;
  try{
   await check();

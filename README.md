@@ -1,5 +1,11 @@
 # gws + Sequoia Mail & Chat
 
+**IWA 0.20.48 (testing channel)** adds ML-DSA-44 + Ed25519 SSH keys to both
+Level 3 provisioning paths, PRF-mixed software generation, repeat provisioning
+to additional empty YubiKeys, and encrypted vault backup/restore. Tests use
+simulated cards; no existing YubiKey keys or policies are changed.
+[Provisioning and backup instructions](experiments/mac-iwa/README.md#ssh-pair-provisioning-02048)
+
 A standalone local browser app and CLI for encrypted Google Chat bundles and OpenPGP email, using [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) for transport and [Sequoia `sq`](https://sequoia-pgp.org/) for OpenPGP. No PQ Mail installation, Java runtime, `.p12` identity, or PQ Mail vault is needed.
 
 This is an experimental integration, not an official Google or Sequoia product. The local browser UI uses a native Python helper with gws and Sequoia. Chat uses Google's documented Chat API; the new mail preview uses Gmail API and standard signed-and-encrypted PGP/MIME. See [Local browser app](#local-browser-app-mac-preview) and [Gmail preview](#gmail-preview).

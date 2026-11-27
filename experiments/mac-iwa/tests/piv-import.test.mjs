@@ -13,7 +13,7 @@ test('packaged WASM matches the AES-192 single-block reference in both direction
  assert.deepEqual(Buffer.from(provisioning_aes192_block(key,cipher,true)),clear);
  assert.throws(()=>provisioning_aes192_block(key.subarray(1),clear,false),/Invalid PIV AES-192 challenge/);
 });
-function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,factoryFlag,selectFactory=false}={}){
+function harness({occupied,wrongManagement=false,wrongPublic=false,extended=false,ssh=false,factoryFlag,selectFactory=false}={}){
  const context={Uint8Array,TextEncoder,TextDecoder,atob,btoa,crypto};context.globalThis=context;vm.createContext(context);vm.runInContext(fs.readFileSync(new URL('../app/smartcard-piv.js',import.meta.url),'utf8'),context);
  const p=context.SequoiaSmartCardPiv,t=p.encodeBerTlv,join=(...a)=>new Uint8Array(a.flatMap(x=>[...x]));
  const imports=[],plain=Buffer.alloc(16,9),slots=new Map();
@@ -27,6 +27,7 @@ function harness({occupied,wrongManagement=false,wrongPublic=false,extended=fals
   slot,algorithm,seed:new Uint8Array(seedSize).fill(i+20),
   publicKey:new Uint8Array(publicSize).fill(algorithm==='P-384'?4:i+25),
  })));
+ if(ssh)material.push({slot:'8c',algorithm:'ML-DSA-44',seed:new Uint8Array(32).fill(61),publicKey:new Uint8Array(1312).fill(62)},{slot:'8d',algorithm:'Ed25519',seed:new Uint8Array(32).fill(63),publicKey:new Uint8Array(32).fill(64)});
  const inspect=async()=>({serial:'12345678',version:'6.0.0',slots:USER_PIV_SLOTS.map(slot=>({slot,keyPresent:false,certificatePresent:false}))});
  const meta=id=>{const k=material.find(k=>parseInt(k.slot,16)===id),a=slots.get(id),publicKey=k.publicKey.slice();if(wrongPublic)publicKey[0]^=1;return join(t(1,new Uint8Array([a.alg])),t(2,new Uint8Array([3,a.touch])),t(3,new Uint8Array([a.origin])),t(4,t(k.algorithm.startsWith('ML-DSA')?0x87:k.algorithm.startsWith('ML-KEM')?0x88:0x86,publicKey)));};
  const stub={...p,inspectEmptyPivCandidate:inspect,
@@ -110,4 +111,19 @@ test('factory option uses the same AES challenge only when the card reports the 
   assert.equal(h.offeredFactory,factoryFlag===1);
   assert.equal(h.imports.length,factoryFlag===1?6:0);
  }
+});
+
+// Exercise both APDU paths with the new pair and assert all readback policies.
+for(const mode of ['backup','on-card'])test('SSH pair '+mode+' preserves distinct slots and UP policy',async()=>{
+ const h=harness({extended:true,ssh:true});
+ const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:true,includeSsh:true,...await h.importer.inspect()});
+ const options={guard:async()=>{},completed:async()=>{}};
+ if(mode==='backup')await h.importer.importAll(plan,h.material,options);
+ else await h.importer.generateAll(plan,options);
+ const rows=await h.importer.readPublicKeys(plan);
+ assert.equal(rows.length,12);
+ assert.equal(rows.find(k=>k.slot==='8c').touch,'always');
+ assert.equal(rows.find(k=>k.slot==='8d').touch,'never');
+ assert(rows.every(k=>k.pin==='always'));
+ assert.equal(plan.certificates.smime.pure.signing[0],'9c');
 });

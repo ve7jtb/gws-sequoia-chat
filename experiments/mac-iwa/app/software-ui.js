@@ -28,8 +28,9 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    text.textContent=row.name+(row.hardware?.privateRemoved?' · YubiKey '+row.hardware.serial+' (vault public binding) · OpenPGP v':' · Software (experimental) · OpenPGP v')+(row.version||6)+'\n'+(row.signingAlgorithm||'ML-DSA-65 + Ed25519')+' signing · '+(row.encryptionAlgorithm||'ML-KEM-768 + X25519')+' encryption\n'+row.fingerprint+'\n'+(row.emails||[]).join(', ')+'\n'+warning(row);box.append(text);
    const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
    if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
+   if(row.profile==='level3'&&row.hasSmime&&!row.hardware?.privateRemoved)button('Provision another empty YubiKey…',()=>provisionCombined(row));
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
-   if(row.profile==='level3'&&!row.hardware)button('Resume Level 3 certificate signing…',()=>resumeCertificates(row));
+   if(row.profile==='level3'&&row.hasSmime&&!row.hardware?.privateRemoved)button('Resume Level 3 certificate signing…',()=>resumeCertificates(row));
    if(row.hardware?.verified&&!row.hardware.privateRemoved)button('Verify encrypted vault backup…',async()=>{
     const store=provider(),current=await store.get(row.id,account());
     const recovery=await recoveryPrompt(current.hardware.serial);
@@ -37,6 +38,8 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
     await store.verifyRecoveryBackup(current,recovery);
     say('Encrypted backup verified with the separate YubiKey. The software keys remain in the vault.');
    });
+   if(row.hasSshPublic)button('Export SSH public key…',async()=>{const current=await provider().get(row.id,account());const bundle=await provider().provisioningCertificates(current);if(!bundle?.ssh?.publicKey)throw Error('SSH public key unavailable');download(bundle.ssh.publicKey+'\n','ssh-mldsa44-ed25519.pub','text/plain');});
+   if(row.cardSerials?.length) {const copies=document.createElement('p');copies.textContent='Verified card copies: '+row.cardSerials.join(', ');box.append(copies);}
    if(row.hardware?.slots.length>=8)button('Export provisioned public certificates…',async()=>{
     const current=await provider().get(row.id,account());
     const bundle=await provider().provisioningCertificates(current);
@@ -74,7 +77,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   if(!/^[1-9][0-9]{5,9}$/.test(serial))throw Error('Enter the YubiKey serial number.');
   const journalKey='sequoia-level3-provisioning:'+serial;
   const resume=JSON.parse(localStorage.getItem(journalKey)||'null');
-  if(resume?.state!=='issuing'||!Array.isArray(resume.completed)||![8,10].includes(resume.completed.length))
+  if(resume?.state!=='issuing'||!Array.isArray(resume.completed)||![8,10,12].includes(resume.completed.length))
    throw Error('This YubiKey has no completed combined import awaiting certificate signing.');
   const [{level3Layout},{createPivImporter},{provisionLevel3},
    {createCertificateVerifier},{inspectIdentity}]=await Promise.all([
@@ -83,7 +86,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   ]);
   const identity=await ctx.get(row.id,email);
   const plan=level3Layout({profile:'level3',serial,includeSmime:true,
-   includeExperimentalNist:resume.completed.length===10});
+   includeExperimentalNist:resume.completed.includes('8a'),includeSsh:resume.completed.includes('8c')});
   const guard=()=>{
    if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())
     throw Error('The certificate recovery vault or account changed.');
@@ -144,12 +147,15 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    await changed();await refresh();say('Software identity created in the encrypted vault. Use Export encrypted identity to make a portable backup. No hardware keys or recipient trust changed.');
   }finally{importController=null;}
  });
- $('combined-level3-review').onclick=()=>run(async()=>{
-  const email=account(),name=$('software-name').value.trim(),started=generation;
+ $('combined-level3-review').onclick=()=>run(()=>provisionCombined());
+ // A second card imports the same retained seeds; it never creates a replacement identity.
+ async function provisionCombined(existingRow){
+  const email=account(),name=existingRow?.name||$('software-name').value.trim(),started=generation;
   if(!email||!name||name.length>80)throw Error('Set the account email and enter a name before provisioning.');
-  const mode=$('combined-level3-mode').value;
-  if(mode==='backup'&&!$('software-custody-confirm').checked)throw Error('Review the software key custody option first.');
-  const withNist=$('combined-level3-nist').checked;
+  const mode=existingRow?'backup':$('combined-level3-mode').value;
+  if(!existingRow&&mode==='backup'&&!$('software-custody-confirm').checked)throw Error('Review the software key custody option first.');
+  const withNist=existingRow?existingRow.hasNist:$('combined-level3-nist').checked;
+  const withSsh=existingRow?existingRow.hasSsh:$('combined-level3-ssh').checked;
   const [{planLevel3Provisioning},{createPivImporter},{managementPrompt},{provisionLevel3},
    {createCertificateVerifier,certificationPublicKey},{inspectIdentity}]=await Promise.all([
    import('./piv-backup-plan.js'),import('./piv-import.js'),import('./piv-backup-ui.js'),
@@ -163,7 +169,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   };
   const card=createPivImporter({promptManagement:managementPrompt});
   say('Checking firmware and authenticated PIV inventory. No writes yet.');
-  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,...await card.inspect()});
+  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,includeSsh:withSsh,...await card.inspect()});
   guard();
   const verify=await createCertificateVerifier(piv);
   guard();
@@ -175,15 +181,15 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   const custody=mode==='backup'?'The software keys remain in the encrypted vault. Export it with a separate recovery YubiKey.':
    'The private keys will be generated on the card. Backups can recover the public certificates and slot mappings.';
   if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody))return;
-  const review={email,name,plan};
+  const review={email,name,plan,...(existingRow?{identity:await ctx.get(existingRow.id,email)}:{})};
   await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,confirmed:true,guard,
    withTouch:window.hardwareTransport.withCertificateTouch,
    journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
    vault:{
     async prepareBackup(review,plan){
-     review.identity=await ctx.create({name,profile:'level3',includeSmime:true},email);
+     if(!review.identity)review.identity=await ctx.create({name,profile:'level3',includeSmime:true,includeSsh:withSsh,includeNist:withNist,entropy:true},email);
      guard();
-     const prepared=await ctx.prepareCombinedBackup(review.identity,plan,certificationPublicKey);
+     const prepared=await ctx.prepareCombinedBackup(review.identity,plan,certificationPublicKey,{existingOnly:!!existingRow});
      review.identity=prepared.identity;
      return prepared.material;
     },
@@ -192,8 +198,8 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   });
   await changed();
   await refresh();
-  say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates in the encrypted vault.');
- });
+  say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates'+(withSsh?' and SSH public key':'')+' in the encrypted vault. Use Complete encrypted backup to preserve all software components.');
+ }
  // Per-identity export uses a new password only for the portable file. It does
  // not reveal the random password stored by the vault or overwrite that source.
  // The dialog and every late result are tied to the same account/vault epoch.

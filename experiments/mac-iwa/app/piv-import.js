@@ -6,7 +6,7 @@ import {smartcardSigningInput} from './identities/client.js';
 export const FACTORY_MANAGEMENT_KEY=Symbol('Factory PIV management key');
 // Yubico's public factory value for the AES-192 PIV management key.
 const factoryManagementKeyHex='010203040506070801020304050607080102030405060708';
-const algorithms={'ML-DSA-65':[0xe3,9,32,1952],'Ed25519':[0xe0,7,32,32],'ML-KEM-768':[0xe6,10,64,1184],'X25519':[0xe1,8,32,32],'P-384':[0x14,6,48,97]};
+const algorithms={'ML-DSA-44':[0xe2,9,32,1312],'ML-DSA-65':[0xe3,9,32,1952],'Ed25519':[0xe0,7,32,32],'ML-KEM-768':[0xe6,10,64,1184],'X25519':[0xe1,8,32,32],'P-384':[0x14,6,48,97]};
 const join=(...parts)=>{const out=new Uint8Array(parts.reduce((n,b)=>n+b.length,0));let at=0;for(const b of parts){out.set(b,at);at+=b.length;}return out;};
 const equal=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const hash=async b=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -77,7 +77,7 @@ export function createPivImporter({promptManagement}){
   const expectedOperation=mode==='generate'?'generate-on-card':'import-existing-software-keys';
   if(!plan||plan.operation!==expectedOperation||plan.profile!=='level3'||
      !/^[1-9][0-9]{5,9}$/.test(plan.serial)||!Array.isArray(plan.keys)||
-     ![6,8,10].includes(plan.keys.length)||new Set(plan.keys.map(key=>key.slot)).size!==plan.keys.length||
+     ![6,8,10,12].includes(plan.keys.length)||new Set(plan.keys.map(key=>key.slot)).size!==plan.keys.length||
      plan.keys.some(key=>!USER_PIV_SLOTS.includes(key.slot)||!Object.hasOwn(algorithms,key.component)||
       key.pin!=='always'||!['always','never'].includes(key.touch))||
      typeof guard!=='function'||typeof completed!=='function')throw Error('A reviewed Level 3 slot plan is required.');

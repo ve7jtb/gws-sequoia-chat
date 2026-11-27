@@ -601,6 +601,17 @@ fn encrypted_result(cert: &pgp::Cert, password: &str) -> Result<serde_json::Valu
     let public = load(&mut check)?.info;
     Ok(serde_json::json!({"encryptedSecret":encoded,"public":public}))
 }
+fn mixed_p384(slot:&str)->Result<serde_json::Value>{
+    use p384::pkcs8::{EncodePrivateKey,EncodePublicKey};
+    let mut scalar=Zeroizing::new([0u8;48]);
+    loop {
+        getrandom::fill(scalar.as_mut()).map_err(|_|anyhow::anyhow!("P-384 entropy unavailable"))?;
+        if let Ok(key)=p384::SecretKey::from_slice(&scalar[..]) {
+            return Ok(serde_json::json!({"slot":slot,"privateKey":B64.encode(key.to_pkcs8_der()?.as_bytes()),"publicKey":B64.encode(key.public_key().to_public_key_der()?.as_bytes())}));
+        }
+    }
+}
+
 pub(super) fn generate(mut v: serde_json::Value) -> Result<serde_json::Value> {
     // Take the optional single-credential contribution before strict field
     // validation. The RAII scope wipes DRBG state even on generation errors.
@@ -613,7 +624,45 @@ pub(super) fn generate(mut v: serde_json::Value) -> Result<serde_json::Value> {
     let _entropy_scope = if contribution.is_empty(){None}else{Some(super::entropy::start(&contribution)?)};
     #[cfg(not(target_arch="wasm32"))]
     ensure!(contribution.is_empty(),"Hardware entropy generation is browser-only");
-    let result=generate_inner(v);
+    // SSH seeds consume the same operation-local mixed DRBG as the OpenPGP
+    // keys. Refuse this option without a PRF contribution; never downgrade.
+    let ssh = v.as_object_mut().and_then(|m|m.remove("includeSsh"));
+    let include_ssh = match ssh {None=>false,Some(value)=>value.as_bool().context("Invalid SSH option")?};
+    ensure!(!include_ssh || contribution.len()==32,"SSH software generation requires PRF-mixed entropy");
+    let smime = v.as_object_mut().and_then(|m|m.remove("includeSmime"));
+    let nist = v.as_object_mut().and_then(|m|m.remove("includeNist"));
+    let include_smime = smime.map(|v|v.as_bool().context("Invalid S/MIME option")).transpose()?.unwrap_or(false);
+    let include_nist = nist.map(|v|v.as_bool().context("Invalid NIST option")).transpose()?.unwrap_or(false);
+    ensure!(!(include_smime||include_nist) || contribution.len()==32,"Provisioning requires PRF-mixed entropy");
+    ensure!(!(include_ssh||include_smime||include_nist) || v["profile"].as_str()==Some("level3"),"Provisioning requires Level 3");
+    let result=generate_inner(v).and_then(|mut result| {
+        if include_ssh {
+            use ml_dsa::{KeyExport,Keypair};
+            let mut pq=zeroize::Zeroizing::new([0u8;32]);
+            let mut ed=zeroize::Zeroizing::new([0u8;32]);
+            getrandom::fill(pq.as_mut()).map_err(|_|anyhow::anyhow!("SSH RNG failed"))?;
+            getrandom::fill(ed.as_mut()).map_err(|_|anyhow::anyhow!("SSH RNG failed"))?;
+            let public=ml_dsa::SigningKey::<ml_dsa::MlDsa44>::from_seed((&pq[..]).try_into()?).verifying_key().to_bytes();
+            let ed_public=ed25519_dalek::SigningKey::from_bytes(&ed).verifying_key().to_bytes();
+            result["sshKeys"]=serde_json::json!({
+                "version":1,"entropy":"prf-mixed-v1",
+                "pq":{"slot":"8c","algorithm":"ML-DSA-44","seed":B64.encode(&pq[..]),"publicKey":B64.encode(public)},
+                "ed":{"slot":"8d","algorithm":"Ed25519","seed":B64.encode(&ed[..]),"publicKey":B64.encode(ed_public)}
+            });
+        }
+        // Auxiliary P-384 and NIST keys consume the same scoped DRBG as the
+        // OpenPGP and SSH pairs; WebCrypto generation would bypass the PRF mix.
+        if include_smime {
+            result["smimeKeys"]=serde_json::json!({"signing":mixed_p384("83")?,"agreement":mixed_p384("82")?});
+        }
+        if include_nist {
+            use ml_dsa::{KeyExport,Keypair};
+            let mut seed=Zeroizing::new([0u8;32]);getrandom::fill(seed.as_mut()).map_err(|_|anyhow::anyhow!("NIST entropy unavailable"))?;
+            let public=ml_dsa::SigningKey::<ml_dsa::MlDsa65>::from_seed((&seed[..]).try_into()?).verifying_key().to_bytes();
+            result["nistKeys"]=serde_json::json!({"ec":mixed_p384("8b")?,"pq":{"slot":"8a","privateKey":B64.encode(&seed[..]),"publicKey":B64.encode(public)}});
+        }
+        Ok(result)
+    });
     #[cfg(target_arch="wasm32")]
     if result.is_ok(){if let Some(scope)=&_entropy_scope{scope.assert_used()?;}}
     result

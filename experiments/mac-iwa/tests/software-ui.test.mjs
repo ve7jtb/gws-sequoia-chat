@@ -143,3 +143,15 @@ test('factory management key requires its own action; a blank custom field stays
  get('piv-management-ok').dispatchEvent(new Event('click'));
  assert.equal(await result,'');
 });
+
+// Existing combined identities expose replication/recovery, not regeneration.
+test('SSH identity offers public export and another-card provisioning without exposing seeds',async t=>{
+ const f=fixture(t);Object.assign(f.row,{hasSmime:true,hasSsh:true,hasSshPublic:true,cardSerials:['12345678','87654321'],hardware:{serial:'12345678',slots:new Array(10),privateRemoved:false}});
+ f.records(async()=>[f.row]);await f.ui.refresh();
+ assert(f.button('Provision another empty YubiKey…'));
+ assert(f.button('Resume Level 3 certificate signing…'));
+ assert(f.button('Export SSH public key…'));
+ assert.equal(f.creates.length,0);
+ const text=f.get('software-identities').children.flatMap(n=>n.children).map(n=>n.textContent).join('\n');
+ assert.match(text,/12345678, 87654321/);
+});
