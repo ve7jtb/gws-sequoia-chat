@@ -1,5 +1,12 @@
 # gws + Sequoia Mail & Chat
 
+**IWA 0.20.53 passed backup-first Level 3 provisioning and on-key restore**
+on YubiKey SN# 41088108. The IWA issued and verified the S/MIME and experimental
+NIST v6 certificates in software without a PIN or touch, then imported ten keys
+and verified the signed bundle in a separate read-only restore. **0.20.54**
+automatically routes the separate FIDO entropy step to the reviewed card.
+[Hardware results and Testing release](experiments/mac-iwa/README.md#backup-first-level-3-hardware-validation-02053)
+
 **IWA 0.20.50 passed Level 3 S/MIME and experimental OpenPGP NIST v6
 certificate signing** on YubiKey SN# 41088108 using an exclusive Web Smart Card
 connection in macOS Chromium. The IWA verified and saved both certificate sets,

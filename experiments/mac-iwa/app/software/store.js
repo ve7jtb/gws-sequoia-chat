@@ -130,7 +130,7 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
   }
   if(signal.aborted)throw Error('Software creation cancelled.');await access.replaceItems([...s.items,...created],marker(s),{signal});grants.clear();changed();return get('software:'+created[0].id,account);
  }
- async function createIdentity(value,account,{signal}={}){
+ async function createIdentity(value,account,{signal,entropySerial}={}){
   if(mutation)throw Error('Another software identity change is in progress.');mutation=true;
   try{return await withController(signal,async signal=>{
    if(!fields(value,['name','profile',...(value?.entropy!==undefined?['entropy']:[]),...(value?.includeSmime!==undefined?['includeSmime']:[]),...(value?.includeSsh!==undefined?['includeSsh']:[]),...(value?.includeNist!==undefined?['includeNist']:[])])||!SOFTWARE_PROFILES.includes(value.profile))throw Error('Select a supported software profile.');
@@ -139,11 +139,13 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    if(value.includeSsh!==undefined&&(typeof value.includeSsh!=='boolean'||(value.includeSsh&&(value.profile!=='level3'||value.entropy!==true))))throw Error('SSH provisioning requires Level 3 with PRF-mixed entropy.');
    if(value.includeNist!==undefined&&(typeof value.includeNist!=='boolean'||(value.includeNist&&(value.profile!=='level3'||value.entropy!==true))))throw Error('NIST provisioning requires PRF-mixed entropy.');
    if(value.entropy!==undefined&&typeof value.entropy!=='boolean')throw Error('Invalid entropy option');
+   if(entropySerial!==undefined&&(value.entropy!==true||typeof entropySerial!=='string'||!/^[1-9][0-9]{5,9}$/.test(entropySerial)))
+    throw Error('Invalid provisioning entropy serial.');
    const name=label(value.name);account=mailbox(account);const s=current();await check(s);let password=randomPassword(),result,entropy;const input={profile:value.profile,email:account,name,password,...(value.includeSsh?{includeSsh:true}:{}),...(value.entropy&&value.includeSmime?{includeSmime:true}:{}),...(value.includeNist?{includeNist:true}:{})};
    try{
     if(value.entropy){
      if(typeof entropyCollector!=='function')throw Error('Hardware entropy service unavailable');
-     entropy=await entropyCollector({signal,guard:()=>check(s)});await check(s);
+     entropy=await entropyCollector({signal,guard:()=>check(s),serial:entropySerial});await check(s);
      if(!(entropy instanceof Uint8Array)||entropy.length!==32)throw Error('One 32-byte entropy contribution required');
      input.hardwareEntropy=btoa(String.fromCharCode(...entropy));
     }

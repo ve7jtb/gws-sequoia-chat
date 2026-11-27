@@ -223,7 +223,10 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
    vault:{
     async prepareBackup(review,plan){
-     if(!review.identity)review.identity=await ctx.create({name,profile:'level3',includeSmime:true,includeSsh:withSsh,includeNist:withNist,entropy:true},email);
+     // Route the temporary credential to the reviewed PIV card even if
+     // the vault was unlocked with a different authenticator.
+     if(!review.identity)review.identity=await ctx.create({name,profile:'level3',includeSmime:true,
+      includeSsh:withSsh,includeNist:withNist,entropy:true},email,{entropySerial:plan.serial});
      guard();
      const prepared=await ctx.prepareCombinedBackup(review.identity,plan,certificationPublicKey,{existingOnly:!!existingRow});
      review.identity=prepared.identity;

@@ -1,5 +1,32 @@
 # Sequoia Chat Lab — experimental IWA
 
+## Backup-first Level 3 hardware validation (0.20.53)
+
+On 2026-11-27, backup-first provisioning completed on a wiped YubiKey 6 Beta 0,
+SN# 41088108, using Web Smart Card and SCP11b in macOS Chromium. The IWA
+collected FIDO entropy from the provisioning card after its serial was selected
+manually. The software issued and verified the four pure and hybrid S/MIME
+certificates and the experimental OpenPGP v6 NIST P-384 certificate without
+a PIN or touch. RFC 9980 remained the default. The single FIDO touch occurred
+before issuance, during key generation. PIV management authentication
+authorized the later import of ten keys and the signed public bundle.
+
+A separate read-only restore verified the generation 1 bundle signature and
+matched all mapped public keys on SN# 41088108. The restored RFC 9980 identity
+was saved with the same fingerprint. The experimental NIST certificate was
+preserved in the signed optional data, which the current restore reader leaves
+inactive. [Signed 0.20.53 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.53)
+
+### Automatic entropy routing (0.20.54 Testing)
+
+Backup-first key generation now directs the temporary FIDO entropy credential
+to the serial from the empty-card review, even if a different key unlocked
+the vault. It leaves the saved FIDO serial preference intact. Regression tests
+cover serial validation and routing. The live hardware run above used manual
+selection on 0.20.53.
+[Signed 0.20.54 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.54)
+· [Testing update manifest](https://raw.githubusercontent.com/ve7jtb/gws-sequoia-chat/main/experiments/mac-iwa/update-manifest.json)
+
 ## Backup-first Level 3 certificate issuance (0.20.51 Testing)
 
 The backup-first path preserves the RFC 9980 fingerprint and verifies it against

@@ -193,6 +193,20 @@ test('single-touch material reaches only generation and is cleared without enter
  assert(entropy.every(v=>v===0));assert.equal(inputRef.hardwareEntropy,'');
  assert(!JSON.stringify(h.engine.data).includes('hardwareEntropy'));assert.equal(h.writes,1);
 });
+test('backup-first entropy is pinned to the reviewed card and is not forwarded to the key generator',async()=>{
+ const h=await harness(async({serial,guard})=>{
+  assert.equal(serial,'12345678');await guard();return new Uint8Array(32).fill(42);
+ });
+ const request={name:'Bound entropy',profile:'level3',entropy:true};
+ h.setCrypto(async(op,input)=>{
+  assert.equal(op,'generate');assert.equal(Object.hasOwn(input,'serial'),false);
+  assert.equal(Object.hasOwn(input,'entropySerial'),false);
+  return {encryptedSecret,public:metadata};
+ });
+ await assert.rejects(h.store.create(request,account,{entropySerial:'other'}),/Invalid provisioning entropy serial/);
+ await h.store.create(request,account,{entropySerial:'12345678'});
+ assert.equal(h.writes,1);
+});
 test('locking during entropy collection prevents generation and clears returned contribution',async()=>{
  const entropy=new Uint8Array(32).fill(41);let h;
  h=await harness(async()=>{h.lock();return entropy;});

@@ -196,6 +196,18 @@ test('only a fresh empty inventory can supersede a completed backup journal',asy
  f.get('combined-level3-cancel').onclick();
  await reviewed;
  assert.equal(dialog.open,false);
+ f.window.hardwareTransport={};
+ f.creator(async(_value,_account,options)=>{
+  assert.equal(options.entropySerial,saved.serial);
+  throw Error('Synthetic stop before card writes');
+ });
+ const approved=f.get('combined-level3-review').onclick();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(dialog.open,true);
+ f.get('combined-level3-provision').onclick();
+ await approved;
+ assert.match(f.messages.at(-1).message,/Synthetic stop before card writes/);
+ assert.equal(f.creates.length,1);
  saved.state='writing-bundle';
  await f.get('combined-level3-review').onclick();
  assert.equal(dialog.open,false);

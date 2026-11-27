@@ -70,10 +70,12 @@ el('fido-getinfo').onclick=async()=>{try{const result=await run(options=>getInfo
 // assertion-only path deliberately has no makeCredential fallback.
 window.directFido=Object.freeze({
  complete,
- async entropy({signal,guard}){
+ async entropy({signal,guard,serial:reviewedSerial}){
   if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card for single-touch entropy.');
   if(!globalThis.SequoiaSecureChannel?.isRequired())throw Error('Enable secure YubiKey connection for entropy collection.');
-  const serial=selectedSerial();
+  const serial=reviewedSerial===undefined?selectedSerial():reviewedSerial;
+  if(typeof serial!=='string'||!/^[1-9][0-9]{0,9}$/.test(serial))
+   throw Error('Invalid FIDO entropy serial.');
   return run(async options=>{
    const abort=()=>active?.abort();signal?.addEventListener('abort',abort,{once:true});
    try{
