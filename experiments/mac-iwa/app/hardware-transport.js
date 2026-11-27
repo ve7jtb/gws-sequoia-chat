@@ -246,8 +246,11 @@ function createHardwareTransport(deps = {}){
     }
 
     if(op === 'chat-identity-bundle-read'){
-      ctx.say?.('Reading public certificate bundle and all 24 PIV slots via Web Smart Card (no PIN required)…');
-      return piv.readPublicSnapshotViaSmartCard(data.serial || null, true);
+      // The signed bundle identifies every slot needed for restore. Empty
+      // Beta 0 slots can return bare errors, which SCP11b must still reject.
+      if(typeof ctx.inspectPublicBundle!=='function')throw Error('Public bundle verification unavailable.');
+      ctx.say?.('Reading public certificate bundle and checking its mapped slots via Web Smart Card (no PIN required)…');
+      return piv.readPublicSnapshotViaSmartCard(data.serial || null, true,ctx.inspectPublicBundle);
     }
 
     if(op === 'chat-identity-key-snapshot'){

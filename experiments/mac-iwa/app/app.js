@@ -22,9 +22,11 @@ const say=(text,error=false)=>{$('result').textContent=text;$('result').classLis
 function operationBusy(active) {
  busy=active;$('transport').disabled=active;$('busy').hidden=!active;
  if($('hardware-transport'))$('hardware-transport').disabled=active;
- // Active card operations can still require a local PIN or management key.
+ // The lock blocks a second operation, while the active operation can
+ // still wait for review, FIDO entropy, PIN entry, or management approval.
+ const operationDialogs='#combined-level3-confirm, #fido-pin-dialog, #smartcard-pin-dialog, #piv-management-dialog';
  document.querySelectorAll('button').forEach(b=>{
-  if(!b.closest('#smartcard-pin-dialog, #piv-management-dialog'))b.disabled=active;
+  if(!b.closest(operationDialogs))b.disabled=active;
  });
  // A test can be cancelled while its native PIN/touch attempt settles. The
  // coordinator retains this lock and performs only a final public audit.
@@ -66,6 +68,10 @@ function hardwareRequest(op,data={},options={}) {
  }
  if(window.hardwareTransport){
   return window.hardwareTransport.dispatch(op,data,options,nativeRequest,{identityStore:ownIdentityStore,say,
+   inspectPublicBundle:async encoded=>{
+    const {inspectBundle}=await import('./identities/client.js');
+    return inspectBundle(encoded);
+   },
    prepareVault:async serial=>{
     const {prepareVaultMaterial}=await import('./vault/hardware.js');
     const {inspectBundle,inspectIdentity}=await import('./identities/client.js');

@@ -69,7 +69,8 @@ async function testBrowserPinValidation() {
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
     async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemSecret: 'CC==', x25519Secret: 'DD==' }; },
-    async readPublicSnapshotViaSmartCard(serial, includeBundle) {
+    async readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle) {
+      if(includeBundle)assert.equal(typeof inspectBundle,'function');
       pivCalls.push('snapshot:' + serial + ':' + includeBundle);
       return { format: 'sequoia-iwa-public-snapshot', version: 1, serial: serial || '41088108', slots: [], warnings: [], ...(includeBundle ? { bundle: 'UFFNWklQMDE=', generation: 4 } : {}) };
     },
@@ -105,7 +106,8 @@ async function testBrowserPinValidation() {
   assert.equal(Object.keys(devs.devices[0]).join(), 'serial');
 
   // Bundle read & key snapshot via smartcard
-  const bsnap = await t.dispatch('chat-identity-bundle-read', { serial: '41088108' }, {}, nativeRequest);
+  await assert.rejects(t.dispatch('chat-identity-bundle-read', {serial:'41088108'}, {}, nativeRequest),/verification unavailable/);
+  const bsnap = await t.dispatch('chat-identity-bundle-read', { serial: '41088108' }, {}, nativeRequest,{inspectPublicBundle:async()=>{}});
   assert.equal(bsnap.generation, 4);
   const ksnap = await t.dispatch('chat-identity-key-snapshot', { serial: '41088108' }, {}, nativeRequest);
   assert.equal(ksnap.format, 'sequoia-iwa-public-snapshot');

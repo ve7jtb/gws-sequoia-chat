@@ -37,3 +37,19 @@ test('locking the vault before the digest callback prevents a native PIN request
  const a=app();a.lock();await assert.rejects(a.context.nativeRequest('chat-sign-digest',{}),/Locked vault/);
  assert.equal(a.native.length,0);
 });
+
+
+test('provisioning review and FIDO prompts stay usable while the operation owns the lock',()=>{
+ const a=app();
+ const owned=['combined-level3-confirm','fido-pin-dialog','smartcard-pin-dialog','piv-management-dialog'];
+ const controls=owned.map(id=>({disabled:false,closest:selectors=>selectors.split(', ').includes('#'+id)}));
+ // A PIN field may already have disabled its submit button while input is invalid.
+ controls[2].disabled=true;
+ a.buttons.push(...controls);
+ a.context.operationBusy(true);
+ assert.equal(a.buttons[0].disabled,true);
+ assert.deepEqual(controls.map(button=>button.disabled),[false,false,true,false]);
+ a.context.operationBusy(false);
+ assert.equal(a.buttons[0].disabled,false);
+ assert.equal(controls[2].disabled,true);
+});
