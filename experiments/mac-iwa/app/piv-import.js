@@ -126,6 +126,21 @@ export function createPivImporter({promptManagement}){
    verified={serial:plan.serial,operation:plan.operation,rows:matches};
   });
  }
+ // Recovery reads metadata only and checks the imported origin and policies.
+ async function verifyImportedKeys(plan,expectedKeys){
+  if(plan.operation!=='import-existing-software-keys'||expectedKeys.length!==plan.keys.length)
+   throw Error('Complete imported Level 3 public keys are required.');
+  return p.withPivSession(plan.serial,async conn=>{
+   const rows=[];
+   for(const target of plan.keys){
+    const key=expectedKeys.find(k=>k.slot===target.slot);
+    if(key?.algorithm!==target.component||!(key.publicKey instanceof Uint8Array))
+     throw Error('Staged public key is missing for slot '+target.slot.toUpperCase()+'.');
+    rows.push(await metadata(conn,target,key.publicKey,'imported'));
+   }
+   return rows;
+  });
+ }
  async function readPublicKeys(plan){
   if(!verified||plan.serial!==verified.serial||plan.operation!==verified.operation||plan.keys.length!==verified.rows.length)
    throw Error('No matching verified provisioning readback.');
@@ -140,7 +155,7 @@ export function createPivImporter({promptManagement}){
   });
  }
  return {
-  inspect,readPublicKeys,
+  inspect,readPublicKeys,verifyImportedKeys,
   importAll:(plan,material,options)=>writeAll(plan,material,options,'import'),
   generateAll:(plan,options)=>writeAll(plan,[],options,'generate'),
   getSlots(){

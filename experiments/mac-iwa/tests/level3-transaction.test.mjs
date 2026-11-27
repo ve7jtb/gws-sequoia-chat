@@ -68,3 +68,39 @@ test('a rejected signature leaves a resume journal and never saves the certifica
  assert.equal(f.journal.at(-1).state,'issuing');
  assert(f.material.every(row=>!row.seed.some(Boolean)));
 });
+
+test('certificate-only recovery checks all imported public keys and never enters key write paths',async()=>{
+ const f=fixture('backup');
+ const plan=f.options.review.plan;
+ const rows=await f.options.card.readPublicKeys(plan);
+ const expected=rows.map(({slot,component,publicKey})=>({slot,algorithm:component,publicKey}));
+ f.options.resume={version:1,serial:plan.serial,operation:plan.operation,state:'issuing',
+  completed:plan.keys.map(key=>key.slot),attempted:null};
+ f.options.vault.recoveryPublicKeys=async()=>expected;
+ f.options.card.verifyImportedKeys=async (selected,keys)=>{
+  assert.equal(selected.serial,plan.serial);
+  assert.equal(keys,expected);
+  f.events.push('verify live keys');
+  return rows;
+ };
+ f.options.card.inspect=async()=>assert.fail('Recovery must not open the empty-card path');
+ f.options.withTouch=async(serial,_guard,perform)=>{
+  assert.equal(serial,plan.serial);
+  f.events.push('touch prompt');
+  return perform(()=>{});
+ };
+ for(const invalid of [{attempted:'9c'},{completed:['9c']},{identityId:'other vault item'}]){
+  const resume={...f.options.resume,...invalid};
+  await assert.rejects(provisionLevel3({...f.options,resume}),/complete matching import journal/);
+  assert.deepEqual(f.events,[]);
+ }
+ await assert.rejects(provisionLevel3({...f.options,card:{...f.options.card,
+  verifyImportedKeys:async()=>{throw Error('Live public key differs from staged identity');}}}),/Live public key/);
+ assert.deepEqual(f.events,[]);
+ await provisionLevel3(f.options);
+ assert.deepEqual(f.slotWrites,[]);
+ assert.equal(f.events[0],'verify live keys');
+ assert(f.events.includes('touch prompt'));
+ assert.equal(f.events.at(-1),'save');
+ assert.equal(f.journal.at(-1).state,'saved');
+});

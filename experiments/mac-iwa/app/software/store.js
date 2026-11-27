@@ -233,12 +233,13 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
    }catch(error){for(const key of out)key.seed.fill(0);throw error;}finally{input.password='';input.encryptedSecret='';for(const k of result?.keys||[])k.seed='';}
   });
  }
- async function prepareCombinedBackup(selected,plan,publicFromSeed){
+ async function prepareCombinedBackup(selected,plan,publicFromSeed,{existingOnly=false}={}){
   await assert(selected);
   const state=current();
   const item=recordsIn(state).find(row=>row.id===selected.identityId);
   if(!item||item.hardware||!item.smimeKeys)throw Error('Create a fresh Level 3 identity with the S/MIME keys first.');
   const nist=plan.certificates.experimentalNist;
+  if(existingOnly&&nist&&!item.nistKeys)throw Error('This staged identity has no NIST certification keys.');
   const nistKeys=nist?(item.nistKeys||await generateNistCertificationKeys(publicFromSeed)):undefined;
   await assert(selected);
   let bound=selected;

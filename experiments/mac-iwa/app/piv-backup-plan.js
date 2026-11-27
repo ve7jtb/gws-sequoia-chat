@@ -18,15 +18,9 @@ export function planPivBackup(request){
  return planLevel3Provisioning({...request,mode:'backup',includeSmime:false,includeExperimentalNist:false});
 }
 
-/** Build a public, serial-bound plan. This does not issue certificates or write slots. */
-export function planLevel3Provisioning({profile,serial,expectedSerial,slots,supportedAlgorithms,
- mode='backup',includeSmime=false,includeExperimentalNist=false}){
- if(!['backup','on-card'].includes(mode)||typeof includeSmime!=='boolean'||typeof includeExperimentalNist!=='boolean')
-  throw Error('Unknown Level 3 provisioning option.');
- if(!/^[1-9][0-9]{5,9}$/.test(serial)||(expectedSerial!==undefined&&serial!==expectedSerial))throw Error('Connected YubiKey does not match the selected backup device.');
- // Do not import the supported half of a composite and quietly omit the other
- // half. In particular YK6 PIV does not currently advertise Ed448 or X448.
- if(profile!=='level3')throw Error('This native backup plan supports Level 3 v6 only. Level 5 Ed448/X448 requires native support or an explicitly reviewed encrypted companion.');
+/** For fresh writes, bind the layout to an independently verified empty inventory. */
+export function planLevel3Provisioning({slots,supportedAlgorithms,...options}){
+ const plan=level3Layout(options);
  if(!Array.isArray(slots)||!Array.isArray(supportedAlgorithms))throw Error('Complete live capability and slot inventory required.');
  const seen=new Set();for(const s of slots){if(!s||!USER_PIV_SLOTS.includes(s.slot)||seen.has(s.slot))throw Error('Ambiguous slot inventory.');seen.add(s.slot);}
  if(seen.size!==USER_PIV_SLOTS.length)throw Error('All 24 user PIV slots must be inspected.');
@@ -35,6 +29,21 @@ export function planLevel3Provisioning({profile,serial,expectedSerial,slots,supp
   // card, never augmentation of an existing installation or a reset operation.
   if(slot.keyPresent!==false||slot.certificatePresent!==false)throw Error('YubiKey is not empty: slot '+slot.slot+'.');
  }
+ for(const key of plan.keys){
+  if(!supportedAlgorithms.includes(key.component))throw Error('Card does not support '+key.component+' for the selected provisioning mode.');
+ }
+ return plan;
+}
+
+// Certificate-only recovery verifies each occupied slot against this layout.
+export function level3Layout({profile,serial,expectedSerial,
+ mode='backup',includeSmime=false,includeExperimentalNist=false}){
+ if(!['backup','on-card'].includes(mode)||typeof includeSmime!=='boolean'||typeof includeExperimentalNist!=='boolean')
+  throw Error('Unknown Level 3 provisioning option.');
+ if(!/^[1-9][0-9]{5,9}$/.test(serial)||(expectedSerial!==undefined&&serial!==expectedSerial))throw Error('Connected YubiKey does not match the selected backup device.');
+ // Do not import the supported half of a composite and quietly omit the other
+ // half. In particular YK6 PIV does not currently advertise Ed448 or X448.
+ if(profile!=='level3')throw Error('This native backup plan supports Level 3 v6 only. Level 5 Ed448/X448 requires native support or an explicitly reviewed encrypted companion.');
  const keys=[...L3];
  // The message component slots are shared between the optional S/MIME and
  // experimental OpenPGP views. P-384 signing and agreement remain distinct.
@@ -48,12 +57,6 @@ export function planLevel3Provisioning({profile,serial,expectedSerial,slots,supp
   {role:'nist-certification',component:'ML-DSA-65',slot:'8a',touch:'always'},
   {role:'nist-certification',component:'P-384',slot:'8b',touch:'never'},
  );
- for(const key of keys){
-  if(!supportedAlgorithms.includes(key.component))throw Error('Card does not support '+key.component+' for the selected provisioning mode.');
-  const slot=slots.find(s=>s.slot===key.slot);
-  // Missing metadata, read errors and certificate-only occupancy are not empty.
-  if(!slot||slot.keyPresent!==false||slot.certificatePresent!==false)throw Error('Backup requires verified empty slot '+key.slot+'.');
- }
  const plan={version:1,serial,profile,operation:mode==='backup'
   ?'import-existing-software-keys':'generate-on-card',keys:keys.map(k=>({...k,pin:'always'}))};
  // Leave the existing six-key import plan byte-for-byte compatible.

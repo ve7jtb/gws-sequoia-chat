@@ -29,6 +29,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
    const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);box.append(b);};
    if(row.profile==='level3'&&!row.hardware?.privateRemoved)button(row.hardware?'Verify hardware backup / remove software keys…':'Back up existing keys to empty YubiKey…',async()=>{await backup(row);await refresh();});
    button('Export public certificate…',async()=>{const current=(await provider().records()).find(x=>x.id===row.id);if(!current)throw Error('Identity removed or vault locked.');download(Uint8Array.from(atob(current.certificate),c=>c.charCodeAt(0)),'software-openpgp-'+current.fingerprint.slice(-16)+'.pgp','application/pgp-keys');});
+   if(row.profile==='level3'&&!row.hardware)button('Resume Level 3 certificate signing…',()=>resumeCertificates(row));
    if(row.hardware?.verified&&!row.hardware.privateRemoved)button('Verify encrypted vault backup…',async()=>{
     const store=provider(),current=await store.get(row.id,account());
     const recovery=await recoveryPrompt(current.hardware.serial);
@@ -65,6 +66,49 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   setBusy(true);try{window.vaultGate?.();if(!window.vaultIsUnlocked?.())throw Error('Unlock or create the encrypted vault first.');await fn();}
   catch(error){say(error.message,true);$('software-test-result').textContent='Operation stopped. No automatic retry.';}
   finally{setBusy(false);$('software-test-export').disabled=!reviewReport;}
+ }
+ async function resumeCertificates(row){
+  const email=account(),started=generation,ctx=provider();
+  const serial=prompt('Serial number of the YubiKey with the completed Level 3 import');
+  if(serial===null)return;
+  if(!/^[1-9][0-9]{5,9}$/.test(serial))throw Error('Enter the YubiKey serial number.');
+  const journalKey='sequoia-level3-provisioning:'+serial;
+  const resume=JSON.parse(localStorage.getItem(journalKey)||'null');
+  if(resume?.state!=='issuing'||!Array.isArray(resume.completed)||![8,10].includes(resume.completed.length))
+   throw Error('This YubiKey has no completed combined import awaiting certificate signing.');
+  const [{level3Layout},{createPivImporter},{provisionLevel3},
+   {createCertificateVerifier},{inspectIdentity}]=await Promise.all([
+   import('./piv-backup-plan.js'),import('./piv-import.js'),import('./provisioning/level3-transaction.js'),
+   import('./provisioning/certificate-verifier.js'),import('./identities/client.js'),
+  ]);
+  const identity=await ctx.get(row.id,email);
+  const plan=level3Layout({profile:'level3',serial,includeSmime:true,
+   includeExperimentalNist:resume.completed.length===10});
+  const guard=()=>{
+   if(started!==generation||email!==account()||!window.vaultIsUnlocked?.())
+    throw Error('The certificate recovery vault or account changed.');
+  };
+  guard();
+  if(!confirm('Resume certificate signing for '+identity.name+' on SN# '+serial+
+    '? Every imported key and policy will be checked before any PIN prompt. No hardware keys will be written.'))return;
+  const piv=window.SequoiaSmartCardPiv,card=createPivImporter({});
+  await provisionLevel3({review:{email,name:identity.name,identity,plan},resume,card,piv,
+   verify:await createCertificateVerifier(piv),inspectRfc9980:inspectIdentity,confirmed:true,guard,
+   withTouch:window.hardwareTransport.withCertificateTouch,
+   journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
+   vault:{
+    async recoveryPublicKeys(review,plan){
+     const {material}=await ctx.prepareCombinedBackup(review.identity,plan,undefined,{existingOnly:true});
+     try{return material.map(({slot,algorithm,publicKey})=>({slot,algorithm,publicKey}));}
+     finally{for(const component of material)component.seed.fill(0);}
+    },
+    saveCertificates:input=>ctx.saveProvisioned(input),
+   },
+  });
+  await changed();
+  await refresh();
+  say('Saved verified S/MIME'+(plan.certificates.experimentalNist?' and experimental NIST v6':'')+
+   ' certificates. RFC 9980 remains the default. No keys were written.');
  }
  $('software-import').onclick=()=>run(async()=>{
   const started=generation;let password='';importController=new AbortController();
@@ -133,7 +177,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   if(!confirm('Provision empty YubiKey SN# '+plan.serial+'?\n\n'+slots+'\n\n'+custody))return;
   const review={email,name,plan};
   await provisionLevel3({review,card,piv,verify,inspectRfc9980:inspectIdentity,confirmed:true,guard,
-   promptPin:details=>window.hardwareTransport.promptPin(details),
+   withTouch:window.hardwareTransport.withCertificateTouch,
    journal:{save:async record=>localStorage.setItem(journalKey,JSON.stringify(record))},
    vault:{
     async prepareBackup(review,plan){
@@ -148,7 +192,7 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
   });
   await changed();
   await refresh();
-  say('Saved verified RFC 9980 and S/MIME certificates in the encrypted vault.');
+  say('Saved verified RFC 9980, S/MIME'+(withNist?', and experimental NIST v6':'')+' certificates in the encrypted vault.');
  });
  // Per-identity export uses a new password only for the portable file. It does
  // not reveal the random password stored by the vault or overwrite that source.

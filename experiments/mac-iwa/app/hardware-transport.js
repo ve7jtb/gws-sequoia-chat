@@ -129,7 +129,7 @@ function createHardwareTransport(deps = {}){
 
   // The main login screen and vault enrollment share these card operations.
   // Show the same touch guidance in both paths after the PIN field is cleared.
-  async function withVaultTouch(serial, ctx, perform){
+  async function withVaultTouch(serial, ctx, perform, retry='start a fresh unlock'){
     const doc = global.document;
     const dialog = doc?.getElementById('smartcard-pin-dialog');
     const entry = doc?.getElementById('smartcard-pin-entry');
@@ -183,7 +183,7 @@ function createHardwareTransport(deps = {}){
       const diagnostic=`INS=${hex(command.ins)} P1=${hex(command.p1)} P2=${hex(command.p2)}, ${command.stage}, SW=6982`;
       const touch=command.ins===0x87&&command.stage==='final command';
       const summary=touch
-        ?'YubiKey declined the operation. If you missed the flash, start a fresh unlock and touch the key promptly.'
+        ?'YubiKey declined the operation. If you missed the flash, '+retry+' and touch the key promptly.'
         :`${name} was declined. Start a fresh unlock to open a new secure card session.`;
       throw Error(`${summary} Diagnostic: ${diagnostic} (unauthenticated status).`,{cause:error});
     }finally{
@@ -337,7 +337,8 @@ function createHardwareTransport(deps = {}){
     return dispatchSmartCard(op, data, {...ctx,signal:options.signal});
   }
 
-  return {getMode, setMode, dispatch, promptPin:promptPinInBrowser};
+  return {getMode, setMode, dispatch, promptPin:promptPinInBrowser,
+   withCertificateTouch:(serial,guard,perform)=>withVaultTouch(serial,{assertVault:guard},perform,'resume certificate signing')};
 }
 
 const transport = createHardwareTransport();
