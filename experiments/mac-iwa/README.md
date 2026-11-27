@@ -1,6 +1,6 @@
 # Sequoia Chat Lab — experimental IWA
 
-## SSH terminal preview (0.20.55, local build; not published)
+## SSH terminal preview (0.20.55, Testing channel)
 
 The **SSH** tab appears after vault unlock. Its terminal runs SSH in a Go WASM
 worker over IWA Direct Sockets; xterm.js renders the PTY locally. It does not
@@ -41,7 +41,7 @@ currently refused rather than applying incomplete CA/principal checks. Import
 reviews are single-use and bound to the vault revision. No server is trusted
 from its banner; the separate transport probe remains unauthenticated.
 
-Validation on 2026-11-27: **419 Node tests passed, one optional test skipped**.
+Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
 host-trust rejection before signing, and corrupted composite components.
 The compiled WASM engine independently completed an Ed25519 SSH login and PTY
@@ -50,7 +50,7 @@ verified with Node's independent cryptographic API; wrong passphrases and
 attempted hybrid-component extraction were rejected. Simulated card tests
 check the 8c/8d mapping and composite transcript. No physical YubiKey operation
 was performed: live composite server interoperability and physical PIN/touch
-SSH authentication remain to be tested. This build is not installed or published.
+SSH authentication remain to be tested. Live browser/hardware validation is in progress; the Testing preview does not change the default channel.
 
 Build the additional engine with Go 1.27.4 or later in its supported line:
 `GO_BIN=/path/to/go experiments/mac-iwa/ssh-engine/build.sh`, then run the normal

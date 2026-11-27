@@ -8,7 +8,7 @@ function components(blob){
  if(n!==19||new TextDecoder().decode(blob.slice(4,4+n))!=='ssh-mldsa44-ed25519'||v.getUint32(4+n)!==1344||blob.length!==8+n+1344)throw Error('Invalid SSH composite public key');
  return {ml:blob.slice(8+n,8+n+1312),ed:blob.slice(8+n+1312)};
 }
-export async function signCardSsh({identity,publicKey,message,piv,promptPin,guard}){
+export async function signCardSsh({identity,publicKey,message,piv,promptPin,guard,onProgress=()=>{}}){
  guard();const {ml,ed}=components(publicKey);
  // Tie the SSH public representation to the authenticated slot hashes BEFORE
  // asking for a PIN. A stale/mismatched saved mapping must not sign anything.
@@ -17,6 +17,6 @@ export async function signCardSsh({identity,publicKey,message,piv,promptPin,guar
  const digest=new Uint8Array(await crypto.subtle.digest('SHA-512',message));guard();
  const representative=join(text.encode('CompositeAlgorithmSignatures2025'),label,Uint8Array.of(0),digest);
  const mu=shake256(join(shake256(ml,{dkLen:64}),Uint8Array.of(0,label.length),label,representative),{dkLen:64});
- const [pq,traditional]=await piv.signSshComponents(identity,[{slot:'8c',algorithm:0xe2,input:mu},{slot:'8d',algorithm:0xe0,input:representative}],promptPin,guard);
+ const [pq,traditional]=await piv.signSshComponents(identity,[{slot:'8c',algorithm:0xe2,input:mu},{slot:'8d',algorithm:0xe0,input:representative}],promptPin,guard,({slot,touchPolicy})=>onProgress(touchPolicy==='never'?'Signing with slot '+slot.toUpperCase()+'…':'Touch the YubiKey when it flashes — SSH slot '+slot.toUpperCase()+'.'),({instruction})=>onProgress('Still waiting for the YubiKey: '+instruction+'. No retry has been made.'));
  guard();if(pq.length!==2420||traditional.length!==64)throw Error('Invalid SSH card response');return join(pq,traditional);
 }
