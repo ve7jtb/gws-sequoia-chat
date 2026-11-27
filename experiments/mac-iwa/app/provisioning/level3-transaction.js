@@ -59,8 +59,8 @@ export async function provisionLevel3({review,card,piv,vault,verify,inspectRfc99
    readback=await readCurrent();
   }
   await check();
-  const sign=request=>withTouch(plan.serial,check,prompt=>
-   createLevel3CardSigner({piv,plan,readback,promptPin:prompt,guard:check})(request));
+  const sign=request=>withTouch(plan.serial,check,(prompt,beforeSign)=>
+   createLevel3CardSigner({piv,plan,readback,promptPin:prompt,guard:check,beforeSign})(request));
   if(review.identity?.identityId)record.identityId=review.identity.identityId;
   record.state='issuing';await journal.save(record);
   const certificates=await issueProvisionedLevel3({

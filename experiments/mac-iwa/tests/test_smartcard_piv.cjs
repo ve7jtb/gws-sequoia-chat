@@ -117,5 +117,57 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
   assert.equal(edSpki.length, 44);
   assert.deepEqual(Array.from(piv.buildGetDataApdu(0x5F5000)), [0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0x50, 0x00, 0x00]);
 
+  // Certificate signing must never hold the PC/SC transaction while the
+  // user enters a PIN. Recheck the public key, then show touch guidance only
+  // after VERIFY succeeded and immediately before GENERAL AUTHENTICATE.
+  {
+    const events=[];
+    const serial=41088108;
+    const serialBytes=Buffer.alloc(4);serialBytes.writeUInt32BE(serial);
+    const publicBytes=piv.encodeBerTlv(0x87,new Uint8Array(1952).fill(0x11));
+    const metadata=Buffer.concat([Buffer.from([1,1,0xe3,2,2,3,2,3,1,2]),piv.encodeBerTlv(4,publicBytes)]);
+    const hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',
+      piv.pivMetadataToSpki(piv.parseSlotMetadata(metadata)))).toString('hex');
+    const response=data=>new Uint8Array([...data,0x90,0]);
+    let transactions=0,active=false,deny=false;
+    ctx.performance=performance;
+    ctx.navigator={smartCard:{establishContext:async()=>({
+      listReaders:async()=>['YubiKey'],
+      connect:async()=>({connection:{
+        status:async()=>({answerToReset:new Uint8Array()}),
+        startTransaction:async fn=>{
+          assert.equal(active,false);active=true;events.push('transaction '+(++transactions));
+          try{return await fn();}finally{active=false;events.push('released');}
+        },
+        disconnect:async()=>{},
+        transmit:async apdu=>{
+          switch(apdu[1]){
+            case 0xa4:return response([]);
+            case 0xfd:return response([0,0,1]);
+            case 0xf8:return response(serialBytes);
+            case 0xf7:events.push('key check');return response(metadata);
+            case 0x20:events.push('PIN verified');return response([]);
+            case 0x87:
+              events.push('sign');
+              if(deny)throw Error('Card declined command [INS=87 P1=E3 P2=9C, final command, SW=6982]');
+              return response(piv.encodeBerTlv(0x7c,piv.encodeBerTlv(0x82,new Uint8Array(3309))));
+            default:assert.fail('Unexpected APDU');
+          }
+        }
+      }})
+    })}};
+    const sign=()=>piv.signProvisioningComponents({serial:String(serial),slots:[{slot:'9c',publicKeySha256:hash}]},
+      [{slot:'9c',algorithm:0xe3,input:new Uint8Array(64)}],
+      async()=>{assert.equal(active,false);events.push('entered PIN');return '123456';},async()=>{},
+      async info=>{assert.equal(info.touchPolicy,'always');events.push('show touch');});
+    const [signature]=await sign();
+    assert.equal(signature.length,3309);
+    assert.deepEqual(events,['transaction 1','key check','released','entered PIN',
+      'transaction 2','key check','key check','PIN verified','show touch','sign','released']);
+    deny=true;
+    await assert.rejects(sign(),/SW=6982.*PIN verified; signing command [0-9]+ ms/);
+    delete ctx.navigator;
+  }
+
   console.log('PASS smartcard-piv APDU, TLV, PIN, command chaining, SPKI, and GET RESPONSE tests');
 })();

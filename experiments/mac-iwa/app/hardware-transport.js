@@ -129,7 +129,7 @@ function createHardwareTransport(deps = {}){
 
   // The main login screen and vault enrollment share these card operations.
   // Show the same touch guidance in both paths after the PIN field is cleared.
-  async function withVaultTouch(serial, ctx, perform, retry='start a fresh unlock'){
+  async function withVaultTouch(serial, ctx, perform, retry='start a fresh unlock',certificate=false){
     const doc = global.document;
     const dialog = doc?.getElementById('smartcard-pin-dialog');
     const entry = doc?.getElementById('smartcard-pin-entry');
@@ -138,18 +138,26 @@ function createHardwareTransport(deps = {}){
     const title = doc?.getElementById('smartcard-pin-title');
     if(doc && (!dialog || !entry || !waiting || !status || !title))
       throw Error('The YubiKey touch dialog is unavailable. Close and reopen the app.');
+    const paintTouchPrompt=()=>new Promise(resolve=>{
+      const fallback=setTimeout(resolve,900);
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        clearTimeout(fallback);
+        setTimeout(resolve,500);
+      }));
+    });
+    const key=serial?'YubiKey SN# '+serial:'your YubiKey';
     let showing = false;
     // Keep the PIN dialog open. Replacing it with a second modal can leave
     // the login screen visible while the browser changes modal focus.
     const preventCancel = event => event.preventDefault();
     const submitted = dialog && entry && waiting && status && title ? ()=>{
-      const key = serial ? `YubiKey SN# ${serial}` : 'your YubiKey';
       dialog.addEventListener('cancel',preventCancel);
       showing = true;
       entry.hidden = true;
       waiting.hidden = false;
-      title.textContent = 'Waiting for YubiKey';
-      status.textContent = `PIN submitted. Touch ${key} promptly when it flashes. Keep it connected until the operation finishes.`;
+      title.textContent = certificate?'Checking YubiKey':'Waiting for YubiKey';
+      status.textContent = certificate?'PIN submitted. Keep '+key+' connected while the secure session is checked.':
+        'PIN submitted. Touch '+key+' promptly when it flashes. Keep it connected until the operation finishes.';
       waiting.focus();
     } : undefined;
     const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault},submitted);
@@ -158,17 +166,18 @@ function createHardwareTransport(deps = {}){
         const pin = await prompt(details);
         // Start the card's touch window only after the instruction has had
         // time to appear. A timer works when animation frames are throttled.
-        if(showing)await new Promise(resolve=>{
-          const fallback=setTimeout(resolve,900);
-          requestAnimationFrame(()=>requestAnimationFrame(()=>{
-            clearTimeout(fallback);
-            setTimeout(resolve,500);
-          }));
-        });
+        if(showing&&!certificate)await paintTouchPrompt();
         if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
         await ctx.assertVault();
         return pin;
-      });
+      },certificate?async ({slot,algorithm,touchPolicy})=>{
+        if(!showing)return;
+        const touch=touchPolicy==='always'||touchPolicy==='cached';
+        title.textContent=touch?'Waiting for YubiKey':'Signing certificate';
+        status.textContent='PIN verified for slot '+slot.toUpperCase()+' ('+algorithm+'). '+
+          (touch?'Touch '+key+' promptly when it flashes.':'Keep '+key+' connected.');
+        if(touch)await paintTouchPrompt();
+      }:undefined);
     }catch(error){
       // Chromium may preserve only the message from a transaction callback.
       const header=/\[INS=([0-9A-F]{2}) P1=([0-9A-F]{2}) P2=([0-9A-F]{2}), (command fragment|GET RESPONSE|final command), SW=6982\]/i.exec(error.message);
@@ -185,7 +194,8 @@ function createHardwareTransport(deps = {}){
       const summary=touch
         ?'YubiKey declined the operation. If you missed the flash, '+retry+' and touch the key promptly.'
         :`${name} was declined. Start a fresh unlock to open a new secure card session.`;
-      throw Error(`${summary} Diagnostic: ${diagnostic} (unauthenticated status).`,{cause:error});
+      const timing=/\[PIN verified; signing command [0-9]+ ms\]/.exec(error.message)?.[0];
+      throw Error(summary+' Diagnostic: '+diagnostic+' (unauthenticated status).'+(timing?' '+timing:''),{cause:error});
     }finally{
       if(showing){
         dialog.removeEventListener('cancel',preventCancel);
@@ -338,7 +348,7 @@ function createHardwareTransport(deps = {}){
   }
 
   return {getMode, setMode, dispatch, promptPin:promptPinInBrowser,
-   withCertificateTouch:(serial,guard,perform)=>withVaultTouch(serial,{assertVault:guard},perform,'resume certificate signing')};
+   withCertificateTouch:(serial,guard,perform)=>withVaultTouch(serial,{assertVault:guard},perform,'resume certificate signing',true)};
 }
 
 const transport = createHardwareTransport();

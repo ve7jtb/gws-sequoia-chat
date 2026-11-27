@@ -610,7 +610,7 @@ async function checkLiveKeys(conn, identity){
 // Certificate provisioning supplies a reviewed key hash for each slot and a
 // precomputed protocol-specific digest or external mu. One PIN is reused
 // within the operation and the live public mapping is checked before VERIFY.
-async function signProvisioningComponents(identity,components,promptPin,guard){
+async function signProvisioningComponents(identity,components,promptPin,guard,beforeSign){
   const allowed={0xe3:{tag:0x88,input:64,output:3309},0xe0:{tag:0x81,input:64,output:64},
     0x14:{tag:0x81,input:48,output:null}};
   if(typeof guard!=='function'||!Array.isArray(components)||components.length<1||components.length>2||
@@ -621,25 +621,41 @@ async function signProvisioningComponents(identity,components,promptPin,guard){
     if(!policy||!(c.input instanceof Uint8Array)||c.input.length!==policy.input||
        !identity.slots.some(k=>k.slot===c.slot))throw Error('Invalid certificate signing component.');
   }
+  // Check the serial and expected public keys before the PIN prompt, then
+  // release PC/SC. Reopen and recheck under a fresh SCP session after entry.
+  // Human input must not leave a browser-owned transaction idle.
+  await withPivSession(identity.serial,conn=>checkLiveKeys(conn,identity));
+  await guard();
+  const detail=components.map(c=>c.slot.toUpperCase()+' ('+ALGO_NAMES[c.algorithm]+')').join(' + ');
+  const pin=await promptPin({title:'PIV PIN — Issue certificate',
+    detail:'YubiKey · SN# '+identity.serial+' · '+detail+'. Touch if requested.'});
+  await guard();
   return withPivSession(identity.serial,async conn=>{
     await checkLiveKeys(conn,identity);
+    const touchPolicies=new Map();
     for(const c of components){
       const r=await transmitChained(conn,buildGetMetadataApdu(parseInt(c.slot,16)));
-      if(r.sw!==0x9000||parseSlotMetadata(r.data).algorithmId!==c.algorithm)
-        throw Error('Certificate signature slot algorithm changed.');
+      const meta=r.sw===0x9000?parseSlotMetadata(r.data):null;
+      if(meta?.algorithmId!==c.algorithm)throw Error('Certificate signature slot algorithm changed.');
+      touchPolicies.set(c.slot,meta.touchPolicy);
     }
-    await guard();
-    const detail=components.map(c=>c.slot.toUpperCase()+' ('+ALGO_NAMES[c.algorithm]+')').join(' + ');
-    const pin=await promptPin({title:'PIV PIN — Issue certificate',
-      detail:'YubiKey · SN# '+identity.serial+' · '+detail+'. Touch if requested.'});
-    await guard();
     const results=[];
     for(const c of components){
       await guard();
       await verifyPinOnConnection(conn,pin);
+      await beforeSign?.({slot:c.slot,algorithm:ALGO_NAMES[c.algorithm],touchPolicy:touchPolicies.get(c.slot)});
+      await guard();
       const policy=allowed[c.algorithm];
-      const response=await transmitCommandChained(conn,0x87,c.algorithm,parseInt(c.slot,16),
-        buildGeneralAuthenticateData(policy.tag,c.input));
+      // Report only the slot and elapsed command time, never the PIN, APDU
+      // body or key material. Timing helps distinguish a timeout from denial.
+      const started=performance.now();
+      let response;
+      try{
+        response=await transmitCommandChained(conn,0x87,c.algorithm,parseInt(c.slot,16),
+          buildGeneralAuthenticateData(policy.tag,c.input));
+      }catch(error){
+        throw Error(error.message+' [PIN verified; signing command '+Math.round(performance.now()-started)+' ms]',{cause:error});
+      }
       if(response.sw!==0x9000)throw Error('Certificate signature failed in slot '+c.slot.toUpperCase()+' (SW='+response.sw.toString(16)+').');
       const signature=parseGeneralAuthenticateResponse(response.data);
       if(policy.output!==null?signature.length!==policy.output:

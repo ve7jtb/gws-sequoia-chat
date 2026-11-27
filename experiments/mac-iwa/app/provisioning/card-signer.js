@@ -27,7 +27,7 @@ export async function smimeSignatureInput(algorithm,tbs){
 
 // The certificate builders name reviewed roles, never a freely selected
 // private slot. Enforce that slot mapping again at the card boundary.
-export function createLevel3CardSigner({piv,plan,readback,promptPin,guard}){
+export function createLevel3CardSigner({piv,plan,readback,promptPin,guard,beforeSign}){
  const identity={serial:plan.serial,slots:readback.map(({slot,publicKeySha256})=>({slot,publicKeySha256}))};
 
  return async function sign(request){
@@ -59,7 +59,7 @@ export function createLevel3CardSigner({piv,plan,readback,promptPin,guard}){
    components.push({slot:traditional.slot,algorithm:ed?0xe0:0x14,input:ed?message:ecDigest});
   }
   await guard();
-  const [mldsa,traditional]=await piv.signProvisioningComponents(identity,components,promptPin,guard);
+  const [mldsa,traditional]=await piv.signProvisioningComponents(identity,components,promptPin,guard,beforeSign);
   if(format==='smime')return traditional?join(mldsa,traditional):mldsa;
   if(format==='rfc9980')return {mldsa,ed25519:traditional};
   return {mldsa,ecdsa:p384.Signature.fromBytes(traditional,'der').toBytes('compact')};
