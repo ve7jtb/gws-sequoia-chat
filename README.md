@@ -1,5 +1,12 @@
 # gws + Sequoia Mail & Chat
 
+**IWA 0.20.50 passed Level 3 S/MIME and experimental OpenPGP NIST v6
+certificate signing** on YubiKey SN# 41088108 using an exclusive Web Smart Card
+connection in macOS Chromium. The IWA verified and saved both certificate sets,
+and RFC 9980 remains the default. A read-only audit matched all ten imported
+public keys and their PIN and touch policies.
+[Hardware test results](experiments/mac-iwa/README.md#level-3-certificate-signing-validation-02050)
+
 **IWA 0.20.48 (testing channel)** adds ML-DSA-44 + Ed25519 SSH keys to both
 Level 3 provisioning paths, PRF-mixed software generation, repeat provisioning
 to additional empty YubiKeys, and encrypted vault backup/restore. Tests use

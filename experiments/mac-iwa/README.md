@@ -1,5 +1,27 @@
 # Sequoia Chat Lab — experimental IWA
 
+## Level 3 certificate signing validation (0.20.50)
+
+On 2026-11-27, the signed Testing build completed certificate-only recovery
+on YubiKey 6 Beta 0 SN# 41088108 in macOS Chromium. The IWA verified and saved
+the pure and hybrid S/MIME signing and encryption certificates and the
+experimental OpenPGP v6 NIST P-384 certificate. RFC 9980 remains the default.
+[Signed 0.20.50 release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.50)
+
+Earlier browser attempts either returned `SW=6982` on slot 9C's ML-DSA-65
+`GENERAL AUTHENTICATE` command or stalled after PIN verification. With 0.20.50,
+each certificate-signing operation opens an exclusive Web Smart Card connection
+after PIN entry, verifies the live slot bindings over SCP11b, and prompts for
+touch after the card accepts the PIN. The exclusive connection avoids the
+previous separate PC/SC transaction wrapper. Signing completed without an APDU
+stall. If a future call remains pending, the dialog identifies the
+`GENERAL AUTHENTICATE` or `GET RESPONSE` frame.
+
+Recovery used the existing ten imported keys. An authenticated read-only audit
+matched their public-key hashes, imported origin, and PIN and touch policies
+against the saved baseline. Slot 9C remained **PIN Always, Touch Always**,
+and the card reported **3 of 3 PIV PIN retries remaining**.
+
 ## SSH pair provisioning (0.20.48)
 
 The combined Level 3 provisioning form now includes an independent SSH pair
