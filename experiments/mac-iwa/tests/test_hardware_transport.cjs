@@ -68,7 +68,7 @@ async function testBrowserPinValidation() {
     async listYubiKeys() { pivCalls.push('listYubiKeys'); return [{ serial: '41088108', version: '0.0.1', reader: 'YubiKey' }]; },
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
-    async decapsulateComponentsViaSmartCard(req) { pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemSecret: 'CC==', x25519Secret: 'DD==' }; },
+    async decapsulateComponentsViaSmartCard(req, identity, _prompt, options) { if(req.service==='Vault')assert.equal(options?.vaultUnlock,true); pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemSecret: 'CC==', x25519Secret: 'DD==' }; },
     async readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle) {
       if(includeBundle)assert.equal(typeof inspectBundle,'function');
       pivCalls.push('snapshot:' + serial + ':' + includeBundle);
@@ -139,9 +139,13 @@ async function testBrowserPinValidation() {
   // Locked-vault hybrid operations use verified public material rather than
   // the account-selected message identity. Tickets cannot change purpose.
   let vaultActive=true;
-  const vaultCtx={prepareVault:async serial=>{assert.equal(serial,'41088108');return {identity:id};},assertVault:()=>{if(!vaultActive)throw Error('Vault operation ended');}};
-  const vd=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
+  const vaultCtx={prepareLevel3VaultUnlock:async (serial,recipientKey,progress)=>{assert.equal(serial,'41088108');assert.equal(recipientKey,id.recipientKey);progress?.({stage:'prepare'});return id;},assertVault:()=>{if(!vaultActive)throw Error('Vault operation ended');}};
+  const progress=[];
+  const vd=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{vaultProgress:event=>progress.push(event)},nativeRequest,vaultCtx);
+  assert.deepEqual(progress,[{stage:'prepare'}]);
   await assert.rejects(t.dispatch('chat-decapsulate-components',{review:vd.review,service:'Chat',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/purpose changed/);
+  const actual=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
+  await t.dispatch('chat-decapsulate-components',{review:actual.review,service:'Vault',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
   vaultActive=false;
   await assert.rejects(t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/operation ended/);
 

@@ -36,3 +36,28 @@ export async function prepareVaultMaterial({serial,piv,inspectBundle,inspectIden
  return {serial:bundle.serial,certificate:info.certificate,classical:null,classicalAllowed:false,
   identity:{...info,serial:bundle.serial,bundleHash:bundle.bundleHash,slots:bundle.slots}};
 }
+
+// A saved wrapper pins the recipient subkey fingerprint and card serial. That
+// fingerprint covers both public components. The verified bundle inspector
+// derives the PIV slot hashes from the same certificate's signed components.
+export async function prepareLevel3VaultUnlock({serial,recipientKey,piv,inspectBundle,inspectIdentity,progress}){
+ if(!/^[1-9][0-9]{0,9}$/.test(serial)||!(/^[A-F0-9]{64}$/).test(recipientKey))
+  throw Error('Missing enrolled Level 3 vault binding; PIN not submitted.');
+ const {bundle}=await piv.readLevel3VaultBundle(serial,progress);
+ progress?.({stage:'verify'});
+ const verified=await inspectBundle(bundle);
+ if(verified.bundleSignatureVerified!==true||verified.serial!==serial)throw Error('Invalid signed vault bundle; PIN not submitted.');
+ const entries=verified.certificates.filter(entry=>entry.kind==='openpgp'&&entry.profile==='level3');
+ if(entries.length!==1)throw Error('Missing unique Level 3 vault certificate; PIN not submitted.');
+ const info=await inspectIdentity(entries[0].certificate);
+ if(!info.supported||info.version!==6||info.profile!=='level3'||info.recipientKey!==recipientKey)
+  throw Error('Hybrid vault recipient changed; PIN not submitted.');
+ const slots=['9d','85'].map(slot=>{
+  const matches=verified.slots.filter(key=>key.slot===slot);
+  if(matches.length!==1||!(/^[a-f0-9]{64}$/).test(matches[0].publicKeySha256))
+   throw Error('Invalid signed vault slot mapping; PIN not submitted.');
+  return {slot,publicKeySha256:matches[0].publicKeySha256};
+ });
+ progress?.({stage:'prepare'});
+ return {...info,serial,slots,bundleHash:verified.bundleHash};
+}

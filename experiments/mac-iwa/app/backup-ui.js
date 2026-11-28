@@ -7,7 +7,8 @@ import {createBackupDrive,DRIVE_SCOPE} from './backup-drive.js';
 import {runLoopbackPkceOAuth,getLoopbackClientId,getLoopbackClientSecret} from './google-loopback-oauth.js';
 import {backupVaultSession} from './vault/backup-session.js';
 import {backupUnlockChoices,backupUnlockLabel,unlockBackup} from './vault/backup-unlock.js';
-import {prepareVaultMaterial} from './vault/hardware.js';
+import {prepareLevel3VaultUnlock} from './vault/hardware.js';
+import {showVaultUnlockProgress} from './vault/unlock-progress.js';
 import {decryptWithHardware} from './decryption-session.js';
 const workerPath='/decryption-worker.js';
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-backup-decryption-worker',{
@@ -81,6 +82,10 @@ async function unlock(record,vault,methodId){
  tell('Checking '+backupUnlockLabel(w)+' — keep the key connected.');
  const abort=new AbortController(),dialog=el('pin-dialog');unlockAbort=abort;
  const guard=()=>abort.signal.throwIfAborted();
+ const mode=window.hardwareTransport.getMode();
+ const progress=w.type==='piv'&&w.binding.kind==='hybrid'&&mode==='smartcard'
+  ?showVaultUnlockProgress(el('vault-progress'),w.binding.serial):null;
+ const vaultProgress=event=>{guard();progress?.update(event);};
  const request=(op,data,options={})=>{
   guard();
   // Allow only the read and unwrap operations needed before the app unlocks.
@@ -88,15 +93,14 @@ async function unlock(record,vault,methodId){
    'chat-decryption-material','chat-decapsulate-components'].includes(op))throw Error('Unsupported backup unlock operation.');
   if(['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data?.service!=='Vault')
    throw Error('Backup recovery requires a vault operation.');
-  return window.hardwareTransport.dispatch(op,data,{signal:abort.signal,...options},
+  return window.hardwareTransport.dispatch(op,data,{signal:abort.signal,...options,vaultProgress},
    (op,data,options)=>requestCompanion(op,data,{...options,progress:tell}),{
     say:tell,assertVault:guard,
-    prepareVault:async serial=>{
+    prepareLevel3VaultUnlock:async(serial,recipientKey,progress)=>{
      const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
-     const {parseCardBundle}=await import('./identities/bundle.js');
-     const material=await prepareVaultMaterial({serial,piv:window.SequoiaSmartCardPiv,inspectBundle,inspectIdentity,parseCardBundle});
+     const identity=await prepareLevel3VaultUnlock({serial,recipientKey,piv:window.SequoiaSmartCardPiv,inspectBundle,inspectIdentity,progress});
      guard();
-     return material;
+     return identity;
     },
    });
  };
@@ -117,7 +121,7 @@ async function unlock(record,vault,methodId){
    request,evaluate,promptPin,
    decrypt:options=>decryptWithHardware({...options,signal:abort.signal,
     createWorker:()=>new Worker(workerPolicy?workerPolicy.createScriptURL(workerPath):workerPath,{type:'module'})}),
-   mode:window.hardwareTransport.getMode(),legacyRp:'chrome-extension://'+EXTENSION_ID,
+   mode,legacyRp:'chrome-extension://'+EXTENSION_ID,
    expectedSerial:localStorage.getItem('iwa-fido-expected-serial'),signal:abort.signal,
    progress:m=>el('pin-progress').textContent=m,
   });
@@ -127,7 +131,7 @@ async function unlock(record,vault,methodId){
    showMissingKey(w);throw Error('Connect the selected key and retry. No reader was detected; no PIN was submitted.');
   }
   throw e;
- }finally{unlockAbort=null;el('pin').value='';if(dialog.open)dialog.close();}
+ }finally{progress?.close();unlockAbort=null;el('pin').value='';if(dialog.open)dialog.close();}
 }
 el('unlock').onclick=()=>run(async()=>{
  source=await load();methods(source,'source-methods');

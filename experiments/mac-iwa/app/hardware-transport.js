@@ -301,8 +301,7 @@ function createHardwareTransport(deps = {}){
       let identity;
       if(vaultOperation){
         await ctx.assertVault();
-        const material=await ctx.prepareVault(data.serial);
-        identity=material.identity;
+        identity=await ctx.prepareLevel3VaultUnlock(data.serial,data.recipientKey,ctx.vaultProgress);
         if(!identity||identity.recipientKey!==data.recipientKey)throw Error('Hybrid vault recipient changed');
       }else identity=await resolveIdentity(data.identity, ctx);
       if(!identity?.certificate || !identity?.recipientKey){
@@ -331,7 +330,7 @@ function createHardwareTransport(deps = {}){
       tickets.delete(data.review);
       if(t.vaultOperation){if(data.service!=='Vault')throw Error('Vault ticket purpose changed');await ctx.assertVault();}else await ctx.assertIdentity?.(t.identity);
       if(data.recipientKey !== t.identity.recipientKey) throw Error('Recipient key changed.');
-      if(t.vaultOperation)return withVaultTouch(t.identity.serial,ctx,prompt=>piv.decapsulateComponentsViaSmartCard(data,t.identity,prompt));
+      if(t.vaultOperation)return withVaultTouch(t.identity.serial,ctx,prompt=>piv.decapsulateComponentsViaSmartCard(data,t.identity,prompt,{vaultUnlock:true,vaultProgress:ctx.vaultProgress}));
       return piv.decapsulateComponentsViaSmartCard(data,t.identity,checkedPrompt(t.identity,ctx));
     }
 
@@ -364,7 +363,7 @@ function createHardwareTransport(deps = {}){
     if(mode === 'native' || EXTENSION_PASSTHROUGH_OPS.has(op)){
       return nativeRequest(op, data, options);
     }
-    return dispatchSmartCard(op, data, {...ctx,signal:options.signal});
+    return dispatchSmartCard(op, data, {...ctx,signal:options.signal,vaultProgress:options.vaultProgress});
   }
 
   return {getMode, setMode, dispatch, promptPin:promptPinInBrowser,

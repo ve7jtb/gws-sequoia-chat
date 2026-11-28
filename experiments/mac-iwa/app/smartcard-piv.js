@@ -363,7 +363,7 @@ async function sha256Hex(bytes){
 
 const PUBLIC_READER_DISCOVERY=Symbol('Public reader discovery');
 
-async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery}={}){
+async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery,onReader}={}){
   const enumerate=discovery===PUBLIC_READER_DISCOVERY;
   const devices=[];
   if(!global.navigator?.smartCard){
@@ -402,6 +402,7 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
         const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
         const ser = await transmitChained(channel, new Uint8Array([0x00,0xF8,0x00,0x00]));
         const serial = ser.sw === 0x9000 ? String(parseSerial(ser.data)) : null;
+        if(serial)onReader?.(serial);
         if(expectedSerial && serial !== String(expectedSerial)){
           matched = false;
           return 'leave';
@@ -834,7 +835,7 @@ async function signDigestViaSmartCard(request, identity, promptPin){
   });
 }
 
-async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
+async function decapsulateComponentsViaSmartCard(request, identity, promptPin, {vaultProgress, vaultUnlock=false}={}){
   const serial = identity?.serial ? String(identity.serial) : null;
   const mlkemCt = fromBase64(request.mlkemCiphertext);
   const x25519Eph = fromBase64(request.x25519Ephemeral);
@@ -843,14 +844,26 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
 
 
   return withPivSession(serial, async(conn)=>{
-    await checkLiveKeys(conn,identity);
-    const meta9d = await transmitChained(conn, buildGetMetadataApdu(0x9D));
-    if(meta9d.sw !== 0x9000) throw Error('Decryption slot 9d metadata unavailable: SW=0x' + meta9d.sw.toString(16));
-    const alg9d = parseSlotMetadata(meta9d.data).algorithmId;
-    const meta85 = await transmitChained(conn, buildGetMetadataApdu(0x85));
-    if(meta85.sw !== 0x9000) throw Error('Decryption slot 85 metadata unavailable: SW=0x' + meta85.sw.toString(16));
-    const alg85 = parseSlotMetadata(meta85.data).algorithmId;
-    if(alg9d !== 0xE6 || alg85 !== 0xE1) throw Error('Unable to determine PIV decryption slot algorithms.');
+    // Vault authorization is bound to exactly these two recipient components.
+    // Ordinary message operations retain the full identity manifest check.
+    if(vaultUnlock){
+      const slots=identity.slots;
+      if(!Array.isArray(slots)||slots.length!==2||slots[0].slot!=='9d'||slots[1].slot!=='85')
+        throw Error('Missing enrolled Level 3 vault decryption slots; PIN not submitted.');
+    }else await checkLiveKeys(conn,identity);
+    const read=async (slot,algorithm)=>{
+      const hex=slot.toString(16);
+      vaultProgress?.({stage:'slot',slot:hex});
+      const response=await transmitChained(conn,buildGetMetadataApdu(slot));
+      if(response.sw!==0x9000)throw Error('Decryption slot '+hex+' metadata unavailable; PIN not submitted.');
+      const parsed=parseSlotMetadata(response.data);
+      if(parsed.algorithmId!==algorithm)throw Error('Unexpected decryption algorithm in slot '+hex+'; PIN not submitted.');
+      if(vaultUnlock&&await sha256Hex(pivMetadataToSpki(parsed))!==identity.slots.find(key=>key.slot===hex).publicKeySha256)
+        throw Error('Live vault key differs from the enrolled recipient in slot '+hex+'; PIN not submitted.');
+      vaultProgress?.({stage:'slot-verified',slot:hex});
+      return algorithm;
+    };
+    const alg9d=await read(0x9d,0xe6),alg85=await read(0x85,0xe1);
 
     // Authenticate the device/channel and live key before asking for its PIN.
     const pin = await promptPin({
@@ -885,54 +898,64 @@ async function decapsulateComponentsViaSmartCard(request, identity, promptPin){
       mlkemSecret: toBase64(mlkemShare),
       x25519Secret: toBase64(x25519Share),
     };
-  });
+  },{onReader:found=>vaultProgress?.({stage:'found',serial:found})});
+}
+
+// The index digest authenticates transport consistency. Callers also verify
+// the bundle signature and match the public material before private operations.
+async function readCompressedPublicBundle(conn, observed){
+  const manifest = await readPivDataObject(conn, PRIMARY_BUNDLE_BANK);
+  if(!manifest) throw Error('Current public bundle absent on YubiKey.');
+  if(manifest.length !== 52 || asciiPrefix(manifest, 8) !== 'PQMIDX01'){
+    throw Error('Invalid public bundle index on YubiKey.');
+  }
+  const generation = readU64BeNumber(manifest, 8);
+  const size = readU32Be(manifest, 16);
+  if(generation < 1 || size < 1 || size > MAX_PUBLIC_BUNDLE){
+    throw Error('Public bundle index limits exceeded.');
+  }
+  const expectedDigest = toHex(manifest.subarray(20, 52));
+  observed?.set(PRIMARY_BUNDLE_BANK, manifest);
+  const chunks = [];
+  const count = Math.ceil(size / 2048);
+  for(let i = 0; i < count; i++){
+    const tag = PRIMARY_BUNDLE_BANK + 1 + i;
+    const chunk = await readPivDataObject(conn, tag);
+    if(!chunk) throw Error('Incomplete current public bundle on YubiKey.');
+    const expectedLen = 20 + Math.min(2048, size - i * 2048);
+    if(chunk.length !== expectedLen || asciiPrefix(chunk, 8) !== 'PQMCHK01'){
+      throw Error('Invalid public bundle chunk on YubiKey.');
+    }
+    if(readU64BeNumber(chunk, 8) !== generation || readU32Be(chunk, 16) !== i){
+      throw Error('Stale public bundle chunk on YubiKey.');
+    }
+    chunks.push(chunk.subarray(20));
+    observed?.set(tag, chunk);
+  }
+  const bundleBytes = concatBytes(...chunks);
+  const actualDigest = await sha256Hex(bundleBytes);
+  if(actualDigest !== expectedDigest){
+    throw Error('Public bundle transport digest mismatch.');
+  }
+  if(asciiPrefix(bundleBytes, 8) !== 'PQMZIP01'){
+    throw Error('Current compressed public bundle (PQMZIP01) required.');
+  }
+  return {generation, bundle:toBase64(bundleBytes)};
+}
+
+async function readLevel3VaultBundle(serial, progress){
+  return withPivSession(serial,async conn=>{
+    progress?.({stage:'bundle',serial});
+    return readCompressedPublicBundle(conn);
+  },{onReader:found=>progress?.({stage:'found',serial:found})});
 }
 
 async function readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle=null){
   return withPivSession(serial || null, async(conn, info)=>{
     const observed = new Map();
-    let stored = null;
-    if(includeBundle){
-      const manifest = await readPivDataObject(conn, PRIMARY_BUNDLE_BANK);
-      if(!manifest) throw Error('Current public bundle absent on YubiKey.');
-      if(manifest.length !== 52 || asciiPrefix(manifest, 8) !== 'PQMIDX01'){
-        throw Error('Invalid public bundle index on YubiKey.');
-      }
-      const generation = readU64BeNumber(manifest, 8);
-      const size = readU32Be(manifest, 16);
-      if(generation < 1 || size < 1 || size > MAX_PUBLIC_BUNDLE){
-        throw Error('Public bundle index limits exceeded.');
-      }
-      const expectedDigest = toHex(manifest.subarray(20, 52));
-      observed.set(PRIMARY_BUNDLE_BANK, manifest);
-      const chunks = [];
-      const count = Math.ceil(size / 2048);
-      for(let i = 0; i < count; i++){
-        const tag = PRIMARY_BUNDLE_BANK + 1 + i;
-        const chunk = await readPivDataObject(conn, tag);
-        if(!chunk) throw Error('Incomplete current public bundle on YubiKey.');
-        const expectedLen = 20 + Math.min(2048, size - i * 2048);
-        if(chunk.length !== expectedLen || asciiPrefix(chunk, 8) !== 'PQMCHK01'){
-          throw Error('Invalid public bundle chunk on YubiKey.');
-        }
-        if(readU64BeNumber(chunk, 8) !== generation || readU32Be(chunk, 16) !== i){
-          throw Error('Stale public bundle chunk on YubiKey.');
-        }
-        chunks.push(chunk.subarray(20));
-        observed.set(tag, chunk);
-      }
-      const bundleBytes = concatBytes(...chunks);
-      const actualDigest = await sha256Hex(bundleBytes);
-      if(actualDigest !== expectedDigest){
-        throw Error('Public bundle transport digest mismatch.');
-      }
-      if(asciiPrefix(bundleBytes, 8) !== 'PQMZIP01'){
-        throw Error('Current compressed public bundle (PQMZIP01) required.');
-      }
-      stored = {generation, bundle: toBase64(bundleBytes)};
-    }
+    const stored = includeBundle ? await readCompressedPublicBundle(conn, observed) : null;
 
-    // Vault restore verifies the signed manifest first, then reads every
+    // Identity restore verifies the signed manifest first, then reads every
     // mapped key twice. Avoid unrelated empty beta slots without treating an
     // unauthenticated SCP error as evidence that a slot is empty.
     let snapshotSlots=ALL_24_SLOTS;
@@ -965,7 +988,7 @@ async function readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBund
 
     const firstSlots = await readSlotsOnce();
 
-    // Double-read observed objects, all 24 slots, and serial to detect external mutation or device swap.
+    // Double-read observed objects and selected slots, then confirm the serial.
     for(const [tag, expected] of observed){
       const again = await readPivDataObject(conn, tag);
       if(!bytesEqual(again, expected)) throw Error('Public bundle changed while reading.');
@@ -1307,6 +1330,7 @@ const api = {
   signSshComponents,
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
+  readLevel3VaultBundle,
   readVaultMaterialViaSmartCard,
   openLevel5VaultViaSmartCard,
   parseVaultDeviceInfo,

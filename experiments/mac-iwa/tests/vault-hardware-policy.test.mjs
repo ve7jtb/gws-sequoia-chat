@@ -15,3 +15,26 @@ test('native Level 5 vault uses the detected PIV keys without an OpenPGP certifi
  assert.deepEqual(m,{serial:'123',level5:{kemPublic:'kem',ecPublic:'ec'},classicalAllowed:false});
  assert.equal(f.calls.includes('bundle'),false);
 });
+
+test('Level 3 unlock authenticates the exact enrolled recipient and selects only its two live slots',async()=>{
+ const {prepareLevel3VaultUnlock}=await import('../app/vault/hardware.js');
+ const recipientKey='F'.repeat(64),stages=[];
+ const preview={serial:'123',bundleSignatureVerified:true,bundleHash:'a'.repeat(64),
+  slots:['9c','85','9d','86'].map(slot=>({slot,publicKeySha256:slot.repeat(32)})),
+  certificates:[{kind:'openpgp',profile:'level3',certificate:'primary'},
+   {kind:'openpgp',profile:'level3-v4-hybrid',certificate:'compatibility'}]};
+ const f={serial:'123',recipientKey,progress:event=>stages.push(event.stage),
+  piv:{readLevel3VaultBundle:async serial=>{assert.equal(serial,'123');return {bundle:'packed'};}},
+  inspectBundle:async bundle=>{assert.equal(bundle,'packed');return preview;},
+  inspectIdentity:async cert=>{assert.equal(cert,'primary');return {certificate:cert,supported:true,version:6,profile:'level3',recipientKey};}};
+ const identity=await prepareLevel3VaultUnlock(f);
+ assert.deepEqual(identity.slots.map(key=>key.slot),['9d','85']);
+ assert.deepEqual(stages,['verify','prepare']);
+ await assert.rejects(prepareLevel3VaultUnlock({...f,recipientKey:'A'.repeat(64)}),/recipient changed/);
+ preview.slots=preview.slots.filter(key=>key.slot!=='85');
+ await assert.rejects(prepareLevel3VaultUnlock(f),/slot mapping/);
+ preview.serial='456';
+ await assert.rejects(prepareLevel3VaultUnlock(f),/signed vault bundle/);
+ preview.serial='123';preview.bundleSignatureVerified=false;
+ await assert.rejects(prepareLevel3VaultUnlock(f),/signed vault bundle/);
+});

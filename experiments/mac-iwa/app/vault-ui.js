@@ -10,6 +10,7 @@ import {confirmUnlockEnrollment,discoverOrCreate,hasMatchingPiv,requireAttachedU
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap} from './vault/piv.js';
 import {openPivWrapper} from './vault/open-piv.js';
+import {showVaultUnlockProgress} from './vault/unlock-progress.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
 import {operateImportedKey} from './piv-import.js';
@@ -78,9 +79,9 @@ window.localFiles=createLocalFileStore(identityVaultAccess);
 window.importedSshKeys=createImportedSshStore(identityVaultAccess);
 window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);window.directFido?.complete(e.message,false);}finally{active=false;render();}}
-async function pivSecret(w){
+async function pivSecret(w,vaultProgress){
  const started=epoch;
- return openPivWrapper(record,w,{request:hardwareRequest,vaultRequest:call,decrypt:decryptInIwa,
+ return openPivWrapper(record,w,{request:(op,data,options)=>hardwareRequest(op,data,{...options,vaultProgress}),vaultRequest:call,decrypt:decryptInIwa,
   guard:()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
 }
 async function prf(w){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
@@ -215,7 +216,26 @@ async function enrollConnectedPiv(check,requestedSerial){
 }
 el('vault-add-piv').onclick=()=>run(c=>enrollConnectedPiv(c));
 el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
-el('vault-unlock').onclick=()=>run(async check=>{const fresh=await load();if(fresh){record=fresh;revision=fresh.revision;}validate(record);const w=structuredClone(record.wrappers.find(w=>w.id===el('vault-methods').value));if(!w)throw Error('Select an unlock method.');let secret;try{secret=w.type==='piv'?await pivSecret(w):await prf(w);check();await engine.unlock(record,w.id,secret);check();tell('Vault unlocked.');if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. You may remove the key.');window.dispatchEvent(new Event('iwa-vault-unlocked'));}finally{secret?.fill(0);}});
+el('vault-unlock').onclick=()=>run(async check=>{
+ const fresh=await load();
+ if(fresh){record=fresh;revision=fresh.revision;}
+ validate(record);
+ const w=structuredClone(record.wrappers.find(w=>w.id===el('vault-methods').value));
+ if(!w)throw Error('Select an unlock method.');
+ const showProgress=w.type==='piv'&&w.binding.kind==='hybrid'&&window.hardwareTransport?.getMode()==='smartcard';
+ const progressPanel=el(el('startup').hidden?'vault-unlock-progress':'startup-vault-progress');
+ const progress=showProgress?showVaultUnlockProgress(progressPanel,w.binding.serial):null;
+ let secret;
+ try{
+  secret=w.type==='piv'?await pivSecret(w,event=>{check();progress?.update(event);}):await prf(w);
+  check();
+  await engine.unlock(record,w.id,secret);
+  check();
+  tell('Vault unlocked.');
+  if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. You may remove the key.');
+  window.dispatchEvent(new Event('iwa-vault-unlocked'));
+ }finally{progress?.close();secret?.fill(0);}
+});
 el('vault-lock').onclick=()=>{lock();tell('Vault locked.');};
 el('vault-store').onclick=()=>run(async check=>{if(!engine.unlocked)throw Error('Unlock first.');const file=el('vault-file').files[0],name=el('vault-item-name').value.trim();if(!name||name.length>100)throw Error('Enter an item name.');let item;if(file){if(!/\.(p12|pfx)$/i.test(file.name)||file.size>1000000)throw Error('Choose a .p12/.pfx up to 1 MB.');item={id:crypto.randomUUID(),name,kind:'password-protected .p12',file:b64(await file.arrayBuffer()),password:el('vault-password').value};if(!item.password)throw Error('Enter the existing .p12 password.');}else{const value=el('vault-secret').value;if(!value||value.length>65536)throw Error('Enter a secret up to 64 KiB.');item={id:crypto.randomUUID(),name,kind:'secret setting',value};}check();engine.data.items.push(item);await engine.save();await commit();el('vault-password').value=el('vault-secret').value=el('vault-file').value='';tell('Saved encrypted in the IWA vault. This does not select a software signing identity or change gws credentials.');});
 el('vault-export').onclick=()=>run(async()=>{if(!record)throw Error('Create a vault first.');const url=URL.createObjectURL(new Blob([JSON.stringify(record)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='sequoia-vault.encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);tell('Exported encrypted vault only. Keep an enrolled authenticator available.');});

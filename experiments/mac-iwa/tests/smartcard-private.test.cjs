@@ -1,7 +1,7 @@
 // Emulate only card APDUs. No native host, device, real PIN or key material.
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,createHash}=require('node:crypto');
-function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false}={}){
+function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false,firstSerial=123}={}){
  const events=[],sent=[],alg={0x9c:0xe3,0x84:0xe0,0x9d:0xe6,0x85:0xe1};let connections=0;
  const ctx={Uint8Array,Array,Map,Set,Error,TextEncoder,TextDecoder,crypto:webcrypto,atob,btoa};ctx.globalThis=ctx;
  if(secureFailure)ctx.SequoiaSecureChannel={isRequired:()=>true,acquire:async()=>{throw Error("Untrusted SCP chain");}};
@@ -13,7 +13,7 @@ function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false
  const ok=data=>new Uint8Array([...(data||[]),0x90,0]);let parts=[];
  const conn={status:async()=>({state:'specific',answerToReset:new Uint8Array()}),startTransaction:async fn=>fn(),disconnect:async()=>events.push('disconnect'),transmit:async raw=>{
   const a=new Uint8Array(raw);sent.push([...a]);
-  if(a[1]===0xa4)return ok();if(a[1]===0xfd)return ok([6,0,0]);if(a[1]===0xf8)return ok([0,0,0,123]);
+  if(a[1]===0xa4)return ok();if(a[1]===0xfd)return ok([6,0,0]);if(a[1]===0xf8)return ok([0,0,0,connections===1?firstSerial:123]);
   if(a[1]===0xf7)return ok(metadata(a[3]));
   if(a[1]===0x20){events.push('pin');return rejectPin?new Uint8Array([0x63,0xc2]):ok();}
   assert.equal(a[1],0x87);parts.push(...a.slice(5,5+a[4]));if(a[0]===0x10)return ok();
@@ -75,4 +75,40 @@ test('required SCP failure stops before PIN, private APDUs or another reader',as
  const h=harness({secureFailure:true});let prompts=0;
  await assert.rejects(h.p.signDigestViaSmartCard({digest:Buffer.alloc(64).toString('base64'),mu:Buffer.alloc(64).toString('base64')},h.identity,async()=>{prompts++;return '123456';}),/Untrusted SCP chain/);
  assert.equal(prompts,0);assert.equal(h.sent.length,0);assert.equal(h.connections(),1);assert.ok(h.events.includes('disconnect'));
+});
+
+const vaultCipher={mlkemCiphertext:Buffer.alloc(1088,2).toString('base64'),x25519Ephemeral:Buffer.alloc(32,3).toString('base64')};
+const vaultBinding=h=>({...h.identity,slots:['9d','85'].map(slot=>h.identity.slots.find(key=>key.slot===slot))});
+
+test('Level 3 vault checks just one authenticated metadata read per decryption slot before prompting',async()=>{
+ const h=harness({firstSerial:42}),progress=[];
+ let prompts=0;
+ await h.p.decapsulateComponentsViaSmartCard(vaultCipher,vaultBinding(h),async()=>{
+  prompts++;
+  assert.deepEqual(h.sent.filter(a=>a[1]===0xf7).map(a=>a[3]),[0x9d,0x85]);
+  assert(!h.sent.some(a=>a[1]===0x20||a[1]===0x87));
+  return '123456';
+ },{vaultUnlock:true,vaultProgress:event=>progress.push([event.stage,event.serial,event.slot])});
+ assert.equal(prompts,1);
+ assert.deepEqual(progress,[
+  ['found','42',undefined],['found','123',undefined],['slot',undefined,'9d'],['slot-verified',undefined,'9d'],
+  ['slot',undefined,'85'],['slot-verified',undefined,'85'],
+ ]);
+});
+
+test('either mismatched vault component stops before the PIN prompt or any private APDU',async()=>{
+ for(const slot of ['9d','85']){
+  const h=harness(),identity=vaultBinding(h);
+  identity.slots=identity.slots.map(key=>key.slot===slot?{...key,publicKeySha256:'0'.repeat(64)}:key);
+  await assert.rejects(h.p.decapsulateComponentsViaSmartCard(vaultCipher,identity,
+   ()=>assert.fail('must not prompt'),{vaultUnlock:true}),/Live vault key differs/);
+  assert(!h.sent.some(a=>a[1]===0x20||a[1]===0x87));
+ }
+});
+
+test('required SCP failure blocks the optimized vault path before PIN or metadata',async()=>{
+ const h=harness({secureFailure:true});
+ await assert.rejects(h.p.decapsulateComponentsViaSmartCard(vaultCipher,vaultBinding(h),
+  ()=>assert.fail('must not prompt'),{vaultUnlock:true}),/Untrusted SCP chain/);
+ assert.deepEqual(h.sent,[]);
 });
