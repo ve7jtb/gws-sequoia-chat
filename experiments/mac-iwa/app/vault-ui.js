@@ -11,6 +11,7 @@ import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap} from './vault/piv.js';
 import {openPivWrapper} from './vault/open-piv.js';
 import {showVaultUnlockProgress} from './vault/unlock-progress.js';
+import {startVaultUnlockTiming,renderVaultUnlockTiming} from './vault/unlock-timing.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
 import {operateImportedKey} from './piv-import.js';
@@ -217,6 +218,7 @@ async function enrollConnectedPiv(check,requestedSerial){
 el('vault-add-piv').onclick=()=>run(c=>enrollConnectedPiv(c));
 el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
 el('vault-unlock').onclick=()=>run(async check=>{
+ const started=performance.now();
  const fresh=await load();
  if(fresh){record=fresh;revision=fresh.revision;}
  validate(record);
@@ -225,16 +227,24 @@ el('vault-unlock').onclick=()=>run(async check=>{
  const showProgress=w.type==='piv'&&w.binding.kind==='hybrid'&&window.hardwareTransport?.getMode()==='smartcard';
  const progressPanel=el(el('startup').hidden?'vault-unlock-progress':'startup-vault-progress');
  const progress=showProgress?showVaultUnlockProgress(progressPanel,w.binding.serial):null;
+ const timing=showProgress?startVaultUnlockTiming({
+  started,serial:w.binding.serial,scpRequired:window.SequoiaSecureChannel?.isRequired()===true,
+  report:trace=>{
+   renderVaultUnlockTiming(el('startup-unlock-timing'),trace);
+   renderVaultUnlockTiming(el('vault-unlock-timing'),trace);
+  },
+ }):null;
+ timing?.record({stage:'finding'});
  let secret;
  try{
-  secret=w.type==='piv'?await pivSecret(w,event=>{check();progress?.update(event);}):await prf(w);
+  secret=w.type==='piv'?await pivSecret(w,event=>{check();timing?.record(event);progress?.update(event);}):await prf(w);
   check();
   await engine.unlock(record,w.id,secret);
   check();
   tell('Vault unlocked.');
   if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. You may remove the key.');
   window.dispatchEvent(new Event('iwa-vault-unlocked'));
- }finally{progress?.close();secret?.fill(0);}
+ }finally{timing?.finish();progress?.close();secret?.fill(0);}
 });
 el('vault-lock').onclick=()=>{lock();tell('Vault locked.');};
 el('vault-store').onclick=()=>run(async check=>{if(!engine.unlocked)throw Error('Unlock first.');const file=el('vault-file').files[0],name=el('vault-item-name').value.trim();if(!name||name.length>100)throw Error('Enter an item name.');let item;if(file){if(!/\.(p12|pfx)$/i.test(file.name)||file.size>1000000)throw Error('Choose a .p12/.pfx up to 1 MB.');item={id:crypto.randomUUID(),name,kind:'password-protected .p12',file:b64(await file.arrayBuffer()),password:el('vault-password').value};if(!item.password)throw Error('Enter the existing .p12 password.');}else{const value=el('vault-secret').value;if(!value||value.length>65536)throw Error('Enter a secret up to 64 KiB.');item={id:crypto.randomUUID(),name,kind:'secret setting',value};}check();engine.data.items.push(item);await engine.save();await commit();el('vault-password').value=el('vault-secret').value=el('vault-file').value='';tell('Saved encrypted in the IWA vault. This does not select a software signing identity or change gws credentials.');});

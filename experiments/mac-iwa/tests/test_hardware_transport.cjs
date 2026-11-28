@@ -24,8 +24,14 @@ async function testBrowserPinValidation() {
   input.focus = () => {};
   ctx.document = { getElementById: id => elements[id] };
   const transport = createHardwareTransport();
-  let submissions = 0;
-  const pending = transport.promptPin({}, () => { submissions++; });
+  let submissions = 0, shown = 0;
+  const pending = transport.promptPin({}, () => { submissions++; }, () => {
+    assert.equal(dialog.open, true);
+    assert.equal(input.value, '');
+    assert.equal(submissions, 0);
+    shown++;
+  });
+  assert.equal(shown, 1);
   assert.equal(ok.disabled, true);
   function enter(options = {}) {
     const event = new Event('keydown', {cancelable: true});
