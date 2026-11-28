@@ -198,8 +198,11 @@ export function initializeSoftwareUi({isBusy,setBusy,say,account,changed,test}){
     throw Error('The provisioning vault or account changed. Preserve the journal.');
   };
   const card=createPivImporter({promptManagement:managementPrompt});
+  const target=await window.chooseVaultProvisioningTarget?.();
+  if(target===false)return;
+  guard();
   say('Checking firmware and authenticated PIV inventory. No writes yet.');
-  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,includeSsh:withSsh,...await card.inspect()});
+  const plan=planLevel3Provisioning({profile:'level3',mode,includeSmime:true,includeExperimentalNist:withNist,includeSsh:withSsh,...await card.inspect(target)});
   guard();
   const verify=await createCertificateVerifier(piv);
   guard();

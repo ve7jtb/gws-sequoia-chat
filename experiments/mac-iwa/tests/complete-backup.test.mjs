@@ -80,8 +80,9 @@ test('active vault verifies backup and a single credential unlock carries throug
  const access=createBackupVaultAccess({
   current:()=>({engine,revision:engine.record?.revision,epoch}),
   load:()=>db.read(DATABASES[0][0]),settings:destination.settings,origin,
-  touch:()=>touched++,activate:(candidate,saved,restored)=>{
+  touch:()=>touched++,activate:(candidate,saved,restored,presence)=>{
    assert.equal(restored,true);assert.equal(candidate.record.id,saved.id);
+   assert.deepEqual(presence,{serial:'41088108',lastSeen:5000});
    engine=candidate;epoch++;activations++;
   }
  });
@@ -93,7 +94,7 @@ test('active vault verifies backup and a single credential unlock carries throug
  const snapshot=await unseal(archive,reviewed,origin);
  await assert.rejects(access.adopt(reviewed,{restored:true}),/saved vault changed/);
  await restore(destination,snapshot,origin);
- await access.adopt(reviewed,{restored:true});
+ await access.adopt(reviewed,{restored:true,presence:()=>({serial:'41088108',lastSeen:5000})});
  assert.equal(engine,reviewed);assert.equal(access.unlocked(),true);assert.equal(activations,1);
 });
 

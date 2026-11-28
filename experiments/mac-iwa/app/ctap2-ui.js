@@ -118,8 +118,9 @@ window.directFido=Object.freeze({
  async prf(binding,options){
   if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card transport first.');
   return run(async options=>{
-   const r=await evaluate({serial:binding.serial||selectedSerial(),rpId:binding.rpId||extensionRp(),credentialId:binding.credentialId?bytes(binding.credentialId):null,salt:bytes(binding.salt)},details=>promptPin(details,options.signal),options);
-   try{progress('PRF received. Checking the encrypted vault…');return {credentialId:b64(r.credentialId),secret:b64(r.secret)};}
+   const serial=binding.serial||selectedSerial();
+   const r=await evaluate({serial,rpId:binding.rpId||extensionRp(),credentialId:binding.credentialId?bytes(binding.credentialId):null,salt:bytes(binding.salt)},details=>promptPin(details,options.signal),options);
+   try{progress('PRF received. Checking the encrypted vault…');return {credentialId:b64(r.credentialId),secret:b64(r.secret),serial};}
    finally{r.secret.fill(0);}
   },options);
  }

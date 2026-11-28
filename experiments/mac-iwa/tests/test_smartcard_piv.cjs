@@ -225,5 +225,44 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
     delete ctx.navigator;
   }
 
+  // Vault presence only trusts a secure session and the matching serial.
+  {
+    const commands=[];
+    const readers=['YubiKey other','YubiKey selected'];
+    let required=true;
+    ctx.SequoiaSecureChannel={
+      isRequired:()=>required,
+      acquire:async conn=>({connection:conn,authenticated:required,close(){}}),
+    };
+    ctx.navigator={smartCard:{establishContext:async()=>({
+      listReaders:async()=>readers,
+      connect:async reader=>({connection:{
+        status:async()=>({answerToReset:new Uint8Array()}),
+        startTransaction:async run=>run(),
+        disconnect:async()=>{},
+        transmit:async apdu=>{
+          commands.push([reader,apdu[1]]);
+          if(apdu[1]===0xa4)return new Uint8Array([0x90,0]);
+          assert.equal(apdu[1],0xf8);
+          return new Uint8Array([0,0,0,reader===readers[0]?42:123,0x90,0]);
+        },
+      }}),
+    })}};
+    try{
+      assert.equal(typeof await piv.verifyVaultKeyPresence('123'),'number');
+      assert.deepEqual(commands,[[readers[0],0xa4],[readers[0],0xf8],[readers[1],0xa4],[readers[1],0xf8]]);
+      commands.length=0;
+      await piv.verifyVaultKeyPresence('123');
+      assert.deepEqual(commands,[[readers[1],0xa4],[readers[1],0xf8]]);
+      required=false;
+      commands.length=0;
+      assert.equal(await piv.verifyVaultKeyPresence('123'),false);
+      assert.deepEqual(commands,[]);
+    }finally{
+      delete ctx.SequoiaSecureChannel;
+      delete ctx.navigator;
+    }
+  }
+
   console.log('PASS smartcard-piv APDU, TLV, PIN, command chaining, SPKI, and GET RESPONSE tests');
 })();

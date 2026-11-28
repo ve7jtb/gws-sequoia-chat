@@ -7,11 +7,12 @@ const identical=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 export function createProvisioning({card,vault,journal}){
  let active=false,review=null,verified=null;
  const fail=message=>{throw Error(message);};
- async function discover(identity){
+ async function discover(identity,serial){
   if(active)fail('Finish the current provisioning operation first.');
   verified=null;review=null;
   await vault.assert(identity);
-  const snapshot=await card.inspect();
+  const snapshot=await card.inspect(serial);
+  if(serial&&snapshot.serial!==serial)throw Error('YubiKey changed during discovery.');
   const plan=planPivBackup({profile:identity.profile,...snapshot});
   await vault.assert(identity);
   // The identity binding and serial are retained privately; subsequent writes

@@ -10,6 +10,7 @@ import {backupUnlockChoices,unlockBackup} from './vault/backup-unlock.js';
 import {detailedUnlockMethodLabel} from './vault/labels.js';
 import {prepareLevel3VaultUnlock} from './vault/hardware.js';
 import {showVaultUnlockProgress} from './vault/unlock-progress.js';
+import {createVaultPresenceMonitor,monitoredVaultSerial} from './vault/presence.js';
 import {decryptWithHardware} from './decryption-session.js';
 const workerPath='/decryption-worker.js';
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-backup-decryption-worker',{
@@ -43,7 +44,17 @@ document.getElementById('backup-link').onclick=event=>{event.preventDefault();wi
 
 let box=null,review=null,busy=false,page='',controller,timer,unlockAbort;
 const tell=s=>el('status').textContent=s;
-function clear(){el('restore-success').hidden=true;el('restore').textContent='Restore into empty instance';box=null;review=null;verificationVault.lock();el('restore').disabled=true;el('save').disabled=true;el('upload').disabled=true;el('review').textContent='';el('approve').checked=false;methods(null);}
+const verificationPresence=createVaultPresenceMonitor({
+ probe:serial=>window.SequoiaSmartCardPiv.verifyVaultKeyPresence(serial),
+ onTimeout:serial=>{
+  clear();
+  tell('Backup verification locked. Could not verify unlock key SN# '+serial+' over SCP11b for 30 seconds.');
+ },
+});
+window.addEventListener('focus',verificationPresence.refresh);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void verificationPresence.refresh();});
+document.addEventListener('freeze',()=>{if(verificationPresence.serial)clearBackup();});
+function clear(){verificationPresence.stop();el('restore-success').hidden=true;el('restore').textContent='Restore into empty instance';box=null;review=null;verificationVault.lock();el('restore').disabled=true;el('save').disabled=true;el('upload').disabled=true;el('review').textContent='';el('approve').checked=false;methods(null);}
 function disconnect(){controller?.abort();drive.disconnect();clearTimeout(timer);el('auth').hidden=true;}
 function touch(){if(screen.hidden)return;clearTimeout(timer);timer=setTimeout(()=>{clearBackup();tell('Backup session cleared after inactivity.');},300000);}
 async function run(fn){if(busy)return;busy=true;try{await fn();touch();}catch(e){tell(e.message);}finally{busy=false;}}
@@ -77,6 +88,7 @@ function showMissingKey(wrapper){
  dialog.showModal();el('insert-close').focus();
 }
 async function unlock(record,vault,methodId){
+ verificationPresence.stop();
  vault.lock();
  const w=record?.wrappers.find(w=>w.id===methodId);
  if(!w)throw Error('Select an enrolled unlock method.');
@@ -118,7 +130,7 @@ async function unlock(record,vault,methodId){
   el('pin-ok').onclick=ok;el('pin').addEventListener('keydown',key);el('pin-cancel').onclick=cancel;dialog.oncancel=e=>{e.preventDefault();cancel();};dialog.showModal();el('pin').focus();
  });
  try{
-  await unlockBackup(record,w.id,vault,{
+  const authenticated=await unlockBackup(record,w.id,vault,{
    request,evaluate,promptPin,
    decrypt:options=>decryptWithHardware({...options,signal:abort.signal,
     createWorker:()=>new Worker(workerPolicy?workerPolicy.createScriptURL(workerPath):workerPath,{type:'module'})}),
@@ -126,7 +138,8 @@ async function unlock(record,vault,methodId){
    expectedSerial:localStorage.getItem('iwa-fido-expected-serial'),signal:abort.signal,
    progress:m=>el('pin-progress').textContent=m,
   });
-  tell('Authenticator unlocked the vault. You may remove the key.');
+  verificationPresence.start(monitoredVaultSerial(authenticated.serial,authenticated.mode));
+  tell('Authenticator unlocked the vault. Keep the unlock key connected.');
  }catch(e){
   if(/No PC\/SC smart card readers detected/i.test(e.message)){
    showMissingKey(w);throw Error('Connect the selected key and retry. No reader was detected; no PIN was submitted.');
@@ -138,11 +151,12 @@ el('unlock').onclick=()=>run(async()=>{
  source=await load();methods(source,'source-methods');
  if(!backupVaultSession)throw Error('Finish restoring the backup before unlocking the app.');
  await unlock(source,verificationVault,el('source-methods').value);
- try{await backupVaultSession.adopt(verificationVault);}
+ try{await backupVaultSession.adopt(verificationVault,{presence:verificationPresence.snapshot});}
  catch(error){verificationVault.lock();throw error;}
+ finally{verificationPresence.stop();}
  verificationVault=new Vault();
  updateSourceActions();
- tell('Authenticator unlocked the vault. You may remove the key.');
+ tell('Authenticator unlocked the vault. Keep the unlock key connected.');
 });
 el('export').onclick=()=>run(async()=>{
  clear();const snapshot=await capture(storage,location.origin);
@@ -163,8 +177,9 @@ el('verify').onclick=()=>run(async()=>{
  try{
   snapshot=await unseal(selected,verified,location.origin);
   hash=await digest(snapshot);
+  verificationPresence.check();
   if(box!==selected||!verified.unlocked)throw Error('Backup review expired. Verify the file again.');
- }catch(error){verified.lock();throw error;}
+ }catch(error){verificationPresence.stop();verified.lock();throw error;}
  review=snapshot;
  el('review').textContent=JSON.stringify({origin:review.origin,databases:review.databases.map(r=>({name:r.name,present:r.value!==null})),settings:review.settings.length,preservedLocalSettings:['SCP requirement','beta SD pin selection','hardware transport'],sha256:hash},null,2);
  el('restore').disabled=false;tell('Backup authenticated. This device’s SCP, beta-pin and hardware transport settings will be preserved. Other conflicting data is refused.');
@@ -173,15 +188,17 @@ el('restore').onclick=()=>run(async()=>{if(!review||!el('approve').checked)throw
  const verified=verificationVault,entry=review;
  try{
   await restore(storage,entry,location.origin,{guard:()=>{
+   verificationPresence.check();
    if(review!==entry||!verified.unlocked)throw Error('Backup review expired. Verify the file again.');
   }});
   await window.startIwaApplicationAfterRestore();
-  await backupVaultSession.adopt(verified,{restored:true});
+  await backupVaultSession.adopt(verified,{restored:true,presence:verificationPresence.snapshot});
+  verificationPresence.stop();
   source=verified.record;methods(source,'source-methods');
   verificationVault=new Vault();
  }catch(e){el('restore').disabled=!review;el('restore').textContent='Restore into empty instance';updateSourceActions();throw e;}
  el('restore').textContent='Restore complete';el('restore-success').hidden=false;el('restore-success').focus();
- tell('Restore complete. The app will remain unlocked until you lock it or the session expires.');review=null;el('restore').disabled=true;updateSourceActions();});
+ tell('Restore complete. Keep the unlock key connected to continue using the vault.');review=null;el('restore').disabled=true;updateSourceActions();});
 el('connect').onclick=()=>run(async()=>{disconnect();controller=new AbortController();const clientId=getLoopbackClientId();const session=await runLoopbackPkceOAuth({clientId,clientSecret:getLoopbackClientSecret(clientId),scopes:[DRIVE_SCOPE],signal:controller.signal,onAuthUrl:url=>{el('auth').href=url;el('auth').hidden=false;}});drive.connect(session);el('auth').hidden=true;tell('Drive connected for app-created files only. No backup uploaded yet.');});
 el('disconnect').onclick=()=>{disconnect();tell('Drive session cleared.');};
 el('upload').onclick=()=>run(async()=>{if(!box)throw Error('Create a backup first');const result=await drive.upload(box);tell('Encrypted snapshot uploaded: '+result.name);});

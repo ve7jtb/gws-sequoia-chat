@@ -83,8 +83,10 @@ export function createBackupUi({provider,account,test,say,changed}){
    const report=await test(selected,m=>say(m),binding);
    return {publicKeysMatch:true,signingVerified:report.signatureVerified===true,decryptionVerified:report.decryptionVerified===true,slots};
   }},vault:{assert:store.assert,material:store.backupMaterial,saveHardware:store.saveHardware,assertHardware:store.assertHardware,removePrivate:store.removePrivate},journal});
+  const target=await window.chooseVaultProvisioningTarget?.();
+  if(target===false)return;
   say('Reading all 24 PIV slots and certificates; no PIN or writes.');
-  const review=await controller.discover(identity);
+  const review=await controller.discover(identity,target);
   const summary=review.plan.keys.map(k=>k.slot.toUpperCase()+': '+k.component+' ('+k.role+'), PIN always, touch '+k.touch).join('\n');
   if(!confirm('Detected empty YubiKey '+review.plan.serial+'\n\nImport the EXISTING Level 3 software keys (no new keys generated):\n'+summary+'\n\nFingerprint: '+identity.fingerprint+'\n\nThis writes six empty slots. An interrupted import must not be blindly retried. Keep the software copy until verification passes. Proceed?'))return;
   try{

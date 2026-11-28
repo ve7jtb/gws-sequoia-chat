@@ -13,13 +13,13 @@ export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,d
  if(!method)throw Error('Select an enrolled unlock method.');
  const {binding}=method;
  const guard=()=>signal.throwIfAborted();
- let secret;
+ let secret,serial=binding.serial;
  try{
   guard();
   if(method.type==='piv'){
    secret=await openPivWrapper(record,method,{request,decrypt,guard});
   }else if(mode==='smartcard'){
-   let serial=binding.serial||expectedSerial;
+   serial ||= expectedSerial;
    if(!serial){
     const {devices}=await request('chat-identity-devices');
     if(devices.length!==1)throw Error('Connect only the YubiKey for the selected FIDO credential.');
@@ -40,6 +40,7 @@ export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,d
   guard();
   await vault.unlock(record,method.id,secret);
   guard();
+  return {serial,mode};
  }catch(error){
   vault.lock();
   throw error;

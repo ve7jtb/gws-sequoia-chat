@@ -362,8 +362,9 @@ async function sha256Hex(bytes){
 }
 
 const PUBLIC_READER_DISCOVERY=Symbol('Public reader discovery');
+const secureReaders=new Map();
 
-async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery,onReader}={}){
+async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery,onReader,presence=false}={}){
   const enumerate=discovery===PUBLIC_READER_DISCOVERY;
   const devices=[],attachedSerials=new Set();
   if(!global.navigator?.smartCard){
@@ -372,7 +373,9 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
   const ctx = await global.navigator.smartCard.establishContext();
   const readers = await ctx.listReaders();
   if(!readers.length) throw Error('No PC/SC smart card readers detected.');
-  const ordered = [...readers.filter(r=>/yubikey/i.test(r)), ...readers.filter(r=>!/yubikey/i.test(r))];
+  const preferred=presence?secureReaders.get(expectedSerial):null;
+  const ordered = [...readers].sort((a,b)=>
+   Number(b===preferred)-Number(a===preferred)||Number(/yubikey/i.test(b))-Number(/yubikey/i.test(a)));
 
   let lastError = null;
   for(const reader of ordered){
@@ -393,16 +396,18 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
         // Expose only transmit to the channel and trace command headers only.
         const raw=trace?{transmit:apdu=>trace(conn,apdu)}:conn;
         if(!global.SequoiaSecureChannel && global.document?.getElementById('secure-yubikey-connection'))throw Error('Secure-channel policy is not ready');
-        secured = await global.SequoiaSecureChannel?.acquire(raw);
+        secured = await global.SequoiaSecureChannel?.acquire(raw,{quiet:presence});
+        if(presence&&!secured?.authenticated)throw Error('SCP11b presence verification unavailable.');
         const channel = secured?.connection || raw;
         const sel = await transmitChained(channel, buildSelectPivApdu());
         if(sel.sw !== 0x9000) throw Error('SELECT PIV failed: SW=0x' + sel.sw.toString(16));
         pivSelected = true;
-        const ver = await transmitChained(channel, new Uint8Array([0x00,0xFD,0x00,0x00]));
-        const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
+        const ver = presence?null:await transmitChained(channel,new Uint8Array([0x00,0xFD,0x00,0x00]));
+        const version = ver?.sw===0x9000?parseVersion(ver.data):null;
         const ser = await transmitChained(channel, new Uint8Array([0x00,0xF8,0x00,0x00]));
-        const serial = ser.sw === 0x9000 ? String(parseSerial(ser.data)) : null;
+        const serial = ser.sw===0x9000&&ser.data.length===4?String(parseSerial(ser.data)):null;
         if(serial){
+          if(secured?.authenticated)secureReaders.set(serial,reader);
           attachedSerials.add(serial);
           onReader?.(serial);
         }
@@ -427,7 +432,7 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
       lastError = e;
       // Never scan another reader or obscure an error after selecting the
       // requested device: PIN rejection/private operations must not be retried.
-      if(!enumerate&&(global.SequoiaSecureChannel?.isRequired() || operationStarted || (pivSelected && !expectedSerial)))throw e;
+      if(!presence&&!enumerate&&(global.SequoiaSecureChannel?.isRequired() || operationStarted || (pivSelected && !expectedSerial)))throw e;
     }finally{
       secured?.close();
       if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
@@ -446,6 +451,13 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
     throw error;
   }
   throw lastError || Error('No compatible YubiKey PIV reader found.');
+}
+
+// Only SELECT and GET SERIAL run inside the authenticated applet session.
+async function verifyVaultKeyPresence(serial){
+  if(typeof serial!=='string'||!/^[1-9][0-9]{0,9}$/.test(serial)||
+     global.SequoiaSecureChannel?.isRequired()!==true)return false;
+  return withPivSession(serial,async()=>Date.now(),{presence:true});
 }
 
 async function listYubiKeys(){
@@ -1342,6 +1354,7 @@ const api = {
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
   readLevel3VaultBundle,
+  verifyVaultKeyPresence,
   readVaultMaterialViaSmartCard,
   openLevel5VaultViaSmartCard,
   parseVaultDeviceInfo,

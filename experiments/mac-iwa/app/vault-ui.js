@@ -11,20 +11,29 @@ import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
 import {classicalWrap} from './vault/piv.js';
 import {openPivWrapper} from './vault/open-piv.js';
 import {showVaultUnlockProgress} from './vault/unlock-progress.js';
+import {createVaultPresenceMonitor,monitoredVaultSerial} from './vault/presence.js';
 import {attachedUnlockAlternatives,reviewAlternateUnlock} from './vault/alternate-unlock.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
 import {operateImportedKey} from './piv-import.js';
 import {inspectIdentity} from './identities/client.js';
 import {discoverIdentityDevices} from './identities/devices.js';
-let engine=new Vault(),record=null,revision=0,active=false,epoch=0,timer;
+let engine=new Vault(),record=null,revision=0,active=false,activeEpoch,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',{createScriptURL:u=>{if(u!=='/vault/worker.js')throw Error();return u;}});
 function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker(workerPolicy?workerPolicy.createScriptURL('/vault/worker.js'):'/vault/worker.js',{type:'module'});const t=setTimeout(()=>{w.terminate();reject(Error('Vault cryptography timed out.'));},30000);w.onmessage=({data})=>{clearTimeout(t);w.terminate();data.ok?resolve(data.result):reject(Error(data.error));};w.onerror=()=>{clearTimeout(t);w.terminate();reject(Error('Vault cryptography failed.'));};w.postMessage({op,input});});}
-function lock(){window.sshTrust?.cancel();softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
+const presence=createVaultPresenceMonitor({
+ probe:serial=>window.SequoiaSmartCardPiv.verifyVaultKeyPresence(serial),
+ onTimeout:serial=>lock('Vault locked. Could not verify unlock key SN# '+serial+' over SCP11b for 30 seconds.'),
+});
+function vaultStillUnlocked(){presence.check();return engine.unlocked;}
+function trackUnlockKey(serial,mode){
+ presence.start(monitoredVaultSerial(serial,mode));
+}
+function lock(message){presence.stop();if(message)tell(message);window.sshTrust?.cancel();softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
  // Publish only presentation state; the startup screen never receives vault secrets.
- window.vaultStartupState=()=>({exists:!!record,unlocked:engine.unlocked&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type,...(w.type==='piv'?{serial:w.binding.serial}:{})})),defaultId:record?.default,status:el('vault-status').textContent});
+ window.vaultStartupState=()=>({exists:!!record,unlocked:vaultStillUnlocked()&&revision>0,methods:(record?.wrappers||[]).map(w=>({id:w.id,name:w.name,type:w.type,...(w.type==='piv'?{serial:w.binding.serial}:{})})),defaultId:record?.default,status:el('vault-status').textContent});
  // Unlock completes after its component request releases the general UI lock.
  // Refresh this control here too, so it becomes usable immediately on success.
  el('vault-lock').disabled=!engine.unlocked;
@@ -32,19 +41,21 @@ function render(){
  el('vault-methods').replaceChildren();for(const w of record?.wrappers||[]){const o=document.createElement('option');o.value=w.id;o.textContent=(w.type==='piv'?unlockMethodLabel(w):w.name+' · FIDO PRF')+(w.id===record.default?' (default)':'');el('vault-methods').append(o);}if(record)el('vault-methods').value=record.default;
  el('vault-method-list').replaceChildren();if(engine.unlocked)for(const w of record.wrappers){const row=document.createElement('div');row.textContent=unlockMethodLabel(w);for(const [label,fn] of [['Rename',async()=>{const name=prompt('Name for this unlock method',w.name);if(name!==null){await engine.rename(w.id,name);await commit();}}],['Remove',async()=>{if(confirm('Remove this vault unlock method? This does not delete any credential or token key.')){await engine.remove(w.id);await commit();}}]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>run(fn);row.append(b);}el('vault-method-list').append(row);}
  el('vault-items').replaceChildren();if(engine.unlocked)for(const item of engine.data.items){const row=document.createElement('p');row.textContent=item.name+' · '+item.kind+' (encrypted at rest)';el('vault-items').append(row);}
- el('vault-state').textContent=record?(engine.unlocked?'Unlocked — auto-locks after five minutes of inactivity.':'Locked — choose an enrolled method.'):'No IWA vault yet. Use PIV by default, or FIDO PRF for software-only credentials.';
+ el('vault-state').textContent=record?(engine.unlocked?(presence.serial?
+  'Unlocked — locks if the unlock key is unavailable for 30 seconds, or after five minutes of inactivity.':
+  'Unlocked — locks after five minutes of inactivity. Removal lock requires an SCP11b-verified YubiKey.'):'Locked — choose an enrolled method.'):'No IWA vault yet. Use PIV by default, or FIDO PRF for software-only credentials.';
  window.dispatchEvent(new Event('iwa-vault-state'));
  el('vault-add-piv').textContent=record?'Add PIV unlock method':'Create vault with PIV (default)';el('vault-add-prf').textContent=record?'Add FIDO PRF unlock method':'Create software-only vault with FIDO PRF';
 }
 async function commit(options={}){try{options.guard?.();const candidate=engine.record;await persist(candidate,revision,options);options.guard?.();record=structuredClone(candidate);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();window.dispatchEvent(new CustomEvent('iwa-software-identities-changed',{detail:options.change}));}
-function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lock();tell('Vault locked after inactivity.');},300000);}
+function touch(){clearTimeout(timer);if(vaultStillUnlocked())timer=setTimeout(()=>{lock();tell('Vault locked after inactivity.');},300000);}
 // The service below is the sole software-identity path into the unlocked
 // vault. UI code receives public snapshots and operations, never the raw vault
 // object, content key or password-bearing item list. Persistence remains the
 // same encrypted IndexedDB record and compare-and-swap revision used by PIV/PRF.
-const sameVault=expected=>engine.unlocked&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
+const sameVault=expected=>vaultStillUnlocked()&&engine.record?.id===expected.vaultId&&revision===expected.revision&&epoch===expected.epoch;
 const identityVaultAccess={
-  snapshot:()=>({unlocked:engine.unlocked,vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),
+  snapshot:()=>({unlocked:vaultStillUnlocked(),vaultId:engine.record?.id,revision,epoch,items:engine.data?.items||[]}),
   async assertCurrent(expected){
    if(!sameVault(expected))throw Error('Software identity vault changed.');const latest=await load();
    if(!sameVault(expected))throw Error('Software identity vault locked or changed.');
@@ -79,17 +90,21 @@ window.sshAddressBook=createSshAddressBook(identityVaultAccess);
 window.localFiles=createLocalFileStore(identityVaultAccess);
 window.importedSshKeys=createImportedSshStore(identityVaultAccess);
 window.softwareIdentities=Object.freeze(softwareIdentities);
-async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);if(e.code!=='YUBIKEY_NOT_FOUND')window.directFido?.complete(e.message,false);}finally{active=false;render();}}
+async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=activeEpoch=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);if(e.code!=='YUBIKEY_NOT_FOUND')window.directFido?.complete(e.message,false);}finally{active=false;render();}}
 async function pivSecret(w,vaultProgress){
  const started=epoch;
  return openPivWrapper(record,w,{request:(op,data,options)=>hardwareRequest(op,data,{...options,vaultProgress}),vaultRequest:call,decrypt:decryptInIwa,
   guard:()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
 }
-async function prf(w,options){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding,options):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
+async function prf(w,options){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding,options):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{options?.onAuthenticatedSerial?.(r.serial);return bytes(r.secret);}finally{delete r.secret;}}
 async function checkExistingUnlockDevice(check){
  check();
  if(!record)return;
- await requireAttachedUnlockMethod(record.wrappers,()=>discoverIdentityDevices(call,{allowEmpty:true}));
+ const serial=presence.serial;
+ if(serial){
+  const seen=await window.SequoiaSmartCardPiv.verifyVaultKeyPresence(serial).catch(()=>false);
+  if(seen===false)throw Error('Keep unlock key SN# '+serial+' connected while adding another method.');
+ }else await requireAttachedUnlockMethod(record.wrappers,()=>discoverIdentityDevices(call,{allowEmpty:true}));
  check();
 }
 async function enroll(type,check,{create=false,expectedSerial=null,
@@ -144,8 +159,11 @@ async function enroll(type,check,{create=false,expectedSerial=null,
   // Authenticator prompts can outlast a USB swap. Recheck immediately
   // before storing the wrapper, while there is still nothing to persist.
   await checkExistingUnlockDevice(check);
-  if(record)await engine.add(w,secret,{makeDefault});else await engine.create(w,secret,vaultId);
-  check();await commit();if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. You may remove the key. Lock the vault to test a fresh unlock.');
+  const creatingVault=!record;
+  if(creatingVault)await engine.create(w,secret,vaultId);else await engine.add(w,secret,{makeDefault});
+  check();await commit();
+  if(creatingVault){trackUnlockKey(w.binding.serial,window.hardwareTransport?.getMode());render();}
+  if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. Lock the vault to test a fresh unlock.');
  }finally{secret?.fill(0);}
 }
 // Run after provisioning has released the general UI lock. Enrollment is a
@@ -219,17 +237,20 @@ el('vault-add-piv').onclick=()=>run(c=>enrollConnectedPiv(c));
 el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
 async function unlockWithMethod(method,check){
  const w=structuredClone(method);
+ const mode=window.hardwareTransport?.getMode();
+ let unlockSerial=w.binding.serial;
  const showProgress=w.type==='piv'&&w.binding.kind==='hybrid'&&window.hardwareTransport?.getMode()==='smartcard';
  const progressPanel=el(el('startup').hidden?'vault-unlock-progress':'startup-vault-progress');
  const progress=showProgress?showVaultUnlockProgress(progressPanel,w.binding.serial):null;
  let secret;
  try{
-  secret=w.type==='piv'?await pivSecret(w,event=>{check();progress?.update(event);}):await prf(w,{quietMissing:true});
+  secret=w.type==='piv'?await pivSecret(w,event=>{check();progress?.update(event);}):await prf(w,{quietMissing:true,onAuthenticatedSerial:serial=>{unlockSerial=serial||unlockSerial;}});
   check();
   await engine.unlock(record,w.id,secret);
   check();
+  trackUnlockKey(unlockSerial,mode);
   tell('Vault unlocked.');
-  if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. You may remove the key.');
+  if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. Keep the unlock key connected.');
   window.dispatchEvent(new Event('iwa-vault-unlocked'));
  }finally{progress?.close();secret?.fill(0);}
 }
@@ -267,17 +288,22 @@ el('vault-store').onclick=()=>run(async check=>{if(!engine.unlocked)throw Error(
 el('vault-export').onclick=()=>run(async()=>{if(!record)throw Error('Create a vault first.');const url=URL.createObjectURL(new Blob([JSON.stringify(record)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='sequoia-vault.encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);tell('Exported encrypted vault only. Keep an enrolled authenticator available.');});
 el('vault-import').onchange=()=>run(async()=>{if(record)throw Error('A vault already exists. Import never overwrites it.');const f=el('vault-import').files[0];if(!f||f.size>4000000)throw Error('Choose a vault backup up to 4 MB.');record=validate(JSON.parse(await f.text()));revision=0;tell('Backup loaded temporarily. Unlock and choose Save restored vault before it is stored.');});
 el('vault-restore').onclick=()=>run(async()=>{if(revision||!engine.unlocked)throw Error('Unlock the imported backup first.');await persist(record,0);revision=record.revision;tell('Encrypted backup restored.');});
-window.vaultGate=()=>{if(record&&!engine.unlocked)throw Error('Unlock the credential vault first (Vault tab).');};
-window.addEventListener('pagehide',lock);for(const e of ['pointerdown','keydown'])document.addEventListener(e,touch,{passive:true});
+window.vaultGate=()=>{if(record&&!vaultStillUnlocked())throw Error('Unlock the credential vault first (Vault tab).');};
+window.addEventListener('pagehide',()=>lock());
+window.addEventListener('focus',presence.refresh);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void presence.refresh();});
+document.addEventListener('freeze',()=>{if(presence.serial)lock('Vault locked while the app was suspended.');});
+for(const e of ['pointerdown','keydown'])document.addEventListener(e,touch,{passive:true});
 record=await load();revision=record?.revision||0;if(record)validate(record);render();
 // Keep the vault key inside the active engine even when changing screens.
 registerBackupVaultSession(createBackupVaultAccess({
- current:()=>({engine,epoch,revision,active}),
+ current:()=>{presence.check();return {engine,epoch,revision,active};},
  load,settings:localStorage,origin:location.origin,touch,
- activate(candidate,saved,restored){
+ activate(candidate,saved,restored,verifiedPresence){
   if(engine!==candidate)engine.lock();
   engine=candidate;
   record=saved;revision=saved.revision;epoch++;
+  presence.start(verifiedPresence?.serial,verifiedPresence?.lastSeen);
   tell(restored?'Restored vault unlocked.':'Vault unlocked.');
   render();touch();
   if(restored)window.dispatchEvent(new Event('iwa-vault-restored'));
@@ -286,9 +312,32 @@ registerBackupVaultSession(createBackupVaultAccess({
 }));
 
 // Read-only gate for the experimental in-memory Google session.
-window.vaultIsUnlocked=()=>engine.unlocked;
+window.vaultIsUnlocked=vaultStillUnlocked;
+// A monitored vault keeps its unlock key attached. Select a different card
+// before inspecting empty slots; reader order cannot choose the target.
+window.chooseVaultProvisioningTarget=async()=>{
+ if(!vaultStillUnlocked())throw Error('Unlock the vault before provisioning.');
+ const serial=presence.serial;
+ if(!serial)return undefined;
+ const started=epoch;
+ let devices=await window.SequoiaSmartCardPiv.listYubiKeys();
+ if(!vaultStillUnlocked()||started!==epoch)throw Error('Vault locked during YubiKey discovery.');
+ if(!devices.some(device=>device.serial===serial))
+  throw Error('Keep unlock key SN# '+serial+' attached while provisioning.');
+ devices=[...new Map(devices.filter(device=>device.serial!==serial).map(device=>[device.serial,device])).values()];
+ if(!devices.length)throw Error('Keep unlock key SN# '+serial+' attached and connect the empty YubiKey in a second USB port.');
+ if(devices.length===1)return devices[0].serial;
+ const target=await confirmUnlockEnrollment(document,window,{
+  title:'Select the YubiKey to provision',
+  detail:'Keep unlock key SN# '+serial+' connected and select the separate empty YubiKey.',
+  action:'Check selected YubiKey',devices,
+ });
+ if(!vaultStillUnlocked()||started!==epoch)throw Error('Vault locked during YubiKey discovery.');
+ return target;
+};
+
 // Locked-vault decryption is allowed only inside an explicit active vault operation.
-window.vaultOperationActive=()=>active;
+window.vaultOperationActive=()=>{presence.check();return active&&activeEpoch===epoch;};
 
 // Dedicated onboarding entry point. Never overwrite a saved/imported vault and
 // never infer permission to create a credential from an assertion failure.

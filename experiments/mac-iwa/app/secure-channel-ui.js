@@ -46,10 +46,13 @@ globalThis.SequoiaSecureChannel={
  isRequired:()=>required,
  // Acquiring the policy locks the checkbox for the entire card transaction.
  // A later UI change cannot downgrade an operation between PIN and signature.
- async acquire(conn){
+ async acquire(conn,{quiet=false}={}){
   active++;checkbox.disabled=betaCheckbox.disabled=true;let secure;
-  if(!required)return {connection:conn,close(){release();}};
-  try{secure=await openSecureConnection(conn,{trust:await trust(),onStatus:report});return {connection:secure,close(){secure.close();release();report('Secure session closed. SCP11b remains required for the next operation.');}};}
-  catch(e){release();report('Secure connection refused: '+e.message);throw e;}
+  if(!required)return {connection:conn,authenticated:false,close(){release();}};
+  const status=quiet?()=>{}:report;
+  try{
+   secure=await openSecureConnection(conn,{trust:await trust(),onStatus:status});
+   return {connection:secure,authenticated:true,close(){secure.close();release();status('Secure session closed. SCP11b remains required for the next operation.');}};
+  }catch(e){release();status('Secure connection refused: '+e.message);throw e;}
  }
 };

@@ -28,7 +28,7 @@ export function createBackupVaultAccess({current,load,settings,origin,activate,t
    touch();
    return box;
   },
-  async adopt(candidate,{restored=false}={}){
+  async adopt(candidate,{restored=false,presence}={}){
    const started=current();
    if(started.active||!candidate.unlocked)throw Error('The verified vault is no longer available.');
    const expected=await digest(candidate.record),saved=await load();
@@ -36,8 +36,9 @@ export function createBackupVaultAccess({current,load,settings,origin,activate,t
     throw Error('The saved vault changed. Unlock the current vault.');
    if(started.engine.unlocked&&await digest(started.engine.record)!==expected)
     throw Error('The current vault is different.');
+   const verifiedPresence=presence?.();
    if(check(started,candidate).active)throw Error('Finish the current vault operation first.');
-   activate(candidate,saved,restored);
+   activate(candidate,saved,restored,verifiedPresence);
   },
  };
 }
