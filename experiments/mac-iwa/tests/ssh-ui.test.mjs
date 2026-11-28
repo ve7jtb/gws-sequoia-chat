@@ -317,3 +317,49 @@ test('saved SSH hosts restore connection fields and never substitute a missing c
  assert.equal($('username').value,'');
  assert.deepEqual($('saved-hosts').children.map(option=>option.value),['']);
 });
+
+test('card SSH waits for a foreground action and cancels it on vault lock',async t=>{
+ const document=fakeDocument(),window=new EventTarget(),priorWorker=globalThis.Worker;
+ const $=id=>document.getElementById('ssh-'+id);
+ let worker,port,unlocked=true;
+ globalThis.Worker=class{
+  constructor(){worker=this;this.messages=[];}
+  postMessage(data){this.messages.push(data);}
+  terminate(){this.closed=true;}
+  emit(data){return this.onmessage({data});}
+ };
+ t.after(()=>{
+  window.dispatchEvent(new Event('iwa-vault-locked'));port?.close();
+  if(priorWorker===undefined)delete globalThis.Worker;else globalThis.Worker=priorWorker;
+ });
+ Object.assign(window,{MessageChannel,setTimeout,clearTimeout,setInterval,clearInterval,focus(){},location:{origin:'isolated-app://ssh-test'}});
+ window.open=()=>{
+  const popup={closed:false,close(){this.closed=true;},postMessage(_data,_origin,ports){port=ports[0];port.postMessage({type:'initialized'});}};
+  queueMicrotask(()=>window.dispatchEvent(Object.assign(new Event('message'),{origin:window.location.origin,source:popup,data:{type:'ssh-terminal-ready'}})));
+  return popup;
+ };
+ window.vaultIsUnlocked=()=>unlocked;
+ window.hardwareTransport={getMode:()=> 'smartcard',promptPin:()=>assert.fail('No PIN before user action')};
+ window.SequoiaSmartCardPiv={signSshComponents:()=>assert.fail('No card read before user action')};
+ const identity={id:'identity',name:'SSH test',email:'ssh@example.invalid',emails:['ssh@example.invalid'],hasSshPublic:true,sshCardSerials:['12345678']};
+ window.softwareIdentities={records:async()=>[identity],get:async()=>identity,provisioningCertificates:async()=>({ssh:{publicKey:'ssh-mldsa44-ed25519 AQID'}}),assert:async()=>{},sshHardware:async()=>({serial:'12345678'})};
+ window.sshTrust={list:async()=>[{hosts:'server.invalid',type:'ssh-ed25519',key:'AQID'}]};
+ window.sshAddressBook={list:async()=>[{id:'saved',name:'Saved',host:'server.invalid',port:22,identityId:identity.id,username:'fixture',serial:'12345678'}]};
+ const modal=Promise.withResolvers(),dialog=$('card-attention');
+ dialog.showModal=()=>{dialog.open=true;modal.resolve();};
+ dialog.close=()=>{dialog.open=false;};
+ await initializeSsh({window,document}).refresh();
+ $('saved-hosts').value='saved';$('saved-hosts').onchange();
+ await $('connect').onclick();
+ await worker.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:Uint8Array.of(1,2,3)});
+ const sign=worker.emit({type:'sign',id:2,data:Uint8Array.of(4,5,6)});
+ await modal.promise;
+ assert.match($('card-attention-detail').textContent,/server\.invalid.*12345678/);
+ assert.equal(typeof $('card-attention-continue').onclick,'function');
+ assert(!worker.messages.some(message=>message.type==='reply'&&message.id===2));
+ unlocked=false;window.dispatchEvent(new Event('iwa-vault-locked'));
+ await sign;
+ assert.equal(dialog.open,false);
+ assert.equal(worker.closed,true);
+ assert.equal($('card-attention-continue').onclick,null);
+});

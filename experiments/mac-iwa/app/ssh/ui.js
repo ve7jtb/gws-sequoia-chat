@@ -23,6 +23,7 @@ export function initializeSsh({window,document}){
   connections.delete(connection);
   if(pending===connection)pending=null;
   connection.files?.cancel();
+  connection.cancelCardAttention?.();
   connection.session?.close();
   connection.view?.dispose();
   updateHostButtons();
@@ -307,6 +308,28 @@ export function initializeSsh({window,document}){
    const n=await window.sshTrust.import(reviewed);gate();$('ssh-status').textContent='Imported '+n+' reviewed host trust entries into the encrypted vault.';
   }catch(e){$('ssh-status').textContent=e.message;}
  };
+ // The detached terminal may be frontmost when SSH asks for a signature.
+ // Chromium's reader access belongs to the opener. Require a foreground click
+ // in that window before its first live-key read, which still precedes the PIN.
+ function requestCardAttention(connection,host,serial){
+  const dialog=$('ssh-card-attention'),proceed=$('ssh-card-attention-continue'),cancel=$('ssh-card-attention-cancel');
+  return new Promise((resolve,reject)=>{
+   const finish=error=>{
+    connection.cancelCardAttention=null;
+    proceed.onclick=cancel.onclick=dialog.oncancel=null;
+    $('ssh-card-attention-detail').textContent='';
+    if(dialog.open)dialog.close();
+    error?reject(error):resolve();
+   };
+   connection.cancelCardAttention=()=>finish(Error('YubiKey SSH login cancelled.'));
+   proceed.onclick=()=>finish();
+   cancel.onclick=connection.cancelCardAttention;
+   dialog.oncancel=event=>{event.preventDefault();connection.cancelCardAttention?.();};
+   $('ssh-card-attention-detail').textContent='Authorize SSH login to '+host+' with YubiKey SN# '+serial+'. Chromium needs this window in front to access the reader.';
+   try{dialog.showModal();window.focus();}
+   catch(error){finish(error);}
+  });
+ }
  async function openSsh(authorizeKey){
   const status=authorizeKey?authorizationStatus:$('ssh-status');
   if(editingHost){status.textContent='Wait for the saved host update to finish.';return;}
@@ -393,6 +416,10 @@ export function initializeSsh({window,document}){
     sign:async data=>{
      await store.assert(selected);
      if(!card)return store.signSsh(selected,data);
+     status.textContent='Continue with YubiKey in this window.';
+     view?.status('In the main window, choose Continue with YubiKey.','progress');
+     await requestCardAttention(connection,host,serial);
+     guard();await store.assert(selected);guard();
      const signature=await signCardSsh({
       identity:card,publicKey,message:data,piv:window.SequoiaSmartCardPiv,guard,
       promptPin:details=>{
@@ -411,6 +438,7 @@ export function initializeSsh({window,document}){
      if(result!=='ready'){
       connection.session=null;
       connection.files?.cancel();
+      connection.cancelCardAttention?.();
      }
      if(authorizeKey){
       closeConnection(connection);
