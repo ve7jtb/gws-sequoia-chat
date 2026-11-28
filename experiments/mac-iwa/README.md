@@ -2973,18 +2973,32 @@ It encrypts with the existing random AES-256 vault key, fresh nonce and distinct
 associated data; there is no backup password. The recovery header contains the
 encrypted vault and existing authenticator wrappers, including public wrapper
 names/identifiers. Restore requires the same signed IWA origin and an enrolled
-authenticator. The separate restore page currently supports FIDO PRF unlock
-through Web Smart Card; other wrapper types are preserved but cannot yet unlock
-that page.
+credential from the export. From 0.20.68, the restore picker lists enrolled
+FIDO PRF and PIV methods, including hybrid and classical PIV wrappers, with saved
+names and YubiKey serials where available. Export can reuse an unlocked vault,
+and a verified restore carries the unlocked session into the app.
 
 Restore refuses conflicting destination data, supports an interrupted identical
 restore, and checks all records by readback. A pending marker blocks ordinary
 startup until restore completes. Close other app windows before capture. The
 Drive backup list is separate from OpenPGP files and accepts only encrypted
 backup envelopes. In-memory drafts/tokens are excluded. Automated tests cover
-restoration, wrong authenticator, tampering, conflicts and interrupted recovery;
-**real second-instance restoration is not yet validated**. Do not uninstall the
-Chromebook's existing app until that validation completes.
+restoration, wrong authenticator, tampering, conflicts and interrupted recovery.
+
+#### macOS Google Drive restore with hybrid PIV (0.20.68 Testing)
+
+On November 28, 2026, Chromium IWA Lab downloaded the complete encrypted
+backup from Google Drive. From a locked session, the backup was verified and
+restored into the existing Mac instance with the enrolled **ML-KEM-768 +
+X25519 hybrid PIV** credential on **YubiKey SN# 41088108** over Web Smart Card.
+Restore completed after **one PIV PIN prompt**. **Continue to app** opened the
+workspace, and the Vault tab showed the restored vault was still unlocked.
+This run used the existing Mac instance with matching data.
+
+Read-only PC/SC snapshots matched before and after the restore across all 24
+PIV slots, including all 12 populated public keys, PIN and touch policies,
+and PIN retry counts. Stable FIDO settings reported by the key also matched.
+[Signed 0.20.68 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.68)
 
 The live Chromium IWA Lab check found and fixed a Trusted Types bootstrap error;
 script loading now accepts only a fixed list of signed-bundle assets. Startup
