@@ -79,10 +79,18 @@ WASM and IWA builds. The Go modules are pinned by `go.mod`/`go.sum`; xterm.js
 On 2026-11-28, Chromium installed the signed Testing update on macOS. The IWA
 saved a connection entry for an OpenSSH test host in the encrypted vault.
 The entry referenced an existing software SSH identity. Reconnecting from
-**Saved SSH hosts** opened a detached terminal that confirmed **ML-DSA-44 + Ed25519** hybrid user authentication and
-**ML-KEM-768 + X25519** key exchange (`mlkem768x25519-sha256`). The main SSH
+**Saved SSH hosts** opened a detached terminal that confirmed
+**ML-DSA-44 + Ed25519** hybrid user authentication and **ML-KEM-768 + X25519**
+key exchange (`mlkem768x25519-sha256`). The main SSH
 tab has the connection controls, and the terminal opens in its own resizable
 window.
+
+A second macOS reconnect from the saved host entry used **Web Smart Card** with
+YubiKey SN# 41088108. PIV slots 8C (ML-DSA-44) and 8D (Ed25519) supplied the
+hybrid SSH login signature. The session negotiated ML-KEM-768 + X25519
+(`mlkem768x25519-sha256`). The test used existing keys and made no key or policy
+changes. A separate read-only inventory stopped at slot 9A, so a full-card
+comparison was unavailable.
 
 [Signed 0.20.63 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.63)
 
