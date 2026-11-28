@@ -37,11 +37,11 @@ el('fido-rp').options[1].textContent='Legacy Sequoia extension — '+extensionRp
 el('fido-serial').value=localStorage.getItem('iwa-fido-expected-serial')||'';
 el('fido-serial').addEventListener('change',()=>{const v=el('fido-serial').value.trim();if(/^[1-9][0-9]{0,9}$/.test(v))localStorage.setItem('iwa-fido-expected-serial',v);});
 function selectedSerial(){const serial=el('fido-serial').value.trim();if(!/^[1-9][0-9]{0,9}$/.test(serial))throw Error('Enter the expected YubiKey serial in Vault → FIDO enrollment settings.');localStorage.setItem('iwa-fido-expected-serial',serial);return serial;}
-async function run(fn){
+async function run(fn,{quietMissing=false}={}){
  if(active)throw Error('A FIDO operation is already running.');
  const controller=new AbortController();active=controller;
  try{return await fn({signal:controller.signal,progress});}
- catch(e){complete(e.message+' No automatic retry was performed.',false);throw e;}
+ catch(e){if(!quietMissing||e.code!=='YUBIKEY_NOT_FOUND')complete(e.message+' No automatic retry was performed.',false);throw e;}
  finally{active=null;el('fido-pin-input').value='';}
 }
 function promptPin({serial,rpId,retries,purpose},signal,creating=false){
@@ -115,13 +115,13 @@ window.directFido=Object.freeze({
  enrollmentBinding:(serial=null)=>serial
   ?{rpId:packageRp(),serial}
   :{rpId:el('fido-rp').value,serial:selectedSerial()},
- async prf(binding){
+ async prf(binding,options){
   if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card transport first.');
   return run(async options=>{
    const r=await evaluate({serial:binding.serial||selectedSerial(),rpId:binding.rpId||extensionRp(),credentialId:binding.credentialId?bytes(binding.credentialId):null,salt:bytes(binding.salt)},details=>promptPin(details,options.signal),options);
    try{progress('PRF received. Checking the encrypted vault…');return {credentialId:b64(r.credentialId),secret:b64(r.secret)};}
    finally{r.secret.fill(0);}
-  });
+  },options);
  }
 });
 

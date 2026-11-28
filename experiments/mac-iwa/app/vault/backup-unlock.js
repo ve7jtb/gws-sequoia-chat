@@ -1,18 +1,9 @@
 import {bytes,b64} from './core.js';
 import {openPivWrapper} from './open-piv.js';
-import {unlockMethodLabel} from './labels.js';
 
 export function backupUnlockChoices(record,previous){
  const methods=record?.wrappers||[];
  return {methods,selected:methods.some(w=>w.id===previous)?previous:record?.default};
-}
-
-export function backupUnlockLabel(method){
- const protection=method.type==='prf'?'FIDO PRF':({
-  ecdh:method.binding.algorithm||'ECDH',
-  'mlkem1024-p384-v1':'ML-KEM-1024 + P-384',
- })[method.binding.kind]||'ML-KEM-768 + X25519';
- return unlockMethodLabel(method).replace(/(?:PIV|PRF)$/,protection);
 }
 
 // Restore uses only the selected wrapper. There is no credential creation,

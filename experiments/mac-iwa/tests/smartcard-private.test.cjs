@@ -112,3 +112,15 @@ test('required SCP failure blocks the optimized vault path before PIN or metadat
   ()=>assert.fail('must not prompt'),{vaultUnlock:true}),/Untrusted SCP chain/);
  assert.deepEqual(h.sent,[]);
 });
+
+test('missing target reports only discovered public serials and makes no slot or PIN requests',async()=>{
+ const h=harness({firstSerial:42}),identity={...vaultBinding(h),serial:'999'};
+ await assert.rejects(h.p.decapsulateComponentsViaSmartCard(vaultCipher,identity,
+  ()=>assert.fail('must not prompt'),{vaultUnlock:true}),error=>{
+   assert.equal(error.code,'YUBIKEY_NOT_FOUND');
+   assert.equal(error.expectedSerial,'999');
+   assert.deepEqual([...error.attachedSerials],['42','123']);
+   return true;
+  });
+ assert(!h.sent.some(a=>[0xf7,0x20,0x87].includes(a[1])));
+});

@@ -49,12 +49,8 @@ function createHardwareTransport(deps = {}){
     }
   }
 
-  function promptPinInBrowser({title, detail}, onSubmitted, onShown){
-    if(deps.promptPin){
-      const result=deps.promptPin({title, detail});
-      onShown?.();
-      return result;
-    }
+  function promptPinInBrowser({title, detail}, onSubmitted){
+    if(deps.promptPin) return deps.promptPin({title, detail});
     const dialog = document.getElementById('smartcard-pin-dialog');
     const titleEl = document.getElementById('smartcard-pin-title');
     const detailEl = document.getElementById('smartcard-pin-detail');
@@ -120,7 +116,6 @@ function createHardwareTransport(deps = {}){
       inputEl.addEventListener('input', updatePin);
       try{
         dialog.showModal();
-        onShown?.();
         inputEl.focus();
       }catch(error){
         cleanup();
@@ -141,9 +136,9 @@ function createHardwareTransport(deps = {}){
 
   // Recheck account/vault/revision after the asynchronous PIN dialog and before
   // submitting PIN bytes. Locking while a dialog is open revokes the operation.
-  function checkedPrompt(identity, ctx, onSubmitted, onShown){
+  function checkedPrompt(identity, ctx, onSubmitted){
     return async details => {
-      const pin = await promptPinInBrowser(details,onSubmitted,onShown);
+      const pin = await promptPinInBrowser(details,onSubmitted);
       if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
       await ctx.assertIdentity(identity);
       return pin;
@@ -183,10 +178,7 @@ function createHardwareTransport(deps = {}){
         'PIN submitted. Touch '+key+' promptly when it flashes. Keep it connected until the operation finishes.';
       waiting.focus();
     } : undefined;
-    // Record presentation only after showModal succeeds. No PIN data
-    // crosses this callback, and the elapsed measurement excludes user input.
-    const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault},submitted,
-      ctx.vaultProgress?()=>ctx.vaultProgress({stage:'pin-shown',scpRequired:global.SequoiaSecureChannel?.isRequired()===true}):undefined);
+    const prompt = checkedPrompt(null,{...ctx,assertIdentity:ctx.assertVault},submitted);
     try{
       return await perform(async details=>{
         const pin = await prompt(details);

@@ -6,7 +6,8 @@ import {capture,unseal,digest,restore,browserStorage,recoveryVault,PENDING} from
 import {createBackupDrive,DRIVE_SCOPE} from './backup-drive.js';
 import {runLoopbackPkceOAuth,getLoopbackClientId,getLoopbackClientSecret} from './google-loopback-oauth.js';
 import {backupVaultSession} from './vault/backup-session.js';
-import {backupUnlockChoices,backupUnlockLabel,unlockBackup} from './vault/backup-unlock.js';
+import {backupUnlockChoices,unlockBackup} from './vault/backup-unlock.js';
+import {detailedUnlockMethodLabel} from './vault/labels.js';
 import {prepareLevel3VaultUnlock} from './vault/hardware.js';
 import {showVaultUnlockProgress} from './vault/unlock-progress.js';
 import {decryptWithHardware} from './decryption-session.js';
@@ -53,7 +54,7 @@ function methods(record,id='methods'){
  list.replaceChildren(...methods.map(w=>{
   const option=document.createElement('option');
   option.value=w.id;
-  option.textContent=backupUnlockLabel(w)+(w.id===record.default?' (default)':'');
+  option.textContent=detailedUnlockMethodLabel(w)+(w.id===record.default?' (default)':'');
   return option;
  }));
  list.value=selected||'';
@@ -71,7 +72,7 @@ function updateSourceActions(){
 // an assertion: other failures may occur after a PIN has reached the key.
 function showMissingKey(wrapper){
  const dialog=el('insert-dialog');
- el('insert-details').textContent='No key found. Connect '+backupUnlockLabel(wrapper)+' to this computer, then select Unlock again. No PIN was submitted.';
+ el('insert-details').textContent='No key found. Connect '+detailedUnlockMethodLabel(wrapper)+' to this computer, then select Unlock again. No PIN was submitted.';
  el('insert-close').onclick=()=>dialog.close();
  dialog.showModal();el('insert-close').focus();
 }
@@ -79,7 +80,7 @@ async function unlock(record,vault,methodId){
  vault.lock();
  const w=record?.wrappers.find(w=>w.id===methodId);
  if(!w)throw Error('Select an enrolled unlock method.');
- tell('Checking '+backupUnlockLabel(w)+' — keep the key connected.');
+ tell('Checking '+detailedUnlockMethodLabel(w)+' — keep the key connected.');
  const abort=new AbortController(),dialog=el('pin-dialog');unlockAbort=abort;
  const guard=()=>abort.signal.throwIfAborted();
  const mode=window.hardwareTransport.getMode();

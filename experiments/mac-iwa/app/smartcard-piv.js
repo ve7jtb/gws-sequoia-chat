@@ -365,7 +365,7 @@ const PUBLIC_READER_DISCOVERY=Symbol('Public reader discovery');
 
 async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery,onReader}={}){
   const enumerate=discovery===PUBLIC_READER_DISCOVERY;
-  const devices=[];
+  const devices=[],attachedSerials=new Set();
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
   }
@@ -402,7 +402,10 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
         const version = ver.sw === 0x9000 ? parseVersion(ver.data) : null;
         const ser = await transmitChained(channel, new Uint8Array([0x00,0xF8,0x00,0x00]));
         const serial = ser.sw === 0x9000 ? String(parseSerial(ser.data)) : null;
-        if(serial)onReader?.(serial);
+        if(serial){
+          attachedSerials.add(serial);
+          onReader?.(serial);
+        }
         if(expectedSerial && serial !== String(expectedSerial)){
           matched = false;
           return 'leave';
@@ -432,7 +435,15 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discove
   }
   if(enumerate&&devices.length)return devices;
   if(expectedSerial){
-    throw Error('Expected YubiKey ' + expectedSerial + ' is not connected.');
+    const error=Error('Authenticator SN# '+expectedSerial+' not found.');
+    // Only complete public discovery can offer an alternative. In particular,
+    // a channel failure or a private-operation error is never a missing key.
+    if(!lastError){
+      error.code='YUBIKEY_NOT_FOUND';
+      error.expectedSerial=String(expectedSerial);
+      error.attachedSerials=[...attachedSerials];
+    }
+    throw error;
   }
   throw lastError || Error('No compatible YubiKey PIV reader found.');
 }
