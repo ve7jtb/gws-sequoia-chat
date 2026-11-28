@@ -114,6 +114,16 @@ to another device. **Download** decrypts a file and saves a plaintext copy
 through the browser. Locking the vault clears the file list and cancels
 pending encryption or decryption.
 
+### macOS lock and download test (0.20.64 Testing)
+
+On 2026-11-28, Chromium on macOS loaded the signed Testing update after a
+restart. **Local files** encrypted and saved a synthetic 115-byte file, and
+the vault listed its dedicated ML-KEM-1024 + X448 key. Locking the vault hid
+the file list. After a fresh YubiKey PIV unlock, the saved entry reappeared
+and **Download** produced a file that matched the original byte for byte
+with `cmp`. Both copies also had the same SHA-256 digest.
+[Signed 0.20.64 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.64)
+
 ## Backup-first Level 3 hardware validation (0.20.53)
 
 On 2026-11-27, backup-first provisioning completed on a wiped YubiKey 6 Beta 0,
