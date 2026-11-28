@@ -33,6 +33,10 @@ globalThis.sshSign=data=>rpc('sign',{data});
 globalThis.sshPassword=algorithms=>rpc('password',{algorithms});
 globalThis.sshVerifyHost=(algorithm,data)=>rpc('host',{algorithm,data});
 globalThis.sshFailure=fail;
+globalThis.sshTransferResult=(id,error,result)=>{
+ if(result instanceof Uint8Array&&!error)postMessage({type:'transfer-result',id,result},[result.buffer]);
+ else postMessage({type:'transfer-result',id,error:error?.slice(0,240),result:error?null:result});
+};
 globalThis.sshAuthorized=algorithms=>finish({type:'authorized',algorithms});
 globalThis.sshReady=(keyExchange,credential)=>{
  if(!socket){fail('SSH server closed the session before the terminal was ready.');return;}
@@ -42,6 +46,12 @@ globalThis.onmessage=async({data})=>{
  try{
   if(data.type==='reply'){const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(Error('SSH authorization rejected')):p.resolve(data.result);return;}
   if(data.type==='input'){if(started)globalThis.sshInput(data.data);return;}
+  if(data.type==='transfer'){
+   if(!ready||!['browse','get','put'].includes(data.op)||!Number.isSafeInteger(data.id))return;
+   if(data.op==='put'&&(!(data.bytes instanceof Uint8Array)||data.bytes.length>16*1024*1024))return;
+   globalThis.sshSFTP(data);return;
+  }
+  if(data.type==='transfer-cancel'){if(ready)globalThis.sshCancelSFTP(data.id);return;}
   if(data.type==='resize'){if(started)globalThis.sshResize(data.rows,data.cols);return;}
   if(started)throw Error('SSH worker already used');started=true;
   const go=new globalThis.Go(),wasm=await WebAssembly.instantiateStreaming(fetch('./engine.wasm'),go.importObject);

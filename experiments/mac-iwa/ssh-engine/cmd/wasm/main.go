@@ -122,6 +122,7 @@ func main() {
 		return array(sig.Blob)
 	}))
 	var terminal *engine.Terminal
+	installSFTP(func() *engine.Terminal { return terminal })
 	js.Global().Set("sshStart", js.FuncOf(func(_ js.Value, a []js.Value) any {
 		go func() {
 			options := a[0]

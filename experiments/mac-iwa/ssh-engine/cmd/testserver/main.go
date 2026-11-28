@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"golang.org/x/crypto/ssh"
 	"io"
+
+	"github.com/pkg/sftp"
 	"net"
 	"os"
 	"time"
@@ -44,21 +46,34 @@ func main() {
 	}
 	defer sc.Close()
 	go ssh.DiscardRequests(requests)
+	// All SFTP channels share a disposable in-memory filesystem. The test
+	// server has no route to the Mac's files.
+	files := sftp.InMemHandler()
 	for ch := range channels {
 		channel, requests, e := ch.Accept()
 		if e != nil {
 			panic(e)
 		}
-		for r := range requests {
-			r.Reply(r.Type == "pty-req" || r.Type == "shell", nil)
-			if r.Type == "shell" {
-				b := make([]byte, 4)
-				io.ReadFull(channel, b)
-				channel.Write(b)
-				time.Sleep(time.Second)
-				channel.Close()
-				return
+		go func() {
+			defer channel.Close()
+			for r := range requests {
+				switch r.Type {
+				case "pty-req":
+					r.Reply(true, nil)
+				case "shell":
+					r.Reply(true, nil)
+					_, _ = io.Copy(channel, channel)
+					return
+				case "subsystem":
+					r.Reply(true, nil)
+					server := sftp.NewRequestServer(channel, files)
+					defer server.Close()
+					_ = server.Serve()
+					return
+				default:
+					r.Reply(false, nil)
+				}
 			}
-		}
+		}()
 	}
 }

@@ -1,3 +1,4 @@
+import {createFileTransfer} from './file-transfer.js';
 import {signCardSsh} from './card-signer.js';
 import {connectSsh} from './client.js';
 import {endpoint,probe,sshUsername} from './transport.js';
@@ -21,6 +22,7 @@ export function initializeSsh({window,document}){
  function closeConnection(connection){
   connections.delete(connection);
   if(pending===connection)pending=null;
+  connection.files?.cancel();
   connection.session?.close();
   connection.view?.dispose();
   updateHostButtons();
@@ -340,7 +342,11 @@ export function initializeSsh({window,document}){
    if(!authorizeKey){
     // Open during the user's click. Waiting for the vault or network first
     // could lose browser activation and leave the popup blocked.
-    view=openTerminalWindow({window,onInput:input,onResize:(rows,cols)=>{
+    connection.files=createFileTransfer({
+     session:()=>connection.session,store:()=>window.localFiles,guard,
+     reply:(id,detail)=>view?.transferResult(id,detail),
+    });
+    view=openTerminalWindow({window,onInput:input,onTransfer:connection.files.request,onResize:(rows,cols)=>{
      dimensions=[rows,cols];
      if(connections.has(connection)&&window.vaultIsUnlocked?.())connection.session?.resize(rows,cols);
     },onClose:()=>{
@@ -402,7 +408,10 @@ export function initializeSsh({window,document}){
     onStatus:(text,result,negotiated)=>{
      if(!connections.has(connection))return;
      if(pending===connection)pending=null;
-     if(result!=='ready')connection.session=null;
+     if(result!=='ready'){
+      connection.session=null;
+      connection.files?.cancel();
+     }
      if(authorizeKey){
       closeConnection(connection);
       finishAuthorization((result==='success'?'Success: ':'Error: ')+text);

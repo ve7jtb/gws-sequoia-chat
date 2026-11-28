@@ -9,3 +9,13 @@ button { color: inherit; font: inherit; background: #1d4854; border: 1px solid #
 button:focus-visible { outline: 2px solid #bde76a; outline-offset: 2px; }
 button:disabled { opacity: .55; cursor: default; }
 #terminal { flex: 1; min-width: 0; min-height: 0; overflow: hidden; padding: 8px; }
+
+#files-dialog { width: min(780px, 92vw); max-height: 88dvh; box-sizing: border-box; border: 1px solid #56818c; border-radius: 10px; padding: 18px; background: #143640; color: inherit; }
+#files-dialog::backdrop { background: #0009; }
+#files-dialog h2, #files-dialog h3 { margin: 0 0 8px; }
+.file-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px,100%),1fr)); gap: 16px; margin: 14px 0; }
+.file-picker section { min-width: 0; }
+.file-picker label { display: block; margin: 6px 0 3px; }
+.file-picker input, .file-picker select { width: 100%; min-width: 0; font: inherit; margin-bottom: 6px; }
+.file-actions { display: flex; align-items: baseline; gap: 6px; }
+#files-status { min-height: 1.6em; }

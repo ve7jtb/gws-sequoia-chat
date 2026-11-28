@@ -21,9 +21,37 @@
    <button type="button" id="smaller" aria-label="Decrease font size">−</button>
    <button type="button" id="font-size" title="Reset font size" aria-label="Reset font size">14 px</button>
    <button type="button" id="larger" aria-label="Increase font size">+</button>
+   <button type="button" id="files-open" disabled>Transfer files</button>
    <button type="button" id="close">Close terminal</button>
   </div>
  </header>
  <main id="terminal" aria-label="SSH terminal"></main>
+ <dialog id="files-dialog" aria-labelledby="files-title">
+  <h2 id="files-title">Transfer files</h2>
+  <p>Copy files between this SSH host and encrypted Local files. Up to 16 MiB per file.</p>
+  <div class="file-picker">
+   <section>
+    <h3>Remote host</h3>
+    <label for="files-path">Directory</label>
+    <div class="file-actions">
+     <input id="files-path" value="." maxlength="4096">
+     <button id="files-browse" type="button">Go</button>
+     <button id="files-parent" type="button">Up</button>
+    </div>
+    <label for="files-remote">Remote files and folders</label>
+    <select id="files-remote" size="7"></select>
+    <button id="files-folder" type="button">Open folder</button>
+    <button id="files-get" type="button">Copy to encrypted store</button>
+   </section>
+   <section>
+    <h3>Encrypted Local files</h3>
+    <label for="files-local">File</label>
+    <select id="files-local" size="7"></select>
+    <button id="files-put" type="button">Copy to remote directory</button>
+   </section>
+  </div>
+  <p id="files-status" role="status"></p>
+  <button id="files-done" type="button">Close</button>
+ </dialog>
 </body>
 </html>

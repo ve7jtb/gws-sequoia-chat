@@ -19,3 +19,5 @@ cp "$("$GO" env GOROOT)/lib/wasm/wasm_exec.js" ../app/ssh/wasm_exec.js
 cp "$("$GO" env GOROOT)/LICENSE" ../app/ssh/GO-LICENSE.txt
 cp "$("$GO" list -m -f '{{.Dir}}' golang.org/x/crypto)/LICENSE" ../app/ssh/X-CRYPTO-LICENSE.txt
 cp "$("$GO" list -m -f '{{.Dir}}' golang.org/x/sys)/LICENSE" ../app/ssh/X-SYS-LICENSE.txt
+cp "$("$GO" list -m -f '{{.Dir}}' github.com/pkg/sftp)/LICENSE" ../app/ssh/SFTP-LICENSE.txt
+cp "$("$GO" list -m -f '{{.Dir}}' github.com/kr/fs)/LICENSE" ../app/ssh/KR-FS-LICENSE.txt

@@ -22,8 +22,9 @@ export function connectSsh({host,port,username,publicKey,additionalPublicKey,ent
  sshUsername(username);
  if(authorizeKey&&typeof requestPassword!=='function')throw Error('Password prompt is unavailable.');
  const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
+ let fileRequest=null,transferID=0;
  let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,reviewedAlgorithms,hostKey=null,resizeTimer;
- const close=()=>{if(closed)return;closed=true;clearTimeout(resizeTimer);lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
+ const close=()=>{if(closed)return;closed=true;clearTimeout(resizeTimer);lifetime.abort();fileRequest?.finish(Error('SSH connection closed.'));worker.terminate();signal?.removeEventListener('abort',close);};
  const check=()=>{if(closed)throw Error('SSH connection closed.');guard();};
  const verify=async candidate=>verifyHost({entries:getEntries?await getEntries():entries,...candidate,guard:check});
  signal?.addEventListener('abort',close,{once:true});if(signal?.aborted){close();throw Error('SSH cancelled.');}
@@ -74,6 +75,9 @@ export function connectSsh({host,port,username,publicKey,additionalPublicKey,ent
      data.keyExchange?'Warning: classical key exchange: '+data.keyExchange+'.':'Key exchange unreported.';
     onStatus('SSH connected. '+login+' '+transport,'ready',{login,transport});
    }
+   else if(data.type==='transfer-result'){
+    if(fileRequest?.id===data.id)fileRequest.finish(data.error?Error(data.error):null,data.result);
+   }
    else if(data.type==='output'){if(hostAccepted)onOutput(data.data);}
    else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.',data.type);close();}
   }catch(e){if(!closed){onStatus(e.message,'error');close();}}
@@ -81,6 +85,27 @@ export function connectSsh({host,port,username,publicKey,additionalPublicKey,ent
  worker.postMessage({type:'connect',...target,username,publicKey,additionalPublicKey,authorizeKey});
  return {
   close,
+  async transfer(op,fields,signal){
+   check();signal?.throwIfAborted();
+   if(!ready||authorizeKey||!hostAccepted)throw Error('Connect SSH before transferring files.');
+   await verify(hostKey);check();signal?.throwIfAborted();
+   if(fileRequest)throw Error('Another file operation is in progress.');
+   return new Promise((resolve,reject)=>{
+    const id=++transferID;
+    const finish=(error,result)=>{
+     clearTimeout(timer);signal?.removeEventListener('abort',cancel);
+     fileRequest=null;error?reject(error):resolve(result);
+    };
+    const cancel=()=>{
+     if(!closed)worker.postMessage({type:'transfer-cancel',id});
+     finish(Error('SFTP operation cancelled or timed out.'));
+    };
+    const timer=setTimeout(cancel,65000);
+    fileRequest={id,finish};signal?.addEventListener('abort',cancel,{once:true});
+    try{worker.postMessage({...fields,type:'transfer',op,id},fields.bytes?[fields.bytes.buffer]:[]);}
+    catch(error){finish(error);}
+   });
+  },
   input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},
   resize(rows,cols){
    guard();

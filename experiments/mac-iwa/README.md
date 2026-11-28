@@ -64,6 +64,14 @@ Close an individual window to disconnect its session, or use **Disconnect all
 SSH sessions** to close every terminal. Locking the vault disconnects all
 sessions and clears their scrollback.
 
+Use **Transfer files** in a connected terminal to browse the remote host and
+copy a file between it and **Local files**. Transfers run over an SFTP channel
+inside that terminal's authenticated SSH connection. Incoming files go directly
+to encrypted storage. Uploads use an existing encrypted entry and create a
+new remote file with owner-only permissions. An interrupted upload can leave
+a partial remote file. The per-file limit is 16 MiB.
+
+
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
 host-trust rejection before signing, and corrupted composite components.

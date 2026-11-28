@@ -1,3 +1,4 @@
+import {createTransferPicker} from './ssh/transfer-picker.js';
 import {FitAddon} from './vendor/xterm/addon-fit.js';
 
 const node=id=>document.getElementById(id);
@@ -5,6 +6,8 @@ const opener=window.opener,origin=location.origin;
 const container=node('terminal'),status=node('status');
 const initialFont=14,minFont=10,maxFont=30;
 let port,terminal,observer,fit,resizeFrame,closed=false;
+
+const picker=createTransferPicker({document,send:message=>port?.postMessage(message)});
 
 function clearTerminal(){
  if(closed)return;
@@ -14,6 +17,7 @@ function clearTerminal(){
  if(terminal){terminal.reset();terminal.dispose();terminal=null;}
  // Remove the rendered cells and accessibility/clipboard surfaces as well.
  container.replaceChildren();
+ picker.clear();
  for(const id of ['credential','exchange']){node(id).textContent='';node(id).hidden=true;}
  port?.close();
 }
@@ -51,9 +55,12 @@ function bind(event){
  port.onmessage=({data})=>{
   if(data?.type==='clear'){clearTerminal();return;}
   if(data?.type==='output'&&data.data instanceof Uint8Array)terminal.write(data.data);
+  if(data?.type==='file-transfer-result')picker.result(data);
   if(data?.type==='status'){
    status.textContent=data.text;
    terminal.options.disableStdin=data.kind!=='ready';
+   if(data.kind==='ready')picker.enable();
+   if(data.kind==='closed'||data.kind==='error')picker.clear();
    if(data.connection){
     for(const [id,text] of [['credential',data.connection.login],['exchange',data.connection.transport]]){
      const label=node(id);

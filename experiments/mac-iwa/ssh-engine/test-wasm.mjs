@@ -17,6 +17,24 @@ try{
  let output='';globalThis.sshOutput=data=>{output+=new TextDecoder().decode(data);if(output==='test')resolve()};
  vm.runInThisContext(fs.readFileSync('../app/ssh/wasm_exec.js','utf8'));const go=new Go();const {instance}=await WebAssembly.instantiate(fs.readFileSync('../app/ssh/engine.wasm'),go.importObject);go.run(instance).catch(reject);
  globalThis.sshStart({publicKey:new Uint8Array(Buffer.from(config.userKey,'base64')),address:config.address,username:'disposable'});
- await done;assert.equal(signatures,1);socket.destroy();console.log('PASS compiled WASM SSH authentication, trusted host and PTY round trip');
+ await done;
+ let transferID=0;
+ const transfer=(op,directory,fields={})=>new Promise((resolve,reject)=>{
+  const id=++transferID;
+  globalThis.sshTransferResult=(reply,error,result)=>{
+   assert.equal(reply,id);
+   if(error)reject(Error(error));else resolve(result);
+  };
+  globalThis.sshSFTP({op,id,directory,...fields});
+ });
+ const {directory}=await transfer('browse','.');
+ const name='roundtrip.bin',bytes=Uint8Array.of(0,1,2,128,255);
+ await transfer('put',directory,{name,bytes});
+ const listing=await transfer('browse',directory);
+ assert.deepEqual(listing.entries,[{name,directory:false,size:bytes.length}]);
+ assert.deepEqual(await transfer('get',directory,{name}),bytes);
+ await assert.rejects(transfer('put',directory,{name,bytes}),/already exists/);
+ assert.equal(signatures,1);socket.destroy();
+ console.log('PASS compiled WASM trusted SSH, PTY, SFTP upload/download and exclusive creation');
 }finally{clearTimeout(timeout);child.kill()}
 process.exit(0);
