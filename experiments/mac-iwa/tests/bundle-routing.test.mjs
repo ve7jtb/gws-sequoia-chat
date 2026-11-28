@@ -38,21 +38,23 @@ test('malformed transport framing is rejected before invoking WASM',async()=>{
 test('public UI has no automatic native startup or legacy native bundle parser fallback',()=>{
  const source=fs.readFileSync(new URL('../app/identities/ui.js',import.meta.url),'utf8');
  assert.doesNotMatch(source,/request\('chat-identity-(?:restore|import)'/);
- assert.match(source,/parseCardBundle\(await request\('chat-identity-bundle-read',\{serial\}\),inspectBundle,\{compatibilityCertificate\}\)/);
+ assert.match(source,/parseCardBundle\(await request\('chat-identity-bundle-read',\{serial\}\),inspectBundle\)/);
  assert.doesNotMatch(source,/try\{await configured\(\);\}/);
 });
 test('identities initialize and list saved public data without contacting Web Smart Card',async()=>{
  // A small DOM substitute runs the actual initialization controller. The
- // request function would fail if startup accidentally called the extension;
- // imported identity inspection and UI event handlers remain untriggered.
+ // Use IDs from the shipped page so removed controls fail initialization here.
+ // The request function fails if startup accidentally contacts a card.
  const previous={document:globalThis.document,window:globalThis.window,BroadcastChannel:globalThis.BroadcastChannel};
  const nodes=new Map();
+ const html=fs.readFileSync(new URL('../app/index.html',import.meta.url),'utf8');
+ const ids=new Set([...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]));
  const make=()=>({textContent:'',children:[],addEventListener(){},append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},close(){}});
- globalThis.document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,make());return nodes.get(id);},createElement:make};
+ globalThis.document={getElementById:id=>{assert(ids.has(id),'Missing identity UI control in index.html: '+id);if(!nodes.has(id))nodes.set(id,make());return nodes.get(id);},createElement:make};
  globalThis.window={addEventListener(){}};globalThis.BroadcastChannel=undefined;
  let calls=0,lists=0;
  try{
-  const ui=await initializeIdentities({request:async()=>{calls++;throw Error('Native helper unavailable');},say:()=>{},isBusy:()=>false,setBusy:()=>{},identityStore:{list:async()=>{lists++;return {identities:[],revision:0};}}});
+  const ui=await initializeIdentities({request:async()=>{calls++;throw Error('Card must not be contacted during initialization');},say:()=>{},isBusy:()=>false,setBusy:()=>{},identityStore:{list:async()=>{lists++;return {identities:[],revision:0};}}});
   await ui.refresh();assert.equal(calls,0);assert.equal(lists,2);
   assert.equal(nodes.get('identity-list').children.length,1);
  }finally{for(const [key,value] of Object.entries(previous)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}

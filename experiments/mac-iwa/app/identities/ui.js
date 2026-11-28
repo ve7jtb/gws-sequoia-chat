@@ -120,15 +120,9 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   $('identity-review-change').textContent=value.unchanged?'This identity is already saved.':value.replacesExisting?'This replaces the saved public bundle for this YubiKey after confirmation.':'This adds an own public identity to this IWA.';
   $('identity-review-confirmed').checked=false;$('identity-review').showModal();
  }
- listen('identity-refresh',async()=>{await configured();await refresh();say('Own public identities refreshed.');});
  listen('identity-restore',async()=>{
   clearReview();const serial=await chooseDevice();say('Reading public card data from YubiKey '+serial+', then verifying the compressed bundle in this IWA. No PIN is required.');
-  // Optional v5 input is public and never supplies its own slot mapping. The
-  // WASM bundle parser requires every compatibility component and certified
-  // email to match the newly authenticated normal card bundle.
-  const v5=$('identity-v5-file').files[0];let compatibilityCertificate;
-  if(v5){if(!v5.size||v5.size>MAX_FILE)throw Error('Choose a v5 public certificate up to 256 KiB.');compatibilityCertificate=encode(new Uint8Array(await v5.arrayBuffer()));}
-  review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read',{serial}),inspectBundle,{compatibilityCertificate})));
+  review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read',{serial}),inspectBundle)));
   say('Review the YubiKey certificate bundle before saving.');
  });
  listen('identity-file-review',async()=>{
