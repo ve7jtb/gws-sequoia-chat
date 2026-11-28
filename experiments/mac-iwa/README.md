@@ -40,8 +40,8 @@ check reads the server’s advertised algorithms, shows the expected encryption
 and key exchange, and warns when the key exchange would be classical. Host
 verification happens when connecting.
 
-To set up a remote account, select the SSH identity, enter the host and
-username, then choose **Authorize SSH public key…**. After host verification,
+To set up a remote account, select a saved host or enter the host, username, and
+SSH identity under **Add host**. Then choose **Authorize SSH public key…**. After host verification,
 review the keys the server advertises support for, then enter the remote account
 password. With a composite identity selected, you can also select an imported
 Ed25519 key to authorize. The app warns before Ed25519-only authorization and
@@ -53,11 +53,16 @@ clears the scrollback, and closes the terminal window. The server must allow SSH
 and command execution for setup. It must accept the selected login key for the
 terminal connection.
 
-Use **Save host** to keep a reusable address, port, username, SSH identity,
-and optional YubiKey selection in the encrypted vault. Choose it from
-**Saved SSH hosts** to fill the connection form. The address book stores identity
-references. SSH passwords are ephemeral, and server trust is managed in
-**Server host-key trust**.
+Choose **Add host** beside **Saved SSH hosts** to open a blank connection form.
+Use **Save host** to store the host, port, username, SSH identity reference, and
+optional YubiKey selection in the encrypted vault. You can also connect from
+that form without saving. Selecting a saved entry hides the form and loads its
+settings for the next connection. Use **Edit saved host** to change them.
+
+You can open another terminal once the current SSH authentication finishes.
+Close an individual window to disconnect its session, or use **Disconnect all
+SSH sessions** to close every terminal. Locking the vault disconnects all
+sessions and clears their scrollback.
 
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
@@ -93,6 +98,21 @@ changes. A separate read-only inventory stopped at slot 9A, so a full-card
 comparison was unavailable.
 
 [Signed 0.20.63 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.63)
+
+## Encrypted local files
+
+After unlocking the vault, open **Local files** to encrypt and save a file.
+The first save creates a dedicated ML-KEM-1024 + X448 keypair inside the
+encrypted vault. The IWA uses fresh encapsulations for each file. HKDF-SHA-384
+combines both shared secrets and derives separate AES-256-GCM keys for the
+filename and file contents. IndexedDB stores the encrypted envelopes in the
+current browser profile, up to 32 files of 16 MiB each.
+
+Vault backups carry the file key. The encrypted file records stay in this
+browser profile, so restoring the vault alone does not restore those records
+to another device. **Download** decrypts a file and saves a plaintext copy
+through the browser. Locking the vault clears the file list and cancels
+pending encryption or decryption.
 
 ## Backup-first Level 3 hardware validation (0.20.53)
 

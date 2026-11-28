@@ -31,6 +31,7 @@ function application(savedEmail){
   // Keep the real custody router: startup must not probe either key provider.
   './identities/providers.js':{createProviderSelection},
   './ssh/ui.js':{initializeSsh:()=>({refresh:async()=>{}})},
+  './local-files/ui.js':{initializeLocalFiles(){}},
   './software-ui.js':{initializeSoftwareUi:()=>({refresh:async()=>{}})},
   './identities/client.js':{},
   // initializeIdentities has a separate behavioral no-native-startup test.

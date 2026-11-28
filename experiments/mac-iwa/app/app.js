@@ -315,7 +315,7 @@ function serviceLabels(){
  $('open-help').textContent=(mail?'Verify against the selected trusted sender certificate.':'The attached certificate must match this trusted contact.')+' Choose the matching hardware or unlocked software identity next.';
  $('decrypt').textContent='Decrypt '+name;
 }
-function tab(name){if(name==='ssh'&&!window.vaultIsUnlocked?.())return;if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
+function tab(name){if(['ssh','local-files'].includes(name)&&!window.vaultIsUnlocked?.())return;if(name!=='inbox'){readerGeneration++;readerEvidence=null;clearPendingOpen();}document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==name);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));serviceLabels();}
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{tab(b.dataset.tab);if(b.dataset.tab==='contacts')refreshCertificates().catch(e=>say(e.message,true));if(b.dataset.tab==='identities'){identityUi?.refresh().catch(e=>say(e.message,true));softwareUi?.refresh().catch(e=>say(e.message,true));}}));
 function clearAccountSession(){
  window.dispatchEvent(new Event('iwa-account-changed'));
@@ -405,6 +405,7 @@ async function bootstrap(){
   }});
  await refreshCertificates();
  const {initializeSsh}=await import('./ssh/ui.js');await initializeSsh({window,document}).refresh();
+ const {initializeLocalFiles}=await import('./local-files/ui.js');initializeLocalFiles({window,document});
  await refreshAccount();await softwareUi.refresh();
  say(ownEmail?'Ready. Local certificates and account settings are available; unlock the vault and sign in to Google.':'Ready. Configure your Google account in Account. Contacts, saved identities and the existing vault are available.');tab(ownEmail?'inbox':'account-settings');
 }

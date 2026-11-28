@@ -20,6 +20,8 @@ mod bundle;
 pub use bundle::inspect_bundle;
 // Software custody is a separate, opt-in, one-shot worker API. Hardware paths
 // continue accepting public material only; no native fallback handles secrets.
+mod local_files;
+pub use local_files::{local_file_public, local_file_encapsulate, local_file_decapsulate};
 mod companion;
 pub use companion::{companion_inspect, companion_complete};
 mod software;

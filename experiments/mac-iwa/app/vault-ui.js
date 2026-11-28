@@ -1,3 +1,4 @@
+import {createLocalFileStore} from './local-files/store.js';
 import {createSshTrustStore} from './ssh/trust.js';
 import {createSshAddressBook} from './ssh/address-book.js';
 import {createImportedSshStore} from './ssh/imported-keys.js';
@@ -71,6 +72,7 @@ const softwareIdentities=createSoftwareIdentityStore({
 });
 window.sshTrust= createSshTrustStore(identityVaultAccess);
 window.sshAddressBook=createSshAddressBook(identityVaultAccess);
+window.localFiles=createLocalFileStore(identityVaultAccess);
 window.importedSshKeys=createImportedSshStore(identityVaultAccess);
 window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);window.directFido?.complete(e.message,false);}finally{active=false;render();}}

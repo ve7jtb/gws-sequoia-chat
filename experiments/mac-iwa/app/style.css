@@ -16,3 +16,5 @@
 #startup-connection summary{cursor:pointer;font-weight:650}
 .startup-restore{display:inline}
 #startup-panel section{padding:0;box-shadow:none}#startup-setup{background:#edf4f4;padding:18px;border-radius:12px;margin-top:18px}
+
+.ssh-host-picker{display:flex;align-items:center;gap:8px}.ssh-host-picker select{flex:1;min-width:0}.ssh-host-picker button{flex:none;margin:0}
