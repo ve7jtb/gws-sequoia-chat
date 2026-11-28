@@ -67,12 +67,12 @@ function hardwareRequest(op,data={},options={}) {
     if(!selected)throw Error('Select a current saved hardware identity.');
     const {parseCardBundle,assertSelectedCardIdentity}=await import('./identities/bundle.js');
     const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
-    const fresh=await parseCardBundle(await window.SequoiaSmartCardPiv.readPublicSnapshotViaSmartCard(selected.serial,true),inspectBundle);
+    const fresh=await parseCardBundle(await window.SequoiaSmartCardPiv.readPublicSnapshotViaSmartCard(selected.serial,true,inspectBundle),inspectBundle);
     await assertSelectedCardIdentity(fresh,selected,inspectIdentity);
     await hardwareIdentitySelection.assert(selected);
-    return {...selected,slots:fresh.slots};
+    return {...selected,slots:fresh.slots,selectionSnapshot:selected};
    },
-   assertIdentity:async selected=>{window.vaultGate();await hardwareIdentitySelection.assert(selected);},
+   assertIdentity:async selected=>{window.vaultGate();await hardwareIdentitySelection.assert(selected.selectionSnapshot||selected);},
    signingInput:async(selected,request)=>{
     const {smartcardSigningInput}=await import('./identities/client.js');
     return (await smartcardSigningInput({certificate:selected.certificate,signingFingerprint:request.signingFingerprint,digest:request.digest})).mu;
@@ -601,7 +601,8 @@ event('test',async()=>{
    createDecryptionWorker:()=>new Worker(decryptionWorkerPolicy?decryptionWorkerPolicy.createScriptURL('/decryption-worker.js'):'/decryption-worker.js',{type:'module'}),
    onProgress:message=>{$('test-progress').textContent=message;say(message);}});
   hardwareTestReport=result;
-  const unchanged=result.unchanged===true?'All 24 slot records, keys, PIN/touch policies, PIN retry counts and backend hashes unchanged.':result.unchanged===false?'Public audit changed — inspect the report before another operation.':'Unchanged status could not be confirmed — inspect the report before another operation.';
+  const auditScope=result.audit?.before?.version===2?'Signed-bundle slots':'All 24 slot records';
+  const unchanged=result.unchanged===true?auditScope+', keys, PIN/touch policies, PIN retry counts and backend hash matched.':result.unchanged===false?'Public audit changed — inspect the report before another operation.':'Unchanged status could not be confirmed — inspect the report before another operation.';
   // Report the selected certificate's actual algorithms. Packet version and
   // successful cryptographic verification do not imply post-quantum protection:
   // v4 compatibility can have classical signing with either hybrid or classical

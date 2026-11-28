@@ -241,8 +241,8 @@ function createHardwareTransport(deps = {}){
     }
 
     if(op === 'chat-hardware-audit'){
-      ctx.say?.('Reading all 24 PIV slots twice via Web Smart Card (no PIN required)…');
-      return piv.hardwareAuditViaSmartCard(data.identity);
+      ctx.say?.('Checking signed-bundle slots via Web Smart Card (no PIN required)…');
+      return piv.hardwareAuditViaSmartCard(await resolveIdentity(data.identity,ctx));
     }
 
     if(op === 'chat-selected-signing-material'){

@@ -1,7 +1,7 @@
 // Emulate only card APDUs. No native host, device, real PIN or key material.
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,createHash}=require('node:crypto');
-function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false,firstSerial=123}={}){
+function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false,firstSerial=123,bareSlot=undefined}={}){
  const events=[],sent=[],alg={0x9c:0xe3,0x84:0xe0,0x9d:0xe6,0x85:0xe1};let connections=0;
  const ctx={Uint8Array,Array,Map,Set,Error,TextEncoder,TextDecoder,crypto:webcrypto,atob,btoa};ctx.globalThis=ctx;
  if(secureFailure)ctx.SequoiaSecureChannel={isRequired:()=>true,acquire:async()=>{throw Error("Untrusted SCP chain");}};
@@ -14,7 +14,11 @@ function harness({rejectPin=false,wrongKey=false,shares=null,secureFailure=false
  const conn={status:async()=>({state:'specific',answerToReset:new Uint8Array()}),startTransaction:async fn=>fn(),disconnect:async()=>events.push('disconnect'),transmit:async raw=>{
   const a=new Uint8Array(raw);sent.push([...a]);
   if(a[1]===0xa4)return ok();if(a[1]===0xfd)return ok([6,0,0]);if(a[1]===0xf8)return ok([0,0,0,connections===1?firstSerial:123]);
-  if(a[1]===0xf7)return ok(metadata(a[3]));
+  if(a[1]===0xf7){
+   if(a[3]===0x80)return ok(tlv(6,new Uint8Array([3,3])));
+   if(a[3]===bareSlot)throw Error('Missing SCP response MAC (SW=6a88)');
+   return ok(metadata(a[3]));
+  }
   if(a[1]===0x20){events.push('pin');return rejectPin?new Uint8Array([0x63,0xc2]):ok();}
   assert.equal(a[1],0x87);parts.push(...a.slice(5,5+a[4]));if(a[0]===0x10)return ok();
   const inner=p.parseBerTlv(p.parseBerTlv(new Uint8Array(parts)).get(0x7c));parts=[];
@@ -123,4 +127,22 @@ test('missing target reports only discovered public serials and makes no slot or
    return true;
   });
  assert(!h.sent.some(a=>[0xf7,0x20,0x87].includes(a[1])));
+});
+
+test('mapped audit does not query unrelated empty slots or submit any PIN',async()=>{
+ const h=harness({bareSlot:0x9a});
+ const audit=await h.p.hardwareAuditViaSmartCard(h.identity);
+ assert.equal(audit.version,2);
+ assert.deepEqual(Array.from(audit.slots,key=>key.slot),['9c','9d','84','85']);
+ assert.deepEqual(h.sent.filter(a=>a[1]===0xf7).map(a=>a[3]),
+  [0x80,0x9c,0x9d,0x84,0x85,0x9c,0x9d,0x84,0x85,0x80]);
+ assert(!h.sent.some(a=>a[1]===0x20||a[1]===0x87));
+});
+test('mapped audit fails closed for an unauthenticated error or a mismatched key',async()=>{
+ for(const [options,error] of [[{bareSlot:0x9c},/Missing SCP response MAC/],[{wrongKey:true},/Mapped audit key differs/]]){
+  const h=harness(options);
+  await assert.rejects(h.p.hardwareAuditViaSmartCard(h.identity),error);
+  assert(!h.sent.some(a=>a[1]===0x20||a[1]===0x87));
+  assert.equal(h.connections(),1);
+ }
 });

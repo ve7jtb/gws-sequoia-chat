@@ -1,5 +1,5 @@
 // Web Smart Card (navigator.smartCard) YubiKey PIV transport.
-// Supports read-only PIV inspection, 24-slot hardware audit (sequoia-iwa-hardware-audit v1),
+// Supports read-only PIV inspection, authenticated mapped-slot hardware audit,
 // and explicit PIN-authorized PIV operations (signDigest, decapsulateComponents, classical ECDH)
 // directly over PC/SC without the extension, native host, or PKCS#11.
 (function(global){
@@ -503,30 +503,6 @@ async function listYubiKeys(){
   return devices;
 }
 
-async function readAll24Slots(conn){
-  const slots = [];
-  for(const slot of ALL_24_SLOTS){
-    const meta = await transmitChained(conn, buildGetMetadataApdu(slot.id));
-    if(meta.sw === 0x6A88 || meta.sw === 0x6A82){
-      slots.push({slot: slot.hex, publicKeySha256: null, algorithm: null, origin: null, pinPolicy: null, touchPolicy: null});
-    }else if(meta.sw === 0x9000){
-      const parsed = parseSlotMetadata(meta.data);
-      const hash = await sha256Hex(parsed.publicKeyBytes);
-      slots.push({
-        slot: slot.hex,
-        publicKeySha256: hash,
-        algorithm: parsed.algorithm,
-        origin: parsed.origin,
-        pinPolicy: parsed.pinPolicy,
-        touchPolicy: parsed.touchPolicy,
-      });
-    }else{
-      throw Error('Incomplete hardware slot audit on ' + slot.hex + ': SW=0x' + meta.sw.toString(16));
-    }
-  }
-  return slots;
-}
-
 // Beta0 reports absent PIV slots with unprotected error words. Use positive,
 // MAC-verified evidence from its shared-storage index instead. YubiKit assigns
 // records 1 and 2 to PIV. Require exactly the factory F9 key and certificate,
@@ -593,31 +569,40 @@ async function readPinRetries(conn){
 }
 
 async function hardwareAuditViaSmartCard(identity){
-  const serial = identity?.serial ? String(identity.serial) : null;
-  if(!serial) throw Error('Audit requires a hardware identity with a YubiKey serial.');
-  return withPivSession(serial, async(conn, info)=>{
-    const beforePin = await readPinRetries(conn);
-    const first = await readAll24Slots(conn);
-    const second = await readAll24Slots(conn);
-    const afterPin = await readPinRetries(conn);
-    if(JSON.stringify(first) !== JSON.stringify(second) ||
-       beforePin.remaining !== afterPin.remaining || beforePin.maximum !== afterPin.maximum){
-      throw Error('Hardware changed during audit');
-    }
-    const backendId = new TextEncoder().encode('web-smartcard-pcsc:' + info.reader + ':' + (info.version || ''));
-    const backendHash = await sha256Hex(backendId);
+  const serial=identity?.serial;
+  if(!serial||!Array.isArray(identity.slots)||!identity.slots.length)
+    throw Error('Hardware audit requires an authenticated hardware mapping.');
+  const keys=new Map(identity.slots.map(key=>[key.slot,key.publicKeySha256]));
+  const mapped=ALL_24_SLOTS.filter(slot=>keys.has(slot.hex));
+  if(mapped.length!==identity.slots.length)throw Error('Invalid hardware audit mapping.');
+  return withPivSession(serial,async (conn,info)=>{
+    // An unprotected error is not evidence that a slot is empty. Read only
+    // mapped slots and require positive metadata for every expected key.
+    const read=async()=>{
+      const slots=[];
+      for(const {id,hex} of mapped){
+        const response=await transmitChained(conn,buildGetMetadataApdu(id));
+        if(response.sw!==0x9000)throw Error('Mapped audit slot '+hex+' could not be read.');
+        const parsed=parseSlotMetadata(response.data);
+        const publicKeySha256=await sha256Hex(pivMetadataToSpki(parsed));
+        if(publicKeySha256!==keys.get(hex))throw Error('Mapped audit key differs in slot '+hex+'.');
+        slots.push({slot:hex,publicKeySha256,algorithm:parsed.algorithm,origin:parsed.origin,
+          pinPolicy:parsed.pinPolicy,touchPolicy:parsed.touchPolicy});
+      }
+      return slots;
+    };
+    const beforePin=await readPinRetries(conn);
+    const first=await read(),second=await read();
+    const afterPin=await readPinRetries(conn);
+    if(JSON.stringify(first)!==JSON.stringify(second)||
+       beforePin.remaining!==afterPin.remaining||beforePin.maximum!==afterPin.maximum)
+      throw Error('Hardware changed during audit.');
+    const backendId=new TextEncoder().encode('web-smartcard-pcsc:'+info.reader+':'+(info.version||''));
     return {
-      format: 'sequoia-iwa-hardware-audit',
-      version: 1,
-      identity: {
-        serial: String(identity.serial),
-        fingerprint: identity.fingerprint,
-        certificateHash: identity.certificateHash,
-        email: identity.email,
-      },
-      slots: first,
-      pinRetries: beforePin,
-      backendHash,
+      format:'sequoia-iwa-hardware-audit',version:2,
+      identity:{serial,bundleHash:identity.bundleHash,fingerprint:identity.fingerprint,
+        certificateHash:identity.certificateHash,email:identity.email},
+      slots:first,pinRetries:beforePin,backendHash:await sha256Hex(backendId),
     };
   });
 }

@@ -9,6 +9,12 @@ installs a Native Messaging host or offers a PKCS#11 transport setting. Older
 transport preferences are ignored. Vaults, enrolled methods, contact trust
 and saved identities remain in the app's storage.
 
+The local hardware test checks the public keys and policies for the slots
+mapped by the signed bundle before and after its private operations. It
+requires authenticated metadata for every mapped slot. Bare card errors
+abort the operation and do not provide evidence about a slot. A separate
+read-only audit can compare all 24 PIV slots.
+
 - Vault unlock and encrypted backup restore still support FIDO PRF, Level 3
   hybrid PIV, Level 5 hybrid PIV and enrolled classical PIV. An older
   extension-scoped FIDO credential is checked over Web Smart Card using its

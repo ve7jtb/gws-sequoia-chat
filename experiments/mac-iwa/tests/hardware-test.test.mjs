@@ -125,3 +125,13 @@ test('fixture is isolated from drafts and has binary octets and a fresh run bind
  const fixture=hardwareTestFixture(identity.email,runId);assert.match(fixture.body,new RegExp(runId));assert.equal(Buffer.from(fixture.attachments[0].data,'base64').length,64);
  assert.equal(fixture.sender,fixture.recipient);assert.equal(validateHardwareAudit(snapshot(),identity).slots.length,24);
 });
+
+test('mapped audit requires the exact occupied slots and hashes in the signed bundle',()=>{
+ const mapped={...identity,slots:[{slot:'9c',publicKeySha256:'a'.repeat(64)}]};
+ const audit={...snapshot(),version:2,slots:snapshot().slots.filter(key=>key.slot==='9c')};
+ assert.equal(validateHardwareAudit(audit,mapped).version,2);
+ for(const mutate of [a=>a.slots.pop(),a=>a.slots[0].slot='9a',a=>a.slots[0].publicKeySha256=null,a=>a.slots[0].publicKeySha256='b'.repeat(64)]){
+  const invalid=clone(audit);mutate(invalid);
+  assert.throws(()=>validateHardwareAudit(invalid,mapped),/hardware audit/);
+ }
+});

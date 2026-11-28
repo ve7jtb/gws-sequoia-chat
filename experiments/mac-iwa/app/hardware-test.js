@@ -15,14 +15,21 @@ const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const publicLabel=value=>typeof value==='string'&&value.length>0&&value.length<=80&&!/[\x00-\x1f\x7f]/.test(value);
 
 /** An absent key is explicit, never inferred from an omitted or failed read.
- * Reports contain only the complete fixed public snapshot: no native paths,
+ * Reports contain either the complete historical snapshot or every signed-bundle
+ * slot. No native paths,
  * PINs, private keys or diagnostic stderr can become exported report fields.
  */
 export function validateHardwareAudit(value,identity){
- if(!exact(value,['format','version','identity','slots','pinRetries','backendHash'])||value.format!=='sequoia-iwa-hardware-audit'||value.version!==1||!same(value.identity,nativeIdentity(identity))||!digest(value.backendHash)||!Array.isArray(value.slots)||value.slots.length!==24)throw Error('Invalid hardware audit');
- for(let i=0;i<SLOTS.length;i++){
+ if(!exact(value,['format','version','identity','slots','pinRetries','backendHash'])||value.format!=='sequoia-iwa-hardware-audit'||![1,2].includes(value.version)||!same(value.identity,nativeIdentity(identity))||!digest(value.backendHash)||!Array.isArray(value.slots))throw Error('Invalid hardware audit');
+ const mapped=value.version===2;
+ const expected=mapped?new Map(identity.slots?.map(key=>[key.slot,key.publicKeySha256])):null;
+ const slots=mapped?SLOTS.filter(slot=>expected.has(slot)):SLOTS;
+ if((mapped&&(!slots.length||slots.length!==identity.slots?.length))||value.slots.length!==slots.length)throw Error('Incomplete hardware audit');
+ for(let i=0;i<slots.length;i++){
   const slot=value.slots[i],fields=['publicKeySha256','algorithm','origin','pinPolicy','touchPolicy'];
-  if(!exact(slot,['slot',...fields])||slot.slot!==SLOTS[i])throw Error('Incomplete hardware audit');
+  if(!exact(slot,['slot',...fields])||slot.slot!==slots[i])throw Error('Incomplete hardware audit');
+  if(mapped&&(!digest(expected.get(slot.slot))||slot.publicKeySha256!==expected.get(slot.slot)))
+   throw Error('Mapped hardware audit key mismatch');
   if(slot.publicKeySha256===null){if(fields.some(k=>slot[k]!==null))throw Error('Invalid empty slot audit');}
   else if(!digest(slot.publicKeySha256)||fields.slice(1).some(k=>!publicLabel(slot[k])))throw Error('Invalid occupied slot audit');
  }
@@ -85,7 +92,7 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
   pending.then(()=>inFlight.delete(pending),()=>inFlight.delete(pending));return pending;
  };
  try{
-  await check();progress('before-audit','Reading all 24 public slots and PIN/touch policies — no PIN required.');
+  await check();progress('before-audit','Reading signed-bundle public keys and PIN/touch policies — no PIN required.');
   before=validateHardwareAudit(await request('chat-hardware-audit',{identity:binding}),selected);await check();complete();
   progress('signing','Signing a fresh local test message — enter the PIN only in the PIV dialog, then touch if requested.');
   const material=await request('chat-selected-signing-material',{identity:binding});
@@ -133,7 +140,7 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
  }finally{
   await Promise.allSettled([...inFlight]);
   if(before){
-   progress('after-audit','Comparing all public keys, PIN/touch policies and retry counts — no PIN required.');
+   progress('after-audit','Comparing audited public keys, PIN/touch policies and retry counts — no PIN required.');
    try{
     // Even after cancellation/failure, this fixed read-only operation is safe.
     // It cannot prompt or start private work. A missing/changed identity is an
