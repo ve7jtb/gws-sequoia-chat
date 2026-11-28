@@ -1,11 +1,12 @@
 // Files live outside the credential vault so ciphertext does not count
 // against the vault's 2 MB limit. Each IndexedDB row is an atomic envelope.
+export const localFileDatabase='sequoia-iwa-local-files';
 export const maxBytes=16*1024*1024;
 export const maxFiles=32;
 
 function database(){
  return new Promise((resolve,reject)=>{
-  const request=indexedDB.open('sequoia-iwa-local-files',1);
+  const request=indexedDB.open(localFileDatabase,1);
   request.onupgradeneeded=()=>{
    const rows=request.result.createObjectStore('files',{keyPath:['vaultId','id']});
    rows.createIndex('vault','vaultId');

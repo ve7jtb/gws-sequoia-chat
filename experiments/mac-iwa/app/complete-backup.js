@@ -1,6 +1,7 @@
 // Complete migration is deliberately separate from the live mail application.
 // No hardware APIs, account connections or private-key operations run here.
 import {validate as validateVault} from './vault/core.js';
+import {localFileDatabase} from './local-files/storage.js';
 export const DATABASES=[['sequoia-iwa-vault','vault'],['sequoia-iwa-identities','state'],['sequoia-iwa-certificates','state']];
 export const PENDING='sequoia-complete-restore-pending';
 // Connection trust belongs to the receiving device. A backup must neither
@@ -43,9 +44,9 @@ export async function unseal(box,vault,origin){
  if(canonical(result.databases[0].value)!==canonical(box.recoveryVault))fail('Backup recovery vault mismatch');
  return result;
 }
-// Capture every persisted local setting, including FIDO recovery/diagnostic
-// handles. Unknown IndexedDB databases or stores fail closed rather than silently
-// producing an incomplete backup. Transient inbox/draft/session memory is absent.
+// Capture persisted settings and credential databases. Local files are
+// intentionally device-local: their key is already in the vault, while their
+// ciphertext stays in its own database. Unknown databases still fail closed.
 export function browserStorage(factory=indexedDB,settings=localStorage){
  async function database(name,store){return new Promise((resolve,reject)=>{const r=factory.open(name,1);r.onupgradeneeded=()=>r.result.createObjectStore(store);r.onerror=()=>reject(r.error);r.onblocked=()=>reject(Error('Close other app windows'));r.onsuccess=()=>{const db=r.result;if(db.objectStoreNames.length!==1||!db.objectStoreNames.contains(store)){db.close();reject(Error('Unknown database schema'));}else resolve(db);};});}
  return {
@@ -58,7 +59,7 @@ export function browserStorage(factory=indexedDB,settings=localStorage){
  };
 }
 export async function capture(storage,origin){
- const names=await storage.names();if(names.some(n=>!DATABASES.some(d=>d[0]===n)))fail('Unknown database: cannot guarantee a complete backup');
+ const names=await storage.names();if(names.some(n=>n!==localFileDatabase&&!DATABASES.some(d=>d[0]===n)))fail('Unknown database: cannot guarantee a complete backup');
  const databases=[];for(const [name,store] of DATABASES)databases.push({name,store,value:await storage.read(name,store)});
  const settings=[];for(let i=0;i<storage.settings.length;i++){const k=storage.settings.key(i);if(k!==PENDING)settings.push([k,storage.settings.getItem(k)]);}settings.sort((a,b)=>a[0].localeCompare(b[0]));
  return validateSnapshot({format:'sequoia-complete-state',version:1,origin,databases,settings},origin);
