@@ -107,6 +107,19 @@ comparison was unavailable.
 
 [Signed 0.20.63 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.63)
 
+### macOS SFTP round trip (0.20.65 Testing)
+
+On 2026-11-28, the Mac IWA used **Transfer files** to copy a synthetic
+16,384-byte binary from encrypted **Local files** to `/tmp` on
+`touchly2.local`, then copy it back into the encrypted store. Both directions
+used SFTP over the same authenticated SSH connection. The terminal stayed
+connected throughout.
+
+The returned file matched the original byte for byte and had the same SHA-256
+digest. The session used software ML-DSA-44 + Ed25519 authentication and
+ML-KEM-768 + X25519 key exchange (`mlkem768x25519-sha256`).
+[Signed 0.20.65 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.65)
+
 ## Encrypted local files
 
 After unlocking the vault, open **Local files** to encrypt and save a file.
