@@ -15,9 +15,10 @@ test('SSH authorization prompt clears the input on submit and cancellation',asyn
  dialog.close=()=>{dialog.open=false;};
  input.focus=()=>{};
  const abort=new AbortController();
- const options={document,host:'::1',port:22,username:'fixture',signal:abort.signal};
+ const options={document,host:'::1',port:22,username:'fixture',algorithms:['ssh-ed25519'],compositeSelected:true,signal:abort.signal};
  const submitted=promptSshPassword(options);
  assert.equal(document.getElementById('ssh-password-target').textContent,'fixture @ [::1]:22');
+ assert.match(document.getElementById('ssh-password-plan').textContent,/Warning:.*only Ed25519/);
  input.value=' disposable password ';
  form.dispatchEvent(new Event('submit',{cancelable:true}));
  assert.equal(new TextDecoder().decode(await submitted),' disposable password ');

@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {initializeSsh} from '../app/ssh/ui.js';
 function fakeDocument(){
  const nodes=new Map();
- return {getElementById(id){if(!nodes.has(id))nodes.set(id,{hidden:false,value:'',textContent:'',children:[],replaceChildren(){this.children=[];},append(x){this.children.push(x);}});return nodes.get(id);},createElement(){return {};}};
+ return {getElementById(id){if(!nodes.has(id))nodes.set(id,Object.assign(new EventTarget(),{hidden:false,value:'',textContent:'',children:[],replaceChildren(){this.children=[];},append(x){this.children.push(x);}}));return nodes.get(id);},createElement(){return {};}};
 }
 // Exercise unlock/lock races without any browser, network or card access.
 test('SSH only offers dedicated SSH identities and clears public state on lock',async()=>{
@@ -122,4 +122,58 @@ test('first-use confirmation keeps the handshake alive across the vault revision
  await worker.emit({type:'sign',id:2,data:Uint8Array.of(1,2,3)});
  assert.equal(signatures,1);assert.equal(approvals,2);
  assert.deepEqual(worker.messages.at(-1),{type:'reply',id:2,result:Uint8Array.of(7)});
+});
+
+test('SSH key authorization reports validation, success and failure beside its button',async t=>{
+ const document=fakeDocument(),window=new EventTarget(),previousWorker=globalThis.Worker;
+ t.after(()=>{if(previousWorker===undefined)delete globalThis.Worker;else globalThis.Worker=previousWorker;});
+ let worker;
+ globalThis.Worker=class{
+  constructor(){worker=this;}
+  postMessage(){}
+  terminate(){}
+  emit(data){return this.onmessage({data});}
+ };
+ window.vaultIsUnlocked=()=>true;
+ const identity={id:'identity',name:'SSH test',email:'ssh@example.invalid',emails:['ssh@example.invalid'],hasSshPublic:true};
+ window.softwareIdentities={
+  records:async()=>[identity],get:async()=>identity,
+  provisioningCertificates:async()=>({ssh:{publicKey:'ssh-mldsa44-ed25519 AQID'}}),
+ };
+ window.sshTrust={list:async()=>[{hosts:'server.invalid',type:'ssh-ed25519',key:'AQID'}]};
+ window.Terminal=class{constructor(){assert.fail('Authorization does not open a terminal');}};
+ const dialog=document.getElementById('ssh-password-dialog'),input=document.getElementById('ssh-password-input');
+ const form=document.getElementById('ssh-password-form'),button=document.getElementById('ssh-authorize');
+ const status=document.getElementById('ssh-authorize-status');
+ const ui=initializeSsh({window,document});
+ await button.onclick();
+ assert.equal(status.textContent,'Error: Select an SSH identity.');
+ assert.equal(button.disabled,false);
+ await ui.refresh();
+ document.getElementById('ssh-host').value='server.invalid';
+ document.getElementById('ssh-port').value='22';
+ document.getElementById('ssh-username').value='fixture';
+ await button.onclick();
+ assert.equal(status.textContent,'Verifying SSH host…');
+ assert.equal(button.disabled,true);
+ await worker.emit({type:'error',message:'Could not update authorized_keys.'});
+ assert.equal(status.textContent,'Error: Could not update authorized_keys.');
+ assert.equal(button.disabled,false);
+ await button.onclick();
+ await worker.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:Uint8Array.of(1,2,3)});
+ const opened=Promise.withResolvers();
+ dialog.showModal=()=>{dialog.open=true;opened.resolve();};
+ dialog.close=()=>{dialog.open=false;};
+ input.focus=()=>{};
+ const passwordRequest=worker.emit({type:'password',id:2,algorithms:['ssh-mldsa44-ed25519']});
+ await opened.promise;
+ assert.equal(status.textContent,'Waiting for the SSH account password…');
+ input.value='disposable fixture password';
+ form.dispatchEvent(new Event('submit',{cancelable:true}));
+ await passwordRequest;
+ assert.equal(status.textContent,'Authorizing the SSH public key…');
+ await worker.emit({type:'authorized',algorithms:['ssh-mldsa44-ed25519']});
+ assert.equal(status.textContent,'Success: SSH public key authorization confirmed: ssh-mldsa44-ed25519.');
+ assert.equal(button.disabled,false);
+ assert.equal(document.getElementById('ssh-status').textContent,'');
 });

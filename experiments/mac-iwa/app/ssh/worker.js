@@ -30,13 +30,13 @@ globalThis.sshClose=()=>{
 };
 globalThis.sshOutput=data=>postMessage({type:'output',data});
 globalThis.sshSign=data=>rpc('sign',{data});
-globalThis.sshPassword=()=>rpc('password',{});
+globalThis.sshPassword=algorithms=>rpc('password',{algorithms});
 globalThis.sshVerifyHost=(algorithm,data)=>rpc('host',{algorithm,data});
 globalThis.sshFailure=fail;
-globalThis.sshAuthorized=()=>finish({type:'authorized'});
-globalThis.sshReady=()=>{
+globalThis.sshAuthorized=algorithms=>finish({type:'authorized',algorithms});
+globalThis.sshReady=keyExchange=>{
  if(!socket){fail('SSH server closed the session before the terminal was ready.');return;}
- ready=true;clearTimeout(timer);postMessage({type:'ready'});
+ ready=true;clearTimeout(timer);postMessage({type:'ready',keyExchange});
 };
 globalThis.onmessage=async({data})=>{
  try{
@@ -46,6 +46,15 @@ globalThis.onmessage=async({data})=>{
   if(started)throw Error('SSH worker already used');started=true;
   const go=new globalThis.Go(),wasm=await WebAssembly.instantiateStreaming(fetch('./engine.wasm'),go.importObject);
   go.run(wasm.instance).catch(()=>fail('SSH engine stopped.'));
+  if(data.type==='import-ed25519'){
+   let result;
+   try{result=globalThis.sshImportEd25519(data.file,data.passphrase);}
+   finally{data.file.fill(0);data.passphrase.fill(0);}
+   if(result.error)throw Error(result.error);
+   try{finish({type:'imported',seed:result.seed,publicKey:result.publicKey});}
+   finally{result.seed.fill(0);}
+   return;
+  }
   if(data.type==='software-sign'){
    let signature;
    try{signature=globalThis.sshSignSeeds(data.ml,data.ed,data.publicKey,data.message);if(!signature)throw Error('SSH software signature failed.');}
@@ -56,6 +65,6 @@ globalThis.onmessage=async({data})=>{
   timer=setTimeout(()=>fail('SSH connection timed out.'),120000);
   socket=new TCPSocket(data.host,data.port);socket.closed.catch(()=>{});
   const streams=await socket.opened;reader=streams.readable.getReader();writer=streams.writable.getWriter();
-  globalThis.sshStart({publicKey:data.publicKey,address:data.host+':'+data.port,username:data.username,authorizeKey:data.authorizeKey===true});
+  globalThis.sshStart({publicKey:data.publicKey,additionalPublicKey:data.additionalPublicKey,address:data.host+':'+data.port,username:data.username,authorizeKey:data.authorizeKey===true});
  }catch(e){fail(e.message||'SSH operation failed.');}
 };

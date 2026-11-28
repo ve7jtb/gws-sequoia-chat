@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -16,21 +18,24 @@ import (
 const authorizationReceipt = "sequoia-ssh-key-authorized\n"
 const authorizeCommand = `set -eu
 umask 077
-IFS=' ' read -r algorithm blob
 : "${HOME:?}"
 directory="$HOME/.ssh"
 file="$directory/authorized_keys"
 [ ! -L "$directory" ] && [ ! -L "$file" ] || exit 1
 mkdir -p "$directory"
-if [ -e "$file" ]; then
-    [ -f "$file" ] || exit 1
-    found=$(awk -v algorithm="$algorithm" -v key="$blob" '!/^[[:space:]]*#/ { for (i=2; i<=NF; i++) if ($(i-1)==algorithm && $i==key) found=1 } END { if (found) print "yes" }' "$file")
-else
+[ ! -e "$file" ] || [ -f "$file" ] || exit 1
+pending=
+while IFS=' ' read -r algorithm blob; do
     found=
-fi
-if [ "$found" != yes ]; then
-    printf '\n%s %s\n' "$algorithm" "$blob" >> "$file"
-fi
+    if [ -f "$file" ]; then
+        found=$(awk -v algorithm="$algorithm" -v key="$blob" '!/^[[:space:]]*#/ { for (i=2; i<=NF; i++) if ($(i-1)==algorithm && $i==key) found=1 } END { if (found) print "yes" }' "$file")
+    fi
+    if [ "$found" != yes ]; then
+        pending="$pending
+$algorithm $blob"
+    fi
+done
+[ -z "$pending" ] || printf '%s\n' "$pending" >> "$file"
 printf '%s' '` + authorizationReceipt + `'
 `
 
@@ -53,46 +58,81 @@ func (out *authorizationOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AuthorizePublicKey uses a single verified, password-authenticated exec
-// session. It never requests a PTY or invokes the selected private key.
-func AuthorizePublicKey(ctx context.Context, conn net.Conn, address, user string, key ssh.PublicKey, verify ssh.HostKeyCallback, password func() (string, error)) error {
+func authorizationKeys(keys []ssh.PublicKey, advertised string) []ssh.PublicKey {
+	algorithms := strings.Split(advertised, ",")
+	var selected []ssh.PublicKey
+	for _, key := range keys {
+		if slices.Contains(algorithms, key.Type()) {
+			selected = append(selected, key)
+		}
+	}
+	return selected
+}
+
+// AuthorizePublicKeys reviews matching keys before requesting the one-time
+// password on the same verified SSH connection. It never invokes a signer.
+func AuthorizePublicKeys(ctx context.Context, conn net.Conn, address, user string, keys []ssh.PublicKey, verify ssh.HostKeyCallback, password func([]string) (string, error)) ([]string, error) {
 	defer conn.Close()
-	if user == "" || len(user) > 256 || key == nil || key.Type() != CompositeAlgorithm || verify == nil || password == nil {
-		return errors.New("invalid SSH key authorization configuration")
+	if user == "" || len(user) > 256 || len(keys) < 1 || len(keys) > 2 || verify == nil || password == nil {
+		return nil, errors.New("invalid SSH key authorization configuration")
+	}
+	for i, key := range keys {
+		if key == nil || (key.Type() != CompositeAlgorithm && key.Type() != ssh.KeyAlgoED25519) || (i > 0 && key.Type() == keys[0].Type()) {
+			return nil, errors.New("invalid SSH key authorization candidates")
+		}
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	attempted := false
-	auth := ssh.PasswordCallback(func() (string, error) {
+	var selected []ssh.PublicKey
+	var algorithms []string
+	config := &ssh.ClientConfig{User: user, HostKeyCallback: verify, ClientVersion: "SSH-2.0-SequoiaIWA"}
+	config.AuthCallback = func(auth *ssh.ClientAuthContext) (ssh.AuthMethod, error) {
 		if attempted {
-			return "", errors.New("SSH password was already attempted")
+			return nil, errors.New("SSH password authentication was rejected or requires another method")
+		}
+		if !slices.Contains(auth.AllowedMethods, "password") {
+			return nil, errors.New("the server did not offer SSH password authentication")
+		}
+		if auth.ServerSignatureAlgorithms == "" {
+			return nil, errors.New("the server did not advertise public-key authentication algorithms")
+		}
+		selected = authorizationKeys(keys, auth.ServerSignatureAlgorithms)
+		if len(selected) == 0 {
+			return nil, errors.New("the server does not advertise support for the selected keys; choose an imported Ed25519 key if supported")
+		}
+		for _, key := range selected {
+			algorithms = append(algorithms, key.Type())
 		}
 		attempted = true
-		return password()
-	})
-	config := &ssh.ClientConfig{User: user, Auth: []ssh.AuthMethod{auth}, HostKeyCallback: verify, ClientVersion: "SSH-2.0-SequoiaIWA"}
+		return ssh.PasswordCallback(func() (string, error) { return password(algorithms) }), nil
+	}
 	c, channels, requests, err := ssh.NewClientConn(conn, address, config)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer c.Close()
 	if !attempted {
-		return errors.New("the server did not request SSH password authentication")
+		return nil, errors.New("the server did not request SSH password authentication")
 	}
 	client := ssh.NewClient(c, channels, requests)
 	session, err := client.NewSession()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer session.Close()
-	session.Stdin = bytes.NewReader(ssh.MarshalAuthorizedKey(key))
+	var publicKeys bytes.Buffer
+	for _, key := range selected {
+		publicKeys.Write(ssh.MarshalAuthorizedKey(key))
+	}
+	session.Stdin = &publicKeys
 	var receipt authorizationOutput
 	session.Stdout = &receipt
 	if err = session.Run(authorizeCommand); err != nil {
-		return fmt.Errorf("could not update ~/.ssh/authorized_keys: %w", err)
+		return nil, fmt.Errorf("could not update ~/.ssh/authorized_keys: %w", err)
 	}
 	if receipt.invalid || receipt.matched != len(authorizationReceipt) {
-		return errors.New("the server did not confirm the authorized_keys update")
+		return nil, errors.New("the server did not confirm the authorized_keys update")
 	}
-	return nil
+	return algorithms, nil
 }

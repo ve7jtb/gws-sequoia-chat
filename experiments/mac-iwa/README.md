@@ -20,16 +20,11 @@ Authentication choices:
   Both signature components are verified locally before transmission. There is
   no fallback to the Ed25519 half of the composite. The server must support
   this experimental user-authentication algorithm.
-- **Existing OpenPGP software identity:** use **Import existing OpenPGP software
-  identity** to open Identities → Import / restore, supply its encrypted
-  secret-key file and passphrase, and save it in the encrypted vault. Supported
-  standalone v4 Ed25519 identities appear as an explicit **classical SSH**
-  choice with a warning. This preserves the OpenPGP fingerprint and lets a user
-  connect to a compatible existing account before manually authorizing a new
-  SSH public key. It never changes server authorization or host trust by itself.
-  The current importer requires the supported complete two-key v4 profile;
-  RSA, signing-only exports, arbitrary multi-subkey layouts, and standalone
-  v6 classical profiles are not yet supported for SSH.
+- **Standalone Ed25519 SSH key:** use **Import OpenSSH Ed25519 key…** and select an
+  existing software private-key file. The optional file passphrase opens the
+  key locally and is discarded. The imported key is encrypted in the vault and
+  appears as a separate software login choice. SSH transport still negotiates
+  its key exchange independently of the selected login key.
 
 Review and import an OpenSSH `known_hosts` file (up to 1 MiB), or enable **Ask to
 trust unknown SSH hosts on first use** and confirm the server’s fingerprint.
@@ -47,11 +42,15 @@ verification happens when connecting.
 
 To set up a remote account, select the SSH identity, enter the host and
 username, then choose **Authorize SSH public key…**. After host verification,
-enter the remote account password. The app uses it once to run a fixed command
-that adds the selected public key to the default `~/.ssh/authorized_keys` file.
+review the keys the server advertises support for, then enter the remote account
+password. With a composite identity selected, you can also select an imported
+Ed25519 key to authorize. The app warns before Ed25519-only authorization and
+skips keys the server does not advertise. The one-time password opens a fixed
+command that adds the approved public keys to the default `~/.ssh/authorized_keys` file.
 Existing key restrictions are preserved. Use **Connect SSH terminal** for
 subsequent key-based login. The server must allow SSH password authentication
-and command execution for setup and support the composite key for terminal login.
+and command execution for setup. It must accept the selected login key for the
+terminal connection.
 
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,

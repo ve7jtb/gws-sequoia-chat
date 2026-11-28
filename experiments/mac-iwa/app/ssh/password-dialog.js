@@ -1,11 +1,12 @@
 // This prompt is reachable only through the verified SSH authorization
 // connection. The password is never a vault item or terminal input.
-export function promptSshPassword({document,host,port,username,signal}){
+export function promptSshPassword({document,host,port,username,algorithms=[],compositeSelected=false,signal}){
  const dialog=document.getElementById('ssh-password-dialog');
  const form=document.getElementById('ssh-password-form');
  const input=document.getElementById('ssh-password-input');
  const detail=document.getElementById('ssh-password-target');
  const status=document.getElementById('ssh-password-status');
+ const plan=document.getElementById('ssh-password-plan');
  const cancel=document.getElementById('ssh-password-cancel');
  if(signal?.aborted)return Promise.reject(Error('SSH key authorization cancelled.'));
  if(dialog.open)return Promise.reject(Error('An SSH password prompt is already open.'));
@@ -16,7 +17,7 @@ export function promptSshPassword({document,host,port,username,signal}){
    dialog.removeEventListener('cancel',decline);
    cancel.removeEventListener('click',decline);
    signal?.removeEventListener('abort',decline);
-   input.value='';detail.textContent='';status.textContent='';
+   input.value='';detail.textContent='';plan.textContent='';status.textContent='';
    if(dialog.open)dialog.close();
    if(error)reject(error);else resolve(secret);
   };
@@ -31,6 +32,9 @@ export function promptSshPassword({document,host,port,username,signal}){
   };
   input.value='';status.textContent='';
   detail.textContent=username+' @ '+endpoint;
+  plan.textContent=compositeSelected&&!algorithms.includes('ssh-mldsa44-ed25519')
+   ?'Warning: The server supports only Ed25519 among the selected keys. The composite key will be skipped.'
+   :'Keys to authorize: '+algorithms.join(', ')+'.';
   form.addEventListener('submit',submit);
   dialog.addEventListener('cancel',decline);
   cancel.addEventListener('click',decline);

@@ -3,6 +3,10 @@
 Go 1.27.4, golang.org/x/crypto 0.59.0 and x/sys 0.50.0. The browser receives only
 WASM and the matching Go runtime; no Go toolchain or SSH executable is installed
 on the user's computer. Rebuild after updating the pinned dependencies.
+The build uses Python 3 to expose RFC 8308's `server-sig-algs` in a temporary
+copy of the pinned Go module. The module cache and committed Go pins are
+unchanged. The extra field lets authorization review the server's advertised
+login algorithms before it asks for a password.
 
 ```sh
 GO_BIN=/path/to/go ./build.sh

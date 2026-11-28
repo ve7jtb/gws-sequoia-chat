@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestAuthorizePublicKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pub := signer.PublicKey()
+			pub := key(t).PublicKey()
 			verified := false
 			prompts := 0
 			const password = "disposable fixture password"
@@ -53,15 +54,18 @@ func TestAuthorizePublicKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = AuthorizePublicKey(ctx, conn, listener.Addr().String(), "test", pub, func(_ string, _ net.Addr, k ssh.PublicKey) error {
+			_, err = AuthorizePublicKeys(ctx, conn, listener.Addr().String(), "test", []ssh.PublicKey{signer.PublicKey(), pub}, func(_ string, _ net.Addr, k ssh.PublicKey) error {
 				if !tc.trust || !bytes.Equal(k.Marshal(), host.PublicKey().Marshal()) {
 					return errors.New("host not trusted")
 				}
 				verified = true
 				return nil
-			}, func() (string, error) {
+			}, func(algorithms []string) (string, error) {
 				if !verified {
 					t.Error("password requested before host verification")
+				}
+				if !slices.Equal(algorithms, []string{ssh.KeyAlgoED25519}) {
+					t.Errorf("unexpected algorithms for Ed25519-only server: %v", algorithms)
 				}
 				prompts++
 				if !tc.validPassword {

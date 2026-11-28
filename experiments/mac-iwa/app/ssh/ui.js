@@ -7,11 +7,20 @@ import {promptSshPassword} from './password-dialog.js';
 // choices only; a future SSH engine must request narrowly scoped signatures.
 export function initializeSsh({window,document}){
  const $=id=>document.getElementById(id);let controller=null,epoch=0,trustReview=null,session=null,terminal=null;
- let identities=[],connecting=false;
+ let identities=[],connecting=false,authorizing=false;
+ let importing;
  const gate=()=>{if(!window.vaultIsUnlocked?.())throw Error('Unlock the credential vault first.');};
+ const authorizationStatus=$('ssh-authorize-status'),authorizeButton=$('ssh-authorize');
+ function finishAuthorization(message){
+  authorizing=false;authorizeButton.disabled=false;authorizationStatus.textContent=message;
+ }
  function updateCardPicker(){
   const checkbox=$('ssh-use-card'),picker=$('ssh-card-serial');
-  const serials=identities.find(row=>row.id===$('ssh-identities').value)?.sshCardSerials||[];
+  const identity=identities.find(row=>row.id===$('ssh-identities').value);
+  const serials=identity?.sshCardSerials||[];
+  checkbox.disabled=identity?.algorithm==='ssh-ed25519';
+  if(checkbox.disabled)checkbox.checked=false;
+  $('ssh-fallback-picker').hidden=!identity||checkbox.disabled||!identities.some(row=>row.algorithm==='ssh-ed25519');
   const previous=picker.value;
   $('ssh-card-picker').hidden=!checkbox.checked;
   picker.replaceChildren();
@@ -31,22 +40,61 @@ export function initializeSsh({window,document}){
  }
  async function refresh(){
   controller?.abort();session?.close();session=null;
+  if(authorizing)finishAuthorization('SSH key authorization cancelled.');
   const started=++epoch,chooser=$('ssh-identities'),previous=chooser.value;
   identities=[];chooser.replaceChildren();
   $('ssh-tab').hidden=!window.vaultIsUnlocked?.();
   if($('ssh-tab').hidden){updateCardPicker();return;}
-  const rows=await window.softwareIdentities?.records()||[];
+  const [rows,imported]=await Promise.all([window.softwareIdentities?.records()||[],window.importedSshKeys?.records()||[]]);
   if(started!==epoch||!window.vaultIsUnlocked?.())return;
-  identities=rows.filter(row=>row.hasSshPublic);
+  identities=[...rows.filter(row=>row.hasSshPublic),...imported];
   for(const row of identities){
-   const option=document.createElement('option');option.value=row.id;option.textContent=row.name+' — ML-DSA-44 + Ed25519';chooser.append(option);
+   const option=document.createElement('option');option.value=row.id;option.textContent=row.name+(row.algorithm==='ssh-ed25519'?' — Ed25519 (software)':' — ML-DSA-44 + Ed25519');chooser.append(option);
   }
+  const fallback=$('ssh-fallback-ed25519'),previousFallback=fallback.value;
+  const none=document.createElement('option');none.value='';none.textContent='None';
+  fallback.replaceChildren(none);
+  for(const row of imported){
+   const option=document.createElement('option');option.value=row.id;option.textContent=row.name;fallback.append(option);
+  }
+  fallback.value=imported.some(row=>row.id===previousFallback)?previousFallback:'';
   chooser.value=identities.some(row=>row.id===previous)?previous:identities[0]?.id||'';
   $('ssh-public').disabled=!identities.length;
   updateCardPicker();
  }
  $('ssh-identities').onchange=updateCardPicker;
  $('ssh-use-card').onchange=updateCardPicker;
+ const importDialog=$('ssh-import-dialog'),importPassphrase=$('ssh-import-passphrase');
+ function clearImport(){
+  importing?.abort();importPassphrase.value='';$('ssh-import-file').value='';
+  if(importDialog.open)importDialog.close();
+ }
+ $('ssh-import').onclick=()=>{
+  try{gate();if(importing||importDialog.open)return;importPassphrase.value='';$('ssh-import-status').textContent='';importDialog.showModal();}
+  catch(error){$('ssh-status').textContent=error.message;}
+ };
+ $('ssh-import-cancel').onclick=clearImport;
+ importDialog.oncancel=event=>{event.preventDefault();clearImport();};
+ $('ssh-import-form').onsubmit=async event=>{
+  event.preventDefault();if(importing)return;
+  importing=new AbortController();
+  const signal=importing.signal,status=$('ssh-import-status'),button=$('ssh-import-save');
+  const password=new TextEncoder().encode(importPassphrase.value);
+  importPassphrase.value='';let file;
+  try{
+   gate();
+   const source=$('ssh-import-file').files[0];
+   if(!source||source.size<1||source.size>32768)throw Error('Choose an OpenSSH private-key file up to 32 KiB.');
+   button.disabled=true;status.textContent='Opening the Ed25519 key…';
+   file=new Uint8Array(await source.arrayBuffer());
+   const selected=await window.importedSshKeys.importKey($('ssh-import-name').value,file,password,signal);
+   if(signal.aborted)return;
+   clearImport();await refresh();gate();
+   $('ssh-identities').value=selected.id;updateCardPicker();
+   $('ssh-status').textContent='OpenSSH Ed25519 key saved in the encrypted vault.';
+  }catch(error){if(!signal.aborted)status.textContent=error.message;}
+  finally{file?.fill(0);password.fill(0);button.disabled=false;importing=null;}
+ };
  $('ssh-probe').onclick=async()=>{
   if(controller)return;
   const started=epoch,button=$('ssh-probe'),cancel=$('ssh-cancel'),status=$('ssh-probe-status');
@@ -69,12 +117,23 @@ export function initializeSsh({window,document}){
  $('ssh-cancel').onclick=()=>controller?.abort();
  $('ssh-public').onclick=async()=>{
   const started=epoch;
-  try{gate();const store=window.softwareIdentities,row=(await store.records()).find(r=>r.hasSshPublic&&r.id===$('ssh-identities').value);if(!row)throw Error('Select an SSH identity.');const selected=await store.get(row.id,row.emails[0]);
-   const info=await store.provisioningCertificates(selected);gate();if(started!==epoch)throw Error('SSH context changed.');
-   if(!info?.ssh?.publicKey)throw Error('The selected identity has no SSH public key.');
-   $('ssh-public-text').textContent=info.ssh.publicKey;
+  try{gate();const {publicLine}=await readIdentity($('ssh-identities').value);
+   gate();if(started!==epoch)throw Error('SSH context changed.');
+   $('ssh-public-text').textContent=publicLine;
   }catch(e){$('ssh-status').textContent=e.message;}
  };
+ async function readIdentity(id){
+  if(id.startsWith('ssh-ed25519:')){
+   const store=window.importedSshKeys,selected=await store.get(id);
+   return {store,selected,publicLine:selected.publicKey,imported:true,hasSsh:true};
+  }
+  const store=window.softwareIdentities,row=(await store.records()).find(r=>r.hasSshPublic&&r.id===id);
+  if(!row)throw Error('Select an SSH identity.');
+  const selected=await store.get(row.id,row.emails[0]);
+  const info=await store.provisioningCertificates(selected);
+  if(!info?.ssh?.publicKey)throw Error('The selected identity has no SSH public key.');
+  return {store,selected,publicLine:info.ssh.publicKey,imported:false,hasSsh:row.hasSsh};
+ }
  $('ssh-trust-review').onclick=async()=>{
   const started=epoch;trustReview=null;$('ssh-trust-import').disabled=true;
   try{gate();const file=$('ssh-trust-file').files[0];if(!file||file.size>1048576)throw Error('Choose a known_hosts file up to 1 MiB.');
@@ -90,30 +149,40 @@ export function initializeSsh({window,document}){
   }catch(e){$('ssh-status').textContent=e.message;}
  };
  async function openSsh(authorizeKey){
-  if(connecting||session){$('ssh-status').textContent='Disconnect the current SSH connection first.';return;}
+  const status=authorizeKey?authorizationStatus:$('ssh-status');
+  if(connecting||session){if(!authorizing||!authorizeKey)status.textContent='Disconnect the current SSH connection first.';return;}
   connecting=true;
+  if(authorizeKey){
+   authorizing=true;authorizeButton.disabled=true;status.textContent='Verifying SSH host…';
+  }
   const started=epoch;
   try{
    gate();
    const identityId=$('ssh-identities').value,serial=$('ssh-card-serial').value,useCard=!authorizeKey&&$('ssh-use-card').checked;
    const trustFirstUse=$('ssh-trust-first-use').checked;
-   const store=window.softwareIdentities,row=(await store.records()).find(r=>r.hasSshPublic&&r.id===identityId);
-   if(!row)throw Error('Select an SSH identity.');
-   if(!authorizeKey&&!useCard&&!row.hasSsh)throw Error('Select the provisioned YubiKey for this identity.');
+   const fallbackId=$('ssh-fallback-ed25519').value;
    if(useCard&&!serial)throw Error('Choose a YubiKey provisioned for this SSH identity.');
    if(useCard&&window.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card hardware transport first.');
-   let selected=await store.get(row.id,row.emails[0]);
-   const info=await store.provisioningCertificates(selected),entries=await window.sshTrust.list();
-   if(!info?.ssh?.publicKey)throw Error('The selected identity has no SSH public key.');
-   const publicKey=Uint8Array.from(atob(info.ssh.publicKey.split(' ')[1]),c=>c.charCodeAt(0));
+   let {store,selected,publicLine,imported,hasSsh}=await readIdentity(identityId);
+   if(!authorizeKey&&!useCard&&!hasSsh)throw Error('Select the provisioned YubiKey for this identity.');
+   if(useCard&&imported)throw Error('Imported Ed25519 keys sign in software.');
+   const entries=await window.sshTrust.list();
+   const keyBlob=line=>Uint8Array.from(atob(line.split(' ')[1]),c=>c.charCodeAt(0));
+   const publicKey=keyBlob(publicLine);
+   const additionalPublicKey=authorizeKey&&!imported&&fallbackId?keyBlob((await window.importedSshKeys.get(fallbackId)).publicKey):undefined;
    const card=useCard?await store.sshHardware(selected,serial):null;
-   const guard=()=>{gate();if(started!==epoch)throw Error('SSH context changed.');};guard();
+   const guard=()=>{gate();if(started!==epoch||(authorizeKey&&!authorizing))throw Error('SSH context changed.');};guard();
    if(!authorizeKey){terminal?.dispose();terminal=new window.Terminal({cols:80,rows:24,scrollback:1000,disableStdin:false,allowProposedApi:false});terminal.open($('ssh-terminal'));}
    // xterm renders terminal controls without HTML or link/clipboard addons.
    // Scrollback is memory-only and is disposed when the vault locks.
    session=connectSsh({host:$('ssh-host').value,port:$('ssh-port').value,username:$('ssh-username').value,
-    publicKey,entries,getEntries:()=>window.sshTrust.list(),guard,authorizeKey,
-    requestPassword:authorizeKey?(target,signal)=>promptSshPassword({document,...target,signal}):undefined,
+    publicKey,additionalPublicKey,entries,getEntries:()=>window.sshTrust.list(),guard,authorizeKey,
+    requestPassword:authorizeKey?async(target,signal)=>{
+     status.textContent='Waiting for the SSH account password…';
+     const password=await promptSshPassword({document,...target,compositeSelected:!imported,signal});
+     if(authorizing)status.textContent='Authorizing the SSH public key…';
+     return password;
+    }:undefined,
     acceptUnknownHost:trustFirstUse?async(candidate,check,signal)=>{
      const fingerprint=await sshHostFingerprint(candidate.key);check();
      const endpoint=(candidate.host.includes(':')?'['+candidate.host+']':candidate.host)+':'+candidate.port;
@@ -128,16 +197,31 @@ export function initializeSsh({window,document}){
      if(JSON.stringify(previousIdentity)!==JSON.stringify(currentIdentity))throw Error('SSH identity changed while saving host trust. Connect again.');
      selected=refreshed;
     }:undefined,
-    sign:async data=>{await store.assert(selected);if(card){const signature=await signCardSsh({identity:card,publicKey,message:data,piv:window.SequoiaSmartCardPiv,promptPin:window.hardwareTransport.promptPin,guard,onProgress:text=>{$('ssh-status').textContent=text;}});await store.assert(selected);return signature;}return store.signSsh(selected,data);},onOutput:data=>{if(!authorizeKey)terminal.write(data);},onStatus:text=>{$('ssh-status').textContent=text;if(text!=='SSH authenticated.')session=null;}});
-   if(!authorizeKey){terminal.onData(text=>{try{session?.input(new TextEncoder().encode(text));}catch(e){$('ssh-status').textContent=e.message;}});terminal.focus();}
-   $('ssh-status').textContent='Connecting and verifying SSH host…';
-  }catch(e){$('ssh-status').textContent=e.message;session?.close();session=null;}
+    sign:async data=>{await store.assert(selected);if(card){const signature=await signCardSsh({identity:card,publicKey,message:data,piv:window.SequoiaSmartCardPiv,promptPin:window.hardwareTransport.promptPin,guard,onProgress:text=>{status.textContent=text;}});await store.assert(selected);return signature;}return store.signSsh(selected,data);},
+    onOutput:data=>{if(!authorizeKey)terminal.write(data);},
+    onStatus:(text,result)=>{
+     if(result!=='ready')session=null;
+     if(authorizeKey)finishAuthorization((result==='success'?'Success: ':'Error: ')+text);
+     else status.textContent=text;
+    }});
+   if(!authorizeKey){terminal.onData(text=>{try{session?.input(new TextEncoder().encode(text));}catch(e){status.textContent=e.message;}});terminal.focus();status.textContent='Connecting and verifying SSH host…';}
+  }catch(e){
+   if(started===epoch){
+    if(authorizeKey){if(authorizing)finishAuthorization('Error: '+e.message);}
+    else status.textContent=e.message;
+   }
+   session?.close();session=null;
+  }
   finally{connecting=false;}
  }
  $('ssh-connect').onclick=()=>openSsh(false);
- $('ssh-authorize').onclick=()=>openSsh(true);
- $('ssh-disconnect').onclick=()=>{session?.close();session=null;$('ssh-status').textContent='SSH disconnected.';};
- const clear=()=>{session?.close();session=null;terminal?.dispose();terminal=null;trustReview=null;$('ssh-trust-import').disabled=true;$('ssh-trust-summary').textContent='';$('ssh-trust-file').value='';epoch++;controller?.abort();$('ssh').hidden=true;$('ssh-tab').hidden=true;$('ssh-host').value='';$('ssh-username').value='';$('ssh-use-card').checked=false;$('ssh-trust-first-use').checked=false;$('ssh-port').value='22';$('ssh-public-text').textContent='';$('ssh-probe-status').textContent='';$('ssh-status').textContent='';$('ssh-identities').replaceChildren();identities=[];updateCardPicker();};
+ authorizeButton.onclick=()=>openSsh(true);
+ $('ssh-disconnect').onclick=()=>{
+  session?.close();session=null;
+  if(authorizing)finishAuthorization('SSH key authorization cancelled.');
+  else $('ssh-status').textContent='SSH disconnected.';
+ };
+ const clear=()=>{clearImport();session?.close();session=null;finishAuthorization('');terminal?.dispose();terminal=null;trustReview=null;$('ssh-trust-import').disabled=true;$('ssh-trust-summary').textContent='';$('ssh-trust-file').value='';epoch++;controller?.abort();$('ssh').hidden=true;$('ssh-tab').hidden=true;$('ssh-host').value='';$('ssh-username').value='';$('ssh-use-card').checked=false;$('ssh-trust-first-use').checked=false;$('ssh-fallback-ed25519').replaceChildren();$('ssh-port').value='22';$('ssh-public-text').textContent='';$('ssh-probe-status').textContent='';$('ssh-status').textContent='';$('ssh-identities').replaceChildren();identities=[];updateCardPicker();};
  window.addEventListener('iwa-vault-locked',clear);window.addEventListener('pagehide',clear);
  for(const event of ['iwa-vault-unlocked','iwa-software-identities-changed'])window.addEventListener(event,change=>{
   // The first-use pin advances the vault revision without editing identities.

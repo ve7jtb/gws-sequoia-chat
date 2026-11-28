@@ -39,7 +39,7 @@ test('password is requested once after host verification and is cleared after ha
  }
  const options={host:'host',port:22,username:'user',publicKey:b,entries:[entry],
   authorizeKey:true,requestPassword:async target=>{
-   prompts++;assert.deepEqual(target,{host:'host',port:22,username:'user'});
+   prompts++;assert.deepEqual(target,{host:'host',port:22,username:'user',algorithms:['ssh-ed25519']});
    secret=new TextEncoder().encode('disposable password');return secret;
   },
   sign:()=>assert.fail('Key authorization must not access private keys'),
@@ -50,7 +50,7 @@ test('password is requested once after host verification and is cleared after ha
  connectSsh(options);
  const worker=FakeWorker.instance;
  await worker.emit({type:'host',id:1,algorithm:entry.type,data:b});
- await worker.emit({type:'password',id:2});
+ await worker.emit({type:'password',id:2,algorithms:['ssh-ed25519']});
  assert.equal(prompts,1);assert(secret.every(byte=>byte===0));
  assert.equal(new TextDecoder().decode(worker.sent.at(-1).result),'disposable password');
  await worker.emit({type:'password',id:3});

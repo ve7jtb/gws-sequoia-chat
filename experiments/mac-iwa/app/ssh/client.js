@@ -16,17 +16,17 @@ function createSshWorker(WorkerClass=Worker){
 }
 // The UI receives no private key. The injected signer checks its vault revision
 // on both sides of signing; trust must pass before any sign callback is accepted.
-export function connectSsh({host,port,username,publicKey,entries,getEntries,acceptUnknownHost,requestPassword,authorizeKey=false,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
+export function connectSsh({host,port,username,publicKey,additionalPublicKey,entries,getEntries,acceptUnknownHost,requestPassword,authorizeKey=false,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
  const target=endpoint(host,port);guard();
  if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
  if(authorizeKey&&typeof requestPassword!=='function')throw Error('Password prompt is unavailable.');
  const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
- let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,passwordUsed=false,hostKey=null;
+ let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,reviewedAlgorithms,hostKey=null;
  const close=()=>{if(closed)return;closed=true;lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
  const check=()=>{if(closed)throw Error('SSH connection closed.');guard();};
  const verify=async candidate=>verifyHost({entries:getEntries?await getEntries():entries,...candidate,guard:check});
  signal?.addEventListener('abort',close,{once:true});if(signal?.aborted){close();throw Error('SSH cancelled.');}
- worker.onerror=()=>{onStatus('SSH engine failed.');close();};
+ worker.onerror=()=>{if(!closed){onStatus('SSH engine failed.','error');close();}};
  worker.onmessage=async({data})=>{
   if(closed)return;
   try{
@@ -46,38 +46,52 @@ export function connectSsh({host,port,username,publicKey,entries,getEntries,acce
     if(authorizeKey||!hostAccepted||signing||ready||authUsed)throw Error('Unexpected SSH authentication request.');signing=true;authUsed=true;
     try{await verify(hostKey);check();const result=await sign(data.data);check();worker.postMessage({type:'reply',id:data.id,result});}finally{signing=false;}
    }else if(data.type==='password'){
-    if(!authorizeKey||!hostAccepted||passwordUsed)throw Error('Unexpected SSH password request.');
-    passwordUsed=true;let secret;
+    if(!authorizeKey||!hostAccepted||reviewedAlgorithms)throw Error('Unexpected SSH password request.');
+    const algorithms=data.algorithms;
+    if(!Array.isArray(algorithms)||!algorithms.length||algorithms.length>2||new Set(algorithms).size!==algorithms.length||algorithms.some(a=>a!=='ssh-ed25519'&&a!=='ssh-mldsa44-ed25519'))throw Error('Invalid SSH key authorization review.');
+    reviewedAlgorithms=algorithms;let secret;
     try{
      await verify(hostKey);check();
-     secret=await requestPassword({...target,username},lifetime.signal);
+     secret=await requestPassword({...target,username,algorithms},lifetime.signal);
      if(!(secret instanceof Uint8Array)||!secret.length||secret.length>1024)throw Error('Invalid SSH password length.');
      await verify(hostKey);check();
      // postMessage copies the bytes to the disposable authentication worker.
      worker.postMessage({type:'reply',id:data.id,result:secret});
     }finally{if(secret instanceof Uint8Array)secret.fill(0);}
    }else if(data.type==='authorized'){
-    if(!authorizeKey||!hostAccepted||!passwordUsed)throw Error('Unexpected SSH authorization result.');
-    onStatus('SSH public key authorized.');close();
-   }else if(data.type==='ready'){ready=true;onStatus('SSH authenticated.');}
+    if(!authorizeKey||!hostAccepted||!reviewedAlgorithms||JSON.stringify(data.algorithms)!==JSON.stringify(reviewedAlgorithms))throw Error('Unexpected SSH authorization result.');
+    const description=reviewedAlgorithms.includes('ssh-mldsa44-ed25519')?'SSH public key authorization confirmed: '+reviewedAlgorithms.join(', ')+'.':'SSH public key authorized: Ed25519 only.';
+    onStatus(description,'success');close();
+   }else if(data.type==='ready'){
+    ready=true;
+    onStatus(data.keyExchange?'SSH authenticated. Key exchange: '+data.keyExchange+'.':'SSH authenticated.','ready');
+   }
    else if(data.type==='output'){if(hostAccepted)onOutput(data.data);}
-   else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.');close();}
-  }catch(e){if(!closed){onStatus(e.message);close();}}
+   else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.',data.type);close();}
+  }catch(e){if(!closed){onStatus(e.message,'error');close();}}
  };
- worker.postMessage({type:'connect',...target,username,publicKey,authorizeKey});
+ worker.postMessage({type:'connect',...target,username,publicKey,additionalPublicKey,authorizeKey});
  return {close,input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},resize(rows,cols){guard();if(!closed&&ready)worker.postMessage({type:'resize',rows,cols});}};
 }
 // Signing workers are short-lived and receive a copy of the selected seeds only.
 // No raw key is returned to UI code or persisted outside the encrypted vault.
-export function signSoftwareSsh({ml,ed,publicKey,message,signal}){
+function oneShot(data,reply,timeoutMs,signal){
  return new Promise((resolve,reject)=>{
   const worker=createSshWorker();let settled=false;
   const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);worker.terminate();error?reject(error):resolve(result);};
-  const abort=()=>finish(Error('SSH signing cancelled.'));
-  const timer=setTimeout(()=>finish(Error('SSH signing timed out.')),30000);
+  const abort=()=>finish(Error('SSH key operation cancelled.'));
+  const timer=setTimeout(()=>finish(Error('SSH key operation timed out.')),timeoutMs);
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted){abort();return;}
-  worker.onerror=()=>finish(Error('SSH signing worker failed.'));
-  worker.onmessage=({data})=>data.type==='signature'?finish(null,data.signature):data.type==='error'&&finish(Error(data.message));
-  worker.postMessage({type:'software-sign',ml,ed,publicKey,message});
+  worker.onerror=()=>finish(Error('SSH key worker failed.'));
+  worker.onmessage=({data})=>data.type===reply?finish(null,data):data.type==='error'&&finish(Error(data.message));
+  worker.postMessage(data);
  });
+}
+
+export async function signSoftwareSsh({ml,ed,publicKey,message,signal}){
+ return (await oneShot({type:'software-sign',ml,ed,publicKey,message},'signature',30000,signal)).signature;
+}
+
+export function openEd25519File(file,passphrase,signal){
+ return oneShot({type:'import-ed25519',file,passphrase},'imported',90000,signal);
 }

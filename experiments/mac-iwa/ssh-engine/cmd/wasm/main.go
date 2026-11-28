@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"errors"
 	engine "github.com/ve7jtb/gws-sequoia-chat/sshengine"
+	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
 	"syscall/js"
@@ -90,6 +91,17 @@ func (output) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func main() {
+	js.Global().Set("sshImportEd25519", js.FuncOf(func(_ js.Value, a []js.Value) any {
+		file, passphrase := octets(a[0]), octets(a[1])
+		defer clear(file)
+		defer clear(passphrase)
+		seed, public, err := engine.ImportEd25519(file, passphrase)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		defer clear(seed)
+		return map[string]any{"seed": array(seed), "publicKey": array(public)}
+	}))
 	// Software signing stays in this disposable worker; callers receive only
 	// the signature, never expanded ML-DSA or Ed25519 private keys.
 	js.Global().Set("sshSignSeeds", js.FuncOf(func(_ js.Value, a []js.Value) any {
@@ -127,11 +139,21 @@ func main() {
 			}}
 			address, user := options.Get("address").String(), options.Get("username").String()
 			if options.Get("authorizeKey").Truthy() {
-				if e := engine.AuthorizePublicKey(context.Background(), &connection{}, address, user, pub, hostCheck, requestPassword); e != nil {
+				keys := []ssh.PublicKey{pub}
+				if additional := options.Get("additionalPublicKey"); !additional.IsUndefined() && !additional.IsNull() {
+					key, err := engine.ParsePublic(octets(additional))
+					if err != nil {
+						js.Global().Call("sshFailure", err.Error())
+						return
+					}
+					keys = append(keys, key)
+				}
+				algorithms, e := engine.AuthorizePublicKeys(context.Background(), &connection{}, address, user, keys, hostCheck, requestPassword)
+				if e != nil {
 					js.Global().Call("sshFailure", e.Error())
 					return
 				}
-				js.Global().Call("sshAuthorized")
+				js.Global().Call("sshAuthorized", stringsToJS(algorithms))
 				return
 			}
 			terminal, e = engine.Connect(context.Background(), &connection{}, address, user, signer, hostCheck, output{}, 24, 80)
@@ -139,7 +161,12 @@ func main() {
 				js.Global().Call("sshFailure", e.Error())
 				return
 			}
-			js.Global().Call("sshReady")
+			negotiated, ok := terminal.Client.Conn.(ssh.AlgorithmsConnMetadata)
+			if ok {
+				js.Global().Call("sshReady", negotiated.Algorithms().KeyExchange)
+			} else {
+				js.Global().Call("sshReady")
+			}
 		}()
 		return nil
 	}))
@@ -183,8 +210,16 @@ func main() {
 
 // The SSH library needs a password string for its encrypted auth packet.
 // Clear both byte buffers after conversion and keep the string in this worker.
-func requestPassword() (string, error) {
-	v, err := await(js.Global().Call("sshPassword"))
+func stringsToJS(values []string) []any {
+	result := make([]any, len(values))
+	for i, value := range values {
+		result[i] = value
+	}
+	return result
+}
+
+func requestPassword(algorithms []string) (string, error) {
+	v, err := await(js.Global().Call("sshPassword", stringsToJS(algorithms)))
 	if err != nil {
 		return "", err
 	}
