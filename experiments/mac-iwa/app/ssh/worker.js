@@ -1,6 +1,8 @@
 // One worker per SSH connection or one-shot software signature. Destroying it
 // on vault lock removes protocol/session/private-key state from the JS realm.
-importScripts('./wasm_exec.js');
+// A static module import loads the bundled Go runtime without a dynamic
+// importScripts URL assignment under the IWA's Trusted Types policy.
+import './wasm_exec.js';
 let socket,reader,writer,started=false,sequence=0,timer;
 const pending=new Map();
 const fail=message=>{postMessage({type:'error',message});shutdown();};
@@ -14,13 +16,13 @@ globalThis.sshSign=data=>rpc('sign',{data});
 globalThis.sshVerifyHost=(algorithm,data)=>rpc('host',{algorithm,data});
 globalThis.sshFailure=fail;
 globalThis.sshReady=()=>{clearTimeout(timer);postMessage({type:'ready'});};
-onmessage=async({data})=>{
+globalThis.onmessage=async({data})=>{
  try{
   if(data.type==='reply'){const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(Error('SSH authorization rejected')):p.resolve(data.result);return;}
   if(data.type==='input'){if(started)globalThis.sshInput(data.data);return;}
   if(data.type==='resize'){if(started)globalThis.sshResize(data.rows,data.cols);return;}
   if(started)throw Error('SSH worker already used');started=true;
-  const go=new Go(),wasm=await WebAssembly.instantiateStreaming(fetch('./engine.wasm'),go.importObject);
+  const go=new globalThis.Go(),wasm=await WebAssembly.instantiateStreaming(fetch('./engine.wasm'),go.importObject);
   go.run(wasm.instance).catch(()=>fail('SSH engine stopped.'));
   if(data.type==='software-sign'){
    try{const signature=globalThis.sshSignSeeds(data.ml,data.ed,data.publicKey,data.message);if(!signature)throw Error('SSH software signature failed');postMessage({type:'signature',signature});}

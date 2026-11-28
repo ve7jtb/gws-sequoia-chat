@@ -20,4 +20,17 @@ test('identification handles fragmented lines and closes without authentication'
 test('locked vault and invalid endpoints open no socket',async()=>{const f=socket([]);await assert.rejects(probe({host:'localhost',port:22,Socket:f.Socket,guard:()=>{throw Error('locked');}}),/locked/);assert.equal(f.calls.opened,0);for(const host of ['','a/b','user@host','host\n'])assert.throws(()=>endpoint(host,22));for(const port of [0,65536,1.2])assert.throws(()=>endpoint('localhost',port));});
 test('lock cancellation closes a pending connection and rejects late data',async()=>{const f=socket([],{pending:true}),abort=new AbortController();const pending=probe({host:'localhost',port:22,Socket:f.Socket,guard:()=>{},signal:abort.signal});await new Promise(r=>setImmediate(r));abort.abort();await assert.rejects(pending,/cancelled/);assert(f.calls.closed>0);});
 test('unsupported protocol, excessive line and control characters fail closed',async()=>{for(const text of ['SSH-1.5-old\r\n','x'.repeat(254),'SSH-2.0-evil\x1b\n']){const f=socket([text]);await assert.rejects(probe({host:'localhost',port:22,Socket:f.Socket,guard:()=>{}}));assert(f.calls.closed>0);}});
-test('timeout closes stalled streams without a signature callback',async()=>{const f=socket([],{pending:true});await assert.rejects(probe({host:'localhost',port:22,Socket:f.Socket,guard:()=>{},timeoutMs:5}),/cancelled/);assert(f.calls.closed>0);});
+test('TCP connection timeout is reported even when socket close is pending',async()=>{
+ let closing=false;
+ class Socket{
+  opened=new Promise(()=>{});
+  close(){closing=true;return new Promise(()=>{});}
+ }
+ await assert.rejects(probe({host:'localhost',port:22,Socket,guard:()=>{},timeoutMs:5}),/Timed out waiting for a TCP connection/);
+ assert(closing);
+});
+test('server identification timeout closes the stalled stream',async()=>{
+ const f=socket([],{pending:true});
+ await assert.rejects(probe({host:'localhost',port:22,Socket:f.Socket,guard:()=>{},timeoutMs:5}),/Timed out waiting for the server’s SSH identification/);
+ assert(f.calls.closed>0);
+});

@@ -1,12 +1,25 @@
 import {endpoint} from './transport.js';
 import {verifyHost} from './host-verifier.js';
 const b64=b=>btoa(String.fromCharCode(...b));
+const sshWorkerPath='/ssh/worker.js';
+const sshWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-ssh-worker',{
+ createScriptURL(url){
+  if(url!==sshWorkerPath)throw Error('Unexpected SSH worker URL.');
+  return url;
+ },
+});
+// Both SSH paths run the same fixed, bundled module worker. Chromium's IWA
+// policy requires a TrustedScriptURL even for same-origin Worker URLs.
+function createSshWorker(WorkerClass=Worker){
+ const url=sshWorkerPolicy?sshWorkerPolicy.createScriptURL(sshWorkerPath):sshWorkerPath;
+ return new WorkerClass(url,{type:'module'});
+}
 // The UI receives no private key. The injected signer checks its vault revision
 // on both sides of signing; trust must pass before any sign callback is accepted.
 export function connectSsh({host,port,username,publicKey,entries,getEntries,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
  const target=endpoint(host,port);guard();
  if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
- const worker=new WorkerClass(new URL('./worker.js',import.meta.url));let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,hostKey=null;
+ const worker=createSshWorker(WorkerClass);let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,hostKey=null;
  const close=()=>{if(closed)return;closed=true;worker.terminate();signal?.removeEventListener('abort',close);};
  signal?.addEventListener('abort',close,{once:true});if(signal?.aborted){close();throw Error('SSH cancelled.');}
  worker.onerror=()=>{onStatus('SSH engine failed.');close();};
@@ -33,7 +46,7 @@ export function connectSsh({host,port,username,publicKey,entries,getEntries,sign
 // No raw key is returned to UI code or persisted outside the encrypted vault.
 export function signSoftwareSsh({ml,ed,publicKey,message,signal}){
  return new Promise((resolve,reject)=>{
-  const worker=new Worker(new URL('./worker.js',import.meta.url));let settled=false;
+  const worker=createSshWorker();let settled=false;
   const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);worker.terminate();error?reject(error):resolve(result);};
   const abort=()=>finish(Error('SSH signing cancelled.'));
   const timer=setTimeout(()=>finish(Error('SSH signing timed out.')),30000);

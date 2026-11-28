@@ -11,14 +11,16 @@ export async function probe({host,port,signal,guard,Socket=globalThis.TCPSocket,
  if(typeof Socket!=='function')throw Error('Direct Sockets is unavailable in this browser.');
  if(signal?.aborted)throw Error('SSH operation cancelled.');
  let socket,reader,writer,timer,abort;
+ let waitingFor='a TCP connection';
  const cancelled=new Promise((_,reject)=>{
-  abort=()=>{reject(Error('SSH operation cancelled.'));try{socket?.close()?.catch(()=>{});}catch{}};
+  abort=()=>reject(Error('SSH operation cancelled.'));
   signal?.addEventListener('abort',abort,{once:true});
-  timer=setTimeout(abort,timeoutMs);
+  timer=setTimeout(()=>reject(Error('Timed out waiting for '+waitingFor+'.')),timeoutMs);
  });
  try{
   socket=new Socket(target.host,target.port);socket.closed?.catch(()=>{});
   const opened=await Promise.race([socket.opened,cancelled]);guard();
+  waitingFor='the server’s SSH identification';
   reader=opened.readable.getReader();writer=opened.writable.getWriter();
   await Promise.race([writer.write(new TextEncoder().encode('SSH-2.0-SequoiaIWA_probe\r\n')),cancelled]);
   let line='',total=0;
@@ -40,6 +42,8 @@ export async function probe({host,port,signal,guard,Socket=globalThis.TCPSocket,
   clearTimeout(timer);signal?.removeEventListener('abort',abort);
   // Release stream locks before closing so no session survives vault lock.
   if(reader){reader.cancel().catch(()=>{});reader.releaseLock();}
-  writer?.releaseLock();try{await socket?.close();}catch{}
+  writer?.releaseLock();
+  // Report the result even if Chromium has not finished closing the socket.
+  try{socket?.close()?.catch(()=>{});}catch{}
  }
 }

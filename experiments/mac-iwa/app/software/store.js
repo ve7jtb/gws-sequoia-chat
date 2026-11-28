@@ -64,6 +64,11 @@ async function matchesSaved(info,item){
 }
 export function softwareIdentityBinding(snapshot){return {provider:'software',vaultId:snapshot.vaultId,identityId:snapshot.identityId,fingerprint:snapshot.fingerprint,certificateHash:snapshot.certificateHash,email:snapshot.email};}
 
+function cardCopies(item){return item?.hardwareCopies||(item?.hardware?[item.hardware]:[]);}
+const sshSlots=['8c','8d'];
+// A verified mail-only copy does not have the dedicated SSH credentials.
+function hasSshBinding(copy){return copy.verified&&sshSlots.every(slot=>copy.slots.some(key=>key.slot===slot));}
+
 /** access.snapshot() is closure-private and may contain vault item secrets.
  * Public callers see only the explicit snapshots constructed below. Every
  * asynchronous boundary rechecks the local epoch and durable vault revision.
@@ -76,7 +81,10 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  const marker=s=>({vaultId:s.vaultId,revision:s.revision,epoch:s.epoch});
  async function check(s){const now=current();if(!same(marker(now),marker(s)))throw Error('Software identity vault changed; start again.');await access.assertCurrent(marker(s));if(!same(marker(current()),marker(s)))throw Error('Software identity vault changed; start again.');}
  function recordsIn(s){const records=s.items.filter(x=>x?.kind===KIND);if(records.length>16||new Set(records.map(x=>x.id)).size!==records.length)throw Error('Invalid software identity inventory.');return records.map(itemShape);}
- function snapshot(s,item,info,email){return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,hasSsh:!!item.sshKeys,hasSmime:!!item.smimeKeys,hasNist:!!item.nistKeys,cardSerials:(item.hardwareCopies|| (item.hardware?[item.hardware]:[])).map(h=>h.serial),hasSshPublic:!!item.provisioned?.ssh||!!item.sshKeys,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};}
+ function snapshot(s,item,info,email){
+  const copies=cardCopies(item);
+  return {provider:'software',id:'software:'+item.id,identityId:item.id,vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,name:item.name,...info,email,hasSsh:!!item.sshKeys,hasSmime:!!item.smimeKeys,hasNist:!!item.nistKeys,cardSerials:copies.map(copy=>copy.serial),sshCardSerials:copies.filter(hasSshBinding).map(copy=>copy.serial),hasSshPublic:!!item.provisioned?.ssh||!!item.sshKeys,...(item.hardware?{hardware:structuredClone(item.hardware)}:{})};
+ }
  async function withController(signal,fn){const c=new AbortController();active.add(c);const abort=()=>c.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)c.abort();try{if(c.signal.aborted)throw Error('Software operation cancelled.');return await fn(c.signal);}finally{signal?.removeEventListener('abort',abort);active.delete(c);}}
  async function list(account){
   account=mailbox(account);if(!access.snapshot()?.unlocked)return {choices:[],revision:0};const s=current(),choices=[];await check(s);
@@ -398,9 +406,9 @@ export function createSoftwareIdentityStore({access,inspectPublic,cryptoCall,har
  }
  async function sshHardware(selected,serial){
   const s=current();await check(s);await assert(selected);const item=recordsIn(s).find(i=>'software:'+i.id===selected.id);
-  const binding=(item?.hardwareCopies||(item?.hardware?[item.hardware]:[])).find(h=>h.serial===serial);
-  if(!binding?.verified||!['8c','8d'].every(slot=>binding.slots.some(k=>k.slot===slot)))throw Error('No verified SSH mapping for this YubiKey.');
-  await check(s);return {serial,slots:structuredClone(binding.slots.filter(k=>['8c','8d'].includes(k.slot)))};
+  const binding=cardCopies(item).find(copy=>copy.serial===serial&&hasSshBinding(copy));
+  if(!binding)throw Error('No verified SSH mapping for this YubiKey.');
+  await check(s);return {serial,slots:structuredClone(binding.slots.filter(key=>sshSlots.includes(key.slot)))};
  }
  // SSH uses only the dedicated 8c/8d pair; OpenPGP component keys cannot
  // accidentally become a classical fallback for a composite SSH identity.

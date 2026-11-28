@@ -47,6 +47,16 @@ test('PRF-mixed WASM keys persist across two card imports and encrypted vault re
  assert.equal(generation,1);
  assert.equal(vault.data.items[0].hardware.serial,'12345678');
  assert.deepEqual(vault.data.items[0].hardwareCopies.map(k=>k.serial),['12345678','87654321']);
+ const mappings=vault.data.items[0].hardwareCopies;
+ // A verified copy of the mail keys alone must not appear in the SSH picker.
+ mappings.push({...mappings[0],serial:'24681357',slots:mappings[0].slots.filter(key=>key.slot!=='8c'&&key.slot!=='8d')});
+ const [row]=await store.records();
+ assert.deepEqual(row.cardSerials,['12345678','87654321','24681357']);
+ assert.deepEqual(row.sshCardSerials,['12345678','87654321']);
+ const current=await store.get(selected.id,email);
+ assert.deepEqual((await store.sshHardware(current,'87654321')).slots.map(key=>key.slot).sort(),['8c','8d']);
+ await assert.rejects(store.sshHardware(current,'24681357'),/No verified SSH mapping/);
+ mappings.pop();
  const disk=structuredClone(vault.record),second=new Vault();
  assert(!JSON.stringify(disk).includes(savedKeys.pq.seed));
  await second.unlock(disk,wrapper.id,secret);

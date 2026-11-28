@@ -11,3 +11,35 @@ test('client rejects changed host before signing',async()=>{
  let signed=false;connectSsh({host:'host',port:22,username:'user',publicKey:b,entries:[entry],sign:async()=>{signed=true},guard(){},onOutput(){},onStatus(){},WorkerClass:FakeWorker});
  await FakeWorker.instance.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:new Uint8Array([4])});assert(FakeWorker.instance.stopped);assert(!signed);
 });
+
+test('SSH connection and signing use a fixed TrustedScriptURL and module worker',async()=>{
+ const oldPolicy=globalThis.trustedTypes,oldWorker=globalThis.Worker;
+ let createScriptURL;
+ const created=[];
+ globalThis.trustedTypes={createPolicy(name,rules){
+  assert.equal(name,'sequoia-ssh-worker');
+  createScriptURL=rules.createScriptURL;
+  return {createScriptURL:url=>({trustedUrl:createScriptURL(url)})};
+ }};
+ globalThis.Worker=class{
+  constructor(url,options){
+   assert.deepEqual(url,{trustedUrl:'/ssh/worker.js'});
+   assert.deepEqual(options,{type:'module'});
+   created.push(this);
+  }
+  postMessage(data){
+   if(data.type==='software-sign')queueMicrotask(()=>this.onmessage({data:{type:'signature',signature:b}}));
+  }
+  terminate(){}
+ };
+ try{
+  const {connectSsh,signSoftwareSsh}=await import('../app/ssh/client.js?trusted-types-test');
+  assert.throws(()=>createScriptURL('/other-worker.js'),/Unexpected SSH worker URL/);
+  connectSsh({host:'host',port:22,username:'user',publicKey:b,guard(){}}).close();
+  assert.deepEqual(await signSoftwareSsh({publicKey:b}),b);
+  assert.equal(created.length,2);
+ }finally{
+  if(oldPolicy===undefined)delete globalThis.trustedTypes;else globalThis.trustedTypes=oldPolicy;
+  if(oldWorker===undefined)delete globalThis.Worker;else globalThis.Worker=oldWorker;
+ }
+});
