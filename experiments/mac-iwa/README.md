@@ -3041,6 +3041,22 @@ Read-only post-test PC/SC snapshots matched both pre-test baselines across all
 policies, PIN retry counts, and stable FIDO settings.
 [Signed 0.20.72 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.72)
 
+#### macOS Level 3 signing and decryption on SN# 41088008 (0.20.76 Testing)
+
+The Mac IWA passed the offline Level 3 test with **YubiKey SN# 41088008**
+over Web Smart Card with **SCP11b required**. It verified the
+ML-DSA-65 + Ed25519 signature from slots 9C and 84, then decrypted the
+message using ML-KEM-768 + X25519 in slots 9D and 85. The recovered plain
+text, HTML, and binary attachment matched the original test payload. No email
+was sent.
+
+The in-app audit matched all 10 slots mapped by the signed bundle. An
+independent read-only PC/SC audit matched the baseline across all **24 PIV
+slots**, including the 10 populated public keys, PIN and touch policies,
+and PIN retry counts. The stable FIDO settings covered by the audit also
+matched.
+[Signed 0.20.76 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.76)
+
 #### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
 
 The Chromebook restored the complete encrypted Google Drive backup over Web
