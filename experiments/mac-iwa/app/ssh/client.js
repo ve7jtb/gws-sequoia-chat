@@ -1,5 +1,5 @@
 import {endpoint} from './transport.js';
-import {verifyHost} from './host-verifier.js';
+import {UnknownSshHostError,verifyHost} from './host-verifier.js';
 const b64=b=>btoa(String.fromCharCode(...b));
 const sshWorkerPath='/ssh/worker.js';
 const sshWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-ssh-worker',{
@@ -16,11 +16,14 @@ function createSshWorker(WorkerClass=Worker){
 }
 // The UI receives no private key. The injected signer checks its vault revision
 // on both sides of signing; trust must pass before any sign callback is accepted.
-export function connectSsh({host,port,username,publicKey,entries,getEntries,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
+export function connectSsh({host,port,username,publicKey,entries,getEntries,acceptUnknownHost,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
  const target=endpoint(host,port);guard();
  if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
- const worker=createSshWorker(WorkerClass);let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,hostKey=null;
- const close=()=>{if(closed)return;closed=true;worker.terminate();signal?.removeEventListener('abort',close);};
+ const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
+ let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,hostKey=null;
+ const close=()=>{if(closed)return;closed=true;lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
+ const check=()=>{if(closed)throw Error('SSH connection closed.');guard();};
+ const verify=async candidate=>verifyHost({entries:getEntries?await getEntries():entries,...candidate,guard:check});
  signal?.addEventListener('abort',close,{once:true});if(signal?.aborted){close();throw Error('SSH cancelled.');}
  worker.onerror=()=>{onStatus('SSH engine failed.');close();};
  worker.onmessage=async({data})=>{
@@ -28,16 +31,23 @@ export function connectSsh({host,port,username,publicKey,entries,getEntries,sign
   try{
    guard();
    if(data.type==='host'){
-    hostKey={type:data.algorithm,key:b64(data.data)};
-    await verifyHost({entries:getEntries?await getEntries():entries,host:target.host,port:target.port,...hostKey,guard});guard();hostAccepted=true;
+    if(hostKey)throw Error('Unexpected SSH host verification request.');
+    hostKey={...target,type:data.algorithm,key:b64(data.data)};
+    try{await verify(hostKey);}
+    catch(error){
+     if(!(error instanceof UnknownSshHostError)||!acceptUnknownHost)throw error;
+     check();await acceptUnknownHost(hostKey,check,lifetime.signal);
+     await verify(hostKey);
+    }
+    check();hostAccepted=true;
     if(!closed)worker.postMessage({type:'reply',id:data.id,result:true});
    }else if(data.type==='sign'){
     if(!hostAccepted||signing||ready||authUsed)throw Error('Unexpected SSH authentication request.');signing=true;authUsed=true;
-    try{await verifyHost({entries:getEntries?await getEntries():entries,host:target.host,port:target.port,...hostKey,guard});const result=await sign(data.data);guard();if(!closed)worker.postMessage({type:'reply',id:data.id,result});}finally{signing=false;}
+    try{await verify(hostKey);check();const result=await sign(data.data);check();worker.postMessage({type:'reply',id:data.id,result});}finally{signing=false;}
    }else if(data.type==='ready'){ready=true;onStatus('SSH authenticated.');}
    else if(data.type==='output'){if(hostAccepted)onOutput(data.data);}
    else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.');close();}
-  }catch(e){onStatus(e.message);close();}
+  }catch(e){if(!closed){onStatus(e.message);close();}}
  };
  worker.postMessage({type:'connect',...target,username,publicKey});
  return {close,input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},resize(rows,cols){guard();if(!closed&&ready)worker.postMessage({type:'resize',rows,cols});}};

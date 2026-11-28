@@ -75,3 +75,51 @@ test('the hardware picker lists only the selected identity’s verified SSH copi
  assert.equal(group.hidden,true);
  assert.equal(picker.value,'');
 });
+
+test('first-use confirmation keeps the handshake alive across the vault revision change',async t=>{
+ const document=fakeDocument(),window=new EventTarget(),previousWorker=globalThis.Worker;
+ t.after(()=>{if(previousWorker===undefined)delete globalThis.Worker;else globalThis.Worker=previousWorker;});
+ let worker,revision=4,approvals=0,entries=[],signatures=0,approved=false;
+ globalThis.Worker=class{
+  constructor(){worker=this;this.messages=[];}
+  postMessage(message){this.messages.push(message);}
+  terminate(){this.closed=true;}
+  emit(data){return this.onmessage({data});}
+ };
+ window.vaultIsUnlocked=()=>true;
+ window.Terminal=class{open(){} onData(){} focus(){} dispose(){}};
+ window.confirm=message=>{
+  approvals++;assert.match(message,/server\.invalid:2222\nssh-ed25519  SHA256:/);
+  assert.equal(signatures,0);return approved;
+ };
+ const identity={id:'identity',name:'SSH test',email:'ssh@example.invalid',emails:['ssh@example.invalid'],hasSsh:true,hasSshPublic:true};
+ window.softwareIdentities={
+  records:async()=>[identity],get:async()=>({...identity,revision}),
+  provisioningCertificates:async()=>({ssh:{publicKey:'ssh-mldsa44-ed25519 AQID'}}),
+  assert:async selected=>assert.equal(selected.revision,revision),
+  signSsh:async selected=>{assert.equal(selected.revision,revision);signatures++;return Uint8Array.of(7);},
+ };
+ window.sshTrust={
+  list:async()=>entries,
+  pinFirstUse:async({host,port,type,key})=>{
+   entries=[{hosts:`[${host}]:${port}`,type,key,marker:''}];
+   revision++;
+   window.dispatchEvent(new CustomEvent('iwa-software-identities-changed',{detail:'ssh-first-use'}));
+  },
+ };
+ const ui=initializeSsh({window,document});await ui.refresh();
+ document.getElementById('ssh-host').value='server.invalid';
+ document.getElementById('ssh-port').value='2222';
+ document.getElementById('ssh-username').value='user';
+ document.getElementById('ssh-trust-first-use').checked=true;
+ const connect=()=>document.getElementById('ssh-connect').onclick();
+ const hostMessage={type:'host',id:1,algorithm:'ssh-ed25519',data:Uint8Array.of(1,2,3)};
+ await connect();await worker.emit(hostMessage);
+ assert(worker.closed);assert.equal(entries.length,0);
+ approved=true;
+ await connect();await worker.emit(hostMessage);
+ assert(!worker.closed);assert.equal(entries.length,1);assert.equal(signatures,0);
+ await worker.emit({type:'sign',id:2,data:Uint8Array.of(1,2,3)});
+ assert.equal(signatures,1);assert.equal(approvals,2);
+ assert.deepEqual(worker.messages.at(-1),{type:'reply',id:2,result:Uint8Array.of(7)});
+});

@@ -1,8 +1,13 @@
 // OpenSSH known_hosts import is explicit trust configuration, never inferred
 // from an unauthenticated banner. Keep patterns, keys and comments encrypted.
+import {UnknownSshHostError,verifyHost} from './host-verifier.js';
 const KIND='SSH host trust';
 const decode=s=>{if(typeof s!=='string'||s.length>24000||!/^[A-Za-z0-9+/]+={0,2}$/.test(s))throw Error('Invalid host public key encoding.');const b=Uint8Array.from(atob(s),c=>c.charCodeAt(0));if(btoa(String.fromCharCode(...b)).replace(/=+$/,'')!==s.replace(/=+$/,''))throw Error('Noncanonical public key.');return b;};
 function algorithm(blob){if(blob.length<5)throw Error('Invalid SSH public key.');const n=new DataView(blob.buffer,blob.byteOffset,blob.byteLength).getUint32(0);if(n>100||n+4>=blob.length)throw Error('Invalid SSH key algorithm.');return new TextDecoder('utf-8',{fatal:true}).decode(blob.slice(4,4+n));}
+export async function sshHostFingerprint(key){
+ const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',decode(key)));
+ return 'SHA256:'+btoa(String.fromCharCode(...digest)).replace(/=+$/,'');
+}
 export function parseKnownHosts(text){
  if(typeof text!=='string'||new TextEncoder().encode(text).length>1048576)throw Error('Choose a known_hosts file up to 1 MiB.');
  const result=[];let line=0;
@@ -28,6 +33,28 @@ export function createSshTrustStore(access){
  return Object.freeze({
   cancel(){pending=null;},
   async list(){const s=current();await check(s);return structuredClone(s.items.filter(x=>x.kind===KIND));},
+  async pinFirstUse({host,port,type,key,guard,signal}){
+   // Only an exact endpoint can be pinned. Never turn connection input into
+   // a wildcard, negation, hashed record or list of known_hosts targets.
+   if(!/^[a-z0-9_.:%-]{1,253}$/i.test(host)||!Number.isInteger(port)||port<1||port>65535)throw Error('Enter a literal SSH hostname or IP address to save host trust.');
+   const name=host.toLowerCase(),hosts=port===22?name:'['+name+']:'+port;
+   const [entry]=parseKnownHosts([hosts,type,key].join(' '));
+   // The negotiated algorithm and encoded key are separate inputs. Pin only
+   // the exact key displayed during review.
+   if(entry.type!==type||entry.key!==key||entry.comment)throw Error('Invalid SSH host key.');
+   const s=current();guard();await check(s);
+   try{
+    await verifyHost({entries:s.items.filter(x=>x.kind===KIND),host,port,type,key,guard});
+    return;
+   }catch(error){if(!(error instanceof UnknownSshHostError))throw error;}
+   const items=structuredClone(s.items);
+   if(items.filter(x=>x.kind===KIND).length>=4096)throw Error('SSH trust inventory limit reached.');
+   items.push({id:crypto.randomUUID(),kind:KIND,name:hosts,entry});
+   guard();
+   // The vault's compare-and-swap rejects a conflicting write made during
+   // approval instead of replacing another window's host trust records.
+   await access.replaceItems(items,s,{signal,change:'ssh-first-use'});
+  },
   async review(text){const s=current(),entries=parseKnownHosts(text);await check(s);pending={id:crypto.randomUUID(),vaultId:s.vaultId,revision:s.revision,epoch:s.epoch,entries};return structuredClone(pending);},
   async import(review){
    const s=current();if(!pending||!same(pending,review))throw Error('SSH trust review changed.');pending=null;if(!same([review.vaultId,review.revision,review.epoch],[s.vaultId,s.revision,s.epoch]))throw Error('SSH trust review expired.');

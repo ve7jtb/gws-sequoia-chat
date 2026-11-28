@@ -1,5 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {parseKnownHosts,createSshTrustStore} from '../app/ssh/trust.js';
+import {parseKnownHosts,createSshTrustStore,sshHostFingerprint} from '../app/ssh/trust.js';
+import {createHash} from 'node:crypto';
+import {verifyHost} from '../app/ssh/host-verifier.js';
 import {Vault,random,b64} from '../app/vault/core.js';
 const blob=Buffer.concat([Buffer.from([0,0,0,11]),Buffer.from('ssh-ed25519'),Buffer.from([0,0,0,32]),Buffer.alloc(32,7)]).toString('base64');
 const text='example.invalid ssh-ed25519 '+blob;
@@ -13,4 +15,26 @@ test('reviewed host trust persists encrypted, restores, and rejects modified or 
  assert.equal((await store.list()).length,1);assert(!JSON.stringify(v.record).includes('example.invalid'));await assert.rejects(store.import(review));
  const second=new Vault();await second.unlock(v.record,wrapper.id,secret);assert.deepEqual(second.data.items,v.data.items);second.lock();
  const next=await store.review(text);v.lock();await assert.rejects(store.import(next),/Unlock/);store.cancel();
+});
+
+test('first use pins an exact host and port and preserves existing trust decisions',async()=>{
+ let state={unlocked:true,vaultId:'vault',epoch:1,revision:0,items:[]};
+ const store=createSshTrustStore({
+  snapshot:()=>state,assertCurrent:async snapshot=>assert.equal(snapshot,state),
+  replaceItems:async(items,expected)=>{assert.equal(expected,state);state={...state,revision:state.revision+1,items};},
+ });
+ const candidate={host:'EXAMPLE.invalid',port:2222,type:'ssh-ed25519',key:blob,guard(){}};
+ assert.equal(await sshHostFingerprint(blob),'SHA256:'+createHash('sha256').update(Buffer.from(blob,'base64')).digest('base64url').replace(/-/g,'+').replace(/_/g,'/'));
+ await assert.rejects(store.pinFirstUse({...candidate,host:'*.example.invalid'}),/literal/);
+ await store.pinFirstUse(candidate);
+ assert.equal(state.items[0].entry.hosts,'[example.invalid]:2222');
+ assert(await verifyHost({...candidate,entries:await store.list()}));
+ await store.pinFirstUse(candidate);
+ assert.equal(state.revision,1);
+ const other=Buffer.from(blob,'base64');other[other.length-1]^=1;
+ await assert.rejects(store.pinFirstUse({...candidate,key:other.toString('base64')}),/changed/);
+ const review=await store.review('@revoked unrelated.invalid ssh-ed25519 '+blob);
+ await store.import(review);
+ await assert.rejects(store.pinFirstUse({...candidate,host:'new.invalid'}),/revoked/);
+ assert.equal(state.items.length,2);
 });

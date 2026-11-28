@@ -29,7 +29,7 @@ function render(){
  window.dispatchEvent(new Event('iwa-vault-state'));
  el('vault-add-piv').textContent=record?'Add PIV unlock method':'Create vault with PIV (default)';el('vault-add-prf').textContent=record?'Add FIDO PRF unlock method':'Create software-only vault with FIDO PRF';
 }
-async function commit(options={}){try{options.guard?.();const candidate=engine.record;await persist(candidate,revision,options);options.guard?.();record=structuredClone(candidate);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();window.dispatchEvent(new Event('iwa-software-identities-changed'));}
+async function commit(options={}){try{options.guard?.();const candidate=engine.record;await persist(candidate,revision,options);options.guard?.();record=structuredClone(candidate);revision=record.revision;}catch(e){lock();record=await load();revision=record?.revision||0;throw e;}render();touch();window.dispatchEvent(new CustomEvent('iwa-software-identities-changed',{detail:options.change}));}
 function touch(){clearTimeout(timer);if(engine.unlocked)timer=setTimeout(()=>{lock();tell('Vault locked after inactivity.');},300000);}
 // The service below is the sole software-identity path into the unlocked
 // vault. UI code receives public snapshots and operations, never the raw vault
@@ -53,12 +53,12 @@ const identityVaultAccess={
     throw error;
    }
   },
-  async replaceItems(items,expected,{signal}={}){
+  async replaceItems(items,expected,{signal,change}={}){
    if(active)throw Error('Finish the current vault operation first.');active=true;
    const guard=()=>{if(!sameVault(expected)||signal?.aborted)throw Error('Software identity write cancelled.');};
    try{
     guard();const latest=await load();guard();if(!latest||latest.id!==expected.vaultId||latest.revision!==expected.revision)throw Error('Vault changed in another window.');
-    engine.data={...engine.data,items};await engine.save();guard();await commit({guard,signal});
+    engine.data={...engine.data,items};await engine.save();guard();await commit({guard,signal,change});
    }catch(e){if(engine.unlocked)lock();throw e;}finally{active=false;}
   }
  };

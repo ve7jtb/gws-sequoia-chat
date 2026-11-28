@@ -15,6 +15,9 @@ function pattern(pattern,name){
  while(pattern[p]==='*')p++;return p===pattern.length;
 }
 const sameKey=(a,b)=>a.replace(/=+$/,'')===b.replace(/=+$/,'');
+export class UnknownSshHostError extends Error{
+ constructor(){super('Unknown SSH host. Import a known_hosts entry or enable trust on first use.');}
+}
 export async function matchesHost(hosts,host,port=22){
  const name=Number(port)===22?host:'['+host+']:'+port;
  if(hosts.startsWith('|1|')){
@@ -41,9 +44,16 @@ export async function verifyHost({entries,host,port=22,type,key,guard=()=>{}}){
   // another import. Never let row ordering undo a revoked-key decision.
   if(entry.marker==='@revoked'&&entry.type===type&&sameKey(entry.key,key))throw Error('SSH host key is revoked.');
   const applies=await matchesHost(entry.hosts,host,port);guard();
-  if(!applies||entry.marker)continue;
-  matching=true;if(entry.type===type&&sameKey(entry.key,key))trusted=true;
+  if(!applies)continue;
+  // A matching CA or revocation record is already a trust decision for this
+  // endpoint. First-use enrollment must never bypass it.
+  matching=true;
+  if(!entry.marker&&entry.type===type&&sameKey(entry.key,key))trusted=true;
  }
- guard();if(!trusted)throw Error(matching?'SSH host key changed or algorithm is not trusted.':'Unknown SSH host. Import and review its known_hosts entry first.');
+ guard();
+ if(!trusted){
+  if(matching)throw Error('SSH host key changed or algorithm is not trusted.');
+  throw new UnknownSshHostError();
+ }
  return true;
 }

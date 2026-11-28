@@ -20,5 +20,6 @@ test('SSH trust rejects unknown, changed, revoked, certificates and lock races',
  await assert.rejects(verifyHost({...args,key:'different'}),/changed/);
  await assert.rejects(verifyHost({...args,entries:[entry,{...entry,marker:'@revoked',hosts:'elsewhere'}]}),/revoked/);
  await assert.rejects(verifyHost({...args,type:'ssh-ed25519-cert-v01@openssh.com'}),/not supported/);
+ await assert.rejects(verifyHost({...args,entries:[{...entry,key:'ca',marker:'@cert-authority'}]}),/not trusted/);
  let calls=0;await assert.rejects(verifyHost({...args,guard(){if(++calls>1)throw Error('locked');}}),/locked/);
 });

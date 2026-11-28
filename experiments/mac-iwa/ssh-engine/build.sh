@@ -6,6 +6,7 @@ GO=${GO_BIN:-go}
 "$GO" version
 "$GO" mod verify
 "$GO" test ./...
+"$GO" run ./cmd/probe-offer > ../app/ssh/probe-offer.js
 GOOS=js GOARCH=wasm "$GO" build -trimpath -o ../app/ssh/engine.wasm ./cmd/wasm
 cp "$("$GO" env GOROOT)/lib/wasm/wasm_exec.js" ../app/ssh/wasm_exec.js
 cp "$("$GO" env GOROOT)/LICENSE" ../app/ssh/GO-LICENSE.txt

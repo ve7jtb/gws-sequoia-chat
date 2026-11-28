@@ -31,15 +31,19 @@ Authentication choices:
   RSA, signing-only exports, arbitrary multi-subkey layouts, and standalone
   v6 classical profiles are not yet supported for SSH.
 
-Review and import an OpenSSH `known_hosts` file (up to 1 MiB) before connecting.
+Review and import an OpenSSH `known_hosts` file (up to 1 MiB), or enable **Ask to
+trust unknown SSH hosts on first use** and confirm the server’s fingerprint.
+First-use approval pins that exact host and port before any user authentication.
 The review shows host patterns, algorithms and SHA-256 fingerprints. Trust stays
 inside the encrypted vault and travels in complete encrypted backups. Hashed
 hostnames, wildcard exclusions, nondefault ports and revocations are enforced
-before any authentication signature. Unknown/changed/revoked hosts are refused.
+before any authentication signature. Changed and revoked keys are always refused.
 `@cert-authority` records are preserved, but host-certificate authentication is
 currently refused rather than applying incomplete CA/principal checks. Import
-reviews are single-use and bound to the vault revision. No server is trusted
-from its banner; the separate transport probe remains unauthenticated.
+reviews are single-use and bound to the vault revision. The separate transport
+check reads the server’s advertised algorithms, shows the expected encryption
+and key exchange, and warns when the key exchange would be classical. Host
+verification happens when connecting.
 
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,

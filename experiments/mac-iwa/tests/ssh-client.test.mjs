@@ -8,8 +8,28 @@ test('client refuses signer before trust; vault lock destroys session',async()=>
  const session=connectSsh(opts),worker=FakeWorker.instance;await worker.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:b});await worker.emit({type:'sign',id:2,data:b});assert.equal(signatures,1);controller.abort();assert(worker.stopped);session.close();
 });
 test('client rejects changed host before signing',async()=>{
- let signed=false;connectSsh({host:'host',port:22,username:'user',publicKey:b,entries:[entry],sign:async()=>{signed=true},guard(){},onOutput(){},onStatus(){},WorkerClass:FakeWorker});
+ let signed=false;connectSsh({host:'host',port:22,username:'user',publicKey:b,entries:[entry],acceptUnknownHost:()=>assert.fail('Must not offer to trust a changed key'),sign:async()=>{signed=true},guard(){},onOutput(){},onStatus(){},WorkerClass:FakeWorker});
  await FakeWorker.instance.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:new Uint8Array([4])});assert(FakeWorker.instance.stopped);assert(!signed);
+});
+
+test('first-use review must save the same host key before any authentication',async()=>{
+ let entries=[],signatures=0,reviewed=0,save=false;
+ const attempt=()=>connectSsh({host:'host',port:22,username:'user',publicKey:b,getEntries:()=>entries,
+  acceptUnknownHost:async(candidate,check)=>{
+   check();reviewed++;
+   assert.deepEqual(candidate,{host:'host',port:22,type:entry.type,key:entry.key});
+   assert.equal(signatures,0);
+   if(save)entries=[entry];
+  },
+  sign:async()=>{signatures++;return b;},guard(){},onOutput(){},onStatus(){},WorkerClass:FakeWorker});
+ const host={type:'host',id:1,algorithm:entry.type,data:b};
+ attempt();await FakeWorker.instance.emit(host);assert(FakeWorker.instance.stopped);assert.equal(reviewed,1);
+ save=true;
+ const session=attempt();await FakeWorker.instance.emit(host);
+ await FakeWorker.instance.emit({type:'sign',id:2,data:b});
+ assert.equal(signatures,1);assert.equal(reviewed,2);session.close();
+ const reconnect=attempt();await FakeWorker.instance.emit(host);
+ assert.equal(reviewed,2);reconnect.close();
 });
 
 test('SSH connection and signing use a fixed TrustedScriptURL and module worker',async()=>{
