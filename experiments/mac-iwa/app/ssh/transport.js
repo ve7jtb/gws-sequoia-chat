@@ -7,6 +7,11 @@ export function endpoint(host,port){
  if(!host||host.length>253||/[\s/\\@?#\x00-\x1f]/.test(host)||!Number.isInteger(port)||port<1||port>65535)throw Error('Enter a hostname or IP address and a port from 1 to 65535.');
  return {host,port};
 }
+export function sshUsername(value){
+ if(typeof value!=='string'||!value||value.length>256||/[\x00-\x20\x7f]/.test(value))throw Error('Enter a valid SSH username.');
+ return value;
+}
+
 export async function probe({host,port,signal,guard,Socket=globalThis.TCPSocket,timeoutMs=10000}){
  const target=endpoint(host,port);guard();
  if(typeof Socket!=='function')throw Error('Direct Sockets is unavailable in this browser.');

@@ -47,10 +47,16 @@ password. With a composite identity selected, you can also select an imported
 Ed25519 key to authorize. The app warns before Ed25519-only authorization and
 skips keys the server does not advertise. The one-time password opens a fixed
 command that adds the approved public keys to the default `~/.ssh/authorized_keys` file.
-Existing key restrictions are preserved. Use **Connect SSH terminal** for
-subsequent key-based login. The server must allow SSH password authentication
+Existing key restrictions are preserved. Use **Connect SSH in new window**
+for subsequent key-based login. Locking the vault disconnects the session,
+clears the scrollback, and closes the terminal window. The server must allow SSH password authentication
 and command execution for setup. It must accept the selected login key for the
 terminal connection.
+
+Use **Save host** to keep a reusable address, port, username, SSH identity,
+and optional YubiKey selection in the encrypted vault. Choose it from
+**Saved SSH hosts** to fill the connection form. The address book stores identity references. SSH passwords are ephemeral,
+and server trust is managed in **Server host-key trust**.
 
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,

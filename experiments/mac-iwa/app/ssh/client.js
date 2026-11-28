@@ -1,4 +1,4 @@
-import {endpoint} from './transport.js';
+import {endpoint,sshUsername} from './transport.js';
 import {UnknownSshHostError,verifyHost} from './host-verifier.js';
 import {usesHybridSshKex} from './kex-probe.js';
 const b64=b=>btoa(String.fromCharCode(...b));
@@ -19,7 +19,7 @@ function createSshWorker(WorkerClass=Worker){
 // on both sides of signing; trust must pass before any sign callback is accepted.
 export function connectSsh({host,port,username,publicKey,additionalPublicKey,entries,getEntries,acceptUnknownHost,requestPassword,authorizeKey=false,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
  const target=endpoint(host,port);guard();
- if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
+ sshUsername(username);
  if(authorizeKey&&typeof requestPassword!=='function')throw Error('Password prompt is unavailable.');
  const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
  let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,reviewedAlgorithms,hostKey=null,resizeTimer;

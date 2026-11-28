@@ -3,7 +3,7 @@ import {initializeSsh} from '../app/ssh/ui.js';
 import {once} from 'node:events';
 function fakeDocument(){
  const nodes=new Map();
- return {getElementById(id){if(!nodes.has(id))nodes.set(id,Object.assign(new EventTarget(),{hidden:false,value:'',textContent:'',children:[],replaceChildren(){this.children=[];},append(x){this.children.push(x);}}));return nodes.get(id);},createElement(){return {};}};
+ return {getElementById(id){if(!nodes.has(id))nodes.set(id,Object.assign(new EventTarget(),{hidden:false,value:'',textContent:'',children:[],replaceChildren(...children){this.children=children;},append(x){this.children.push(x);}}));return nodes.get(id);},createElement(){return {};}};
 }
 // Exercise unlock/lock races without any browser, network or card access.
 test('SSH only offers dedicated SSH identities and clears public state on lock',async()=>{
@@ -88,7 +88,16 @@ test('first-use confirmation keeps the handshake alive across the vault revision
   emit(data){return this.onmessage({data});}
  };
  window.vaultIsUnlocked=()=>true;
- window.Terminal=class{open(){} onData(){} focus(){} dispose(){}};
+ window.location={origin:'isolated-app://ssh-test'};
+ Object.assign(window,{MessageChannel,setTimeout,clearTimeout,setInterval,clearInterval});
+ window.focus=()=>{};
+ let childPort;
+ window.open=()=>{
+  const popup={closed:false,close(){this.closed=true;childPort?.close();},postMessage(_data,_origin,ports){childPort=ports[0];childPort.postMessage({type:'initialized'});}};
+  queueMicrotask(()=>window.dispatchEvent(Object.assign(new Event('message'),{origin:window.location.origin,source:popup,data:{type:'ssh-terminal-ready'}})));
+  return popup;
+ };
+ t.after(()=>window.dispatchEvent(new Event('iwa-vault-locked')));
  window.confirm=message=>{
   approvals++;assert.match(message,/server\.invalid:2222\nssh-ed25519  SHA256:/);
   assert.equal(signatures,0);return approved;
@@ -142,7 +151,7 @@ test('SSH key authorization reports validation, success and failure beside its b
   provisioningCertificates:async()=>({ssh:{publicKey:'ssh-mldsa44-ed25519 AQID'}}),
  };
  window.sshTrust={list:async()=>[{hosts:'server.invalid',type:'ssh-ed25519',key:'AQID'}]};
- window.Terminal=class{constructor(){assert.fail('Authorization does not open a terminal');}};
+ window.open=()=>assert.fail('Authorization does not open a terminal');
  const dialog=document.getElementById('ssh-password-dialog'),input=document.getElementById('ssh-password-input');
  const form=document.getElementById('ssh-password-form'),button=document.getElementById('ssh-authorize');
  const status=document.getElementById('ssh-authorize-status');
@@ -202,11 +211,11 @@ test('locking the vault closes the detached SSH worker and clears its terminal v
  document.getElementById('ssh-host').value='server.invalid';
  document.getElementById('ssh-port').value='22';
  document.getElementById('ssh-username').value='fixture';
- const connection=document.getElementById('ssh-connect-window').onclick();
+ const connection=document.getElementById('ssh-connect').onclick();
  window.dispatchEvent(Object.assign(new Event('message'),{origin:window.location.origin,source:popup,data:{type:'ssh-terminal-ready'}}));
  const connected=Promise.withResolvers();
  port.on('message',event=>{if(event.kind==='ready')connected.resolve(event);});
- t.after(()=>{window.dispatchEvent(new Event('iwa-vault-locked'));port.close();});
+ t.after(()=>{window.dispatchEvent(new Event('iwa-vault-locked'));port?.close();});
  await connection;
  await worker.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:Uint8Array.of(1,2,3)});
  await worker.emit({type:'sign',id:2,data:Uint8Array.of(4,5,6)});
@@ -217,4 +226,44 @@ test('locking the vault closes the detached SSH worker and clears its terminal v
  assert.deepEqual((await cleared)[0],{type:'clear'});
  assert.equal(worker.closed,true);
  assert.equal(popup.closed,true);
+});
+
+test('saved SSH hosts restore connection fields and never substitute a missing credential',async()=>{
+ const document=fakeDocument(),window=new EventTarget(),$=id=>document.getElementById('ssh-'+id);
+ let unlocked=true,rows=[{id:'hybrid',name:'Hybrid',hasSshPublic:true,sshCardSerials:['12345678','87654321']}];
+ window.vaultIsUnlocked=()=>unlocked;
+ window.softwareIdentities={records:async()=>rows};
+ let hosts=[{id:'saved',name:'Lab',host:'lab.invalid',port:2222,username:'operator',identityId:'hybrid',serial:'87654321'}];
+ window.sshAddressBook={
+  list:async()=>hosts,
+  save:async data=>{hosts=[{...data,port:Number(data.port)}];return data.id;},
+  remove:async id=>{hosts=hosts.filter(row=>row.id!==id);},
+ };
+ const ui=initializeSsh({window,document});
+ await ui.refresh();
+ assert.deepEqual($('saved-hosts').children.map(option=>option.value),['','saved']);
+ $('saved-hosts').value='saved';$('saved-hosts').onchange();
+ assert.equal($('host').value,'lab.invalid');
+ assert.equal($('port').value,'2222');
+ assert.equal($('username').value,'operator');
+ assert.equal($('identities').value,'hybrid');
+ assert.equal($('use-card').checked,true);
+ assert.equal($('card-serial').value,'87654321');
+ assert.equal($('save-host').textContent,'Update saved host');
+ $('host-name').value='Renamed lab';
+ await $('save-host').onclick();
+ assert.equal(hosts[0].name,'Renamed lab');
+ rows=[{...rows[0],sshCardSerials:['12345678']}];
+ await ui.refresh();
+ assert.equal($('card-serial').value,'');
+ $('saved-hosts').onchange();
+ assert.equal($('identities').value,'');
+ assert.match($('saved-host-status').textContent,/saved YubiKey is unavailable/);
+ await $('remove-host').onclick();
+ assert.deepEqual(hosts,[]);
+ unlocked=false;window.dispatchEvent(new Event('iwa-vault-locked'));
+ assert.equal($('host-name').value,'');
+ assert.equal($('host').value,'');
+ assert.equal($('username').value,'');
+ assert.deepEqual($('saved-hosts').children.map(option=>option.value),['']);
 });
