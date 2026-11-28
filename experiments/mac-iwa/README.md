@@ -3000,6 +3000,20 @@ PIV slots, including all 12 populated public keys, PIN and touch policies,
 and PIN retry counts. Stable FIDO settings reported by the key also matched.
 [Signed 0.20.68 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.68)
 
+#### macOS Level 3 vault unlock timing (0.20.70 Testing)
+
+On November 28, 2026, Sequoia Chat Lab on macOS measured **3.712 seconds**
+from **Unlock vault** to the PIV PIN prompt on **YubiKey SN# 41088108**,
+compared with about **9.1 seconds** in the earlier 0.20.68 run on the same
+Mac and key. Both runs required SCP11b over Web Smart Card. The 0.20.70
+measurement used the in-app timer and ended when the PIN dialog opened,
+before PIN entry or touch. The vault opened after **one PIV PIN prompt**.
+
+Read-only PC/SC snapshots before and after the unlock matched across all 24
+PIV slots, including the 12 populated public keys, PIN and touch policies,
+PIN retry counts, and stable FIDO settings reported by the key.
+[Signed 0.20.70 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.70)
+
 #### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
 
 The Chromebook restored the complete encrypted Google Drive backup over Web
