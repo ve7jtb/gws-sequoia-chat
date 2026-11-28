@@ -55,8 +55,9 @@ terminal connection.
 
 Use **Save host** to keep a reusable address, port, username, SSH identity,
 and optional YubiKey selection in the encrypted vault. Choose it from
-**Saved SSH hosts** to fill the connection form. The address book stores identity references. SSH passwords are ephemeral,
-and server trust is managed in **Server host-key trust**.
+**Saved SSH hosts** to fill the connection form. The address book stores identity
+references. SSH passwords are ephemeral, and server trust is managed in
+**Server host-key trust**.
 
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
@@ -65,14 +66,25 @@ The compiled WASM engine independently completed an Ed25519 SSH login and PTY
 round trip against that local server. OpenPGP-to-SSH Ed25519 signatures were
 verified with Node's independent cryptographic API; wrong passphrases and
 attempted hybrid-component extraction were rejected. Simulated card tests
-check the 8c/8d mapping and composite transcript. No physical YubiKey operation
-was performed: live composite server interoperability and physical PIN/touch
-SSH authentication remain to be tested. Live browser/hardware validation is in progress; the Testing preview does not change the default channel.
+check the 8c/8d mapping and composite transcript. These automated checks do not
+exercise physical YubiKey PIN or touch for SSH authentication.
 
 Build the additional engine with Go 1.27.4 or later in its supported line:
 `GO_BIN=/path/to/go experiments/mac-iwa/ssh-engine/build.sh`, then run the normal
 WASM and IWA builds. The Go modules are pinned by `go.mod`/`go.sum`; xterm.js
 6.0.0 is pinned by the npm lockfile. See [SSH engine testing](ssh-engine/README.md).
+
+### macOS saved-host reconnect (0.20.63 Testing)
+
+On 2026-11-28, Chromium installed the signed Testing update on macOS. The IWA
+saved a connection entry for an OpenSSH test host in the encrypted vault.
+The entry referenced an existing software SSH identity. Reconnecting from
+**Saved SSH hosts** opened a detached terminal that confirmed **ML-DSA-44 + Ed25519** hybrid user authentication and
+**ML-KEM-768 + X25519** key exchange (`mlkem768x25519-sha256`). The main SSH
+tab has the connection controls, and the terminal opens in its own resizable
+window.
+
+[Signed 0.20.63 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.63)
 
 ## Backup-first Level 3 hardware validation (0.20.53)
 
