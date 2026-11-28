@@ -3000,6 +3000,18 @@ PIV slots, including all 12 populated public keys, PIN and touch policies,
 and PIN retry counts. Stable FIDO settings reported by the key also matched.
 [Signed 0.20.68 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.68)
 
+#### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
+
+The Chromebook restored the complete encrypted Google Drive backup over Web
+Smart Card using the enrolled **ML-KEM-768 + X25519 hybrid PIV** credential on
+**YubiKey SN# 41088108**. The tester confirmed **one PIV PIN prompt** and that
+the vault stayed unlocked when continuing into the app.
+
+After the Chromebook test, two read-only PC/SC snapshots on the Mac matched
+the saved baseline across all 24 PIV slots, including the 12 populated public
+keys, PIN and touch policies, and PIN retry counts. The stable FIDO settings
+reported by the key also matched.
+
 The live Chromium IWA Lab check found and fixed a Trusted Types bootstrap error;
 script loading now accepts only a fixed list of signed-bundle assets. Startup
 and navigation were verified in installed 0.20.17. Version 0.20.18 additionally
