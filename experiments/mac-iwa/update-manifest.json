@@ -1,6 +1,13 @@
 {
   "versions": [
     {
+      "version": "0.20.69",
+      "channels": [
+        "testing"
+      ],
+      "src": "https://github.com/ve7jtb/gws-sequoia-chat/releases/download/iwa-v0.20.69/sequoia-lab.swbn"
+    },
+    {
       "version": "0.20.68",
       "channels": [
         "testing"
