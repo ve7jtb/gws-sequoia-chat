@@ -3014,6 +3014,20 @@ PIV slots, including the 12 populated public keys, PIN and touch policies,
 PIN retry counts, and stable FIDO settings reported by the key.
 [Signed 0.20.70 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.70)
 
+#### macOS alternate YubiKey vault unlock (0.20.71 Testing)
+
+With the default YubiKey **SN# 41088108** unplugged, Sequoia Chat Lab on macOS
+discovered the enrolled **SN# 41088353** over Web Smart Card with SCP11b
+required. The app named the missing and attached serials, then waited for
+confirmation. The alternate unlocked the vault, and the next locked login
+screen still selected SN# 41088108 as the default.
+
+Read-only PC/SC snapshots matched the baseline on both keys across all 24 PIV
+slots per key. The 12 populated public keys on SN# 41088108 and the nine on
+SN# 41088353 matched, as did their PIN and touch policies, PIN retry counts,
+and stable FIDO settings. SN# 41088108 was reconnected for its post-test audit.
+[Signed 0.20.71 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.71)
+
 #### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
 
 The Chromebook restored the complete encrypted Google Drive backup over Web
