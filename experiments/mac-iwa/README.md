@@ -3028,6 +3028,19 @@ SN# 41088353 matched, as did their PIN and touch policies, PIN retry counts,
 and stable FIDO settings. SN# 41088108 was reconnected for its post-test audit.
 [Signed 0.20.71 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.71)
 
+#### macOS vault auto-lock on YubiKey removal (0.20.72 Testing)
+
+With SCP11b required over Web Smart Card, Sequoia Chat Lab on macOS unlocked
+the vault using **YubiKey SN# 41088108**. Unplugging that key returned the app
+to the login screen after about **29.6 seconds**, while the enrolled
+**SN# 41088353** remained attached. USB and screen observations bounded the
+delay to **29.4–29.8 seconds**, within the 30-second target.
+
+Read-only post-test PC/SC snapshots matched both pre-test baselines across all
+24 PIV slots per key, including the populated public keys, PIN and touch
+policies, PIN retry counts, and stable FIDO settings.
+[Signed 0.20.72 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.72)
+
 #### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
 
 The Chromebook restored the complete encrypted Google Drive backup over Web
