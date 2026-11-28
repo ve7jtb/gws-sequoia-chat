@@ -67,7 +67,7 @@ function hardwareRequest(op,data={},options={}) {
     if(!selected)throw Error('Select a current saved hardware identity.');
     const {parseCardBundle,assertSelectedCardIdentity}=await import('./identities/bundle.js');
     const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
-    const fresh=await parseCardBundle(await window.SequoiaSmartCardPiv.readPublicSnapshotViaSmartCard(selected.serial,true,inspectBundle),inspectBundle);
+    const fresh=await parseCardBundle(await window.SequoiaSmartCardPiv.readMappedBundleViaSmartCard(selected.serial,inspectBundle),inspectBundle);
     await assertSelectedCardIdentity(fresh,selected,inspectIdentity);
     await hardwareIdentitySelection.assert(selected);
     return {...selected,slots:fresh.slots,selectionSnapshot:selected};
@@ -594,7 +594,7 @@ event('test',async()=>{
  if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nOpenPGP v'+selected.version+' · '+selected.signingAlgorithm+' / '+selected.encryptionAlgorithm+'\nSigning: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'.\n'+compatibilityWarnings(selected,selected).join(' ')+'\nExpect two PIV PIN prompts; touch if requested. No email, keys, certificates or policies will be changed.'))return;
  hardwareTestReport=null;$('test-details').textContent='';hardwareTestAbort=new AbortController();operationBusy(true);
  try{
-  const {runHardwareTest,signingFailureLabel}=await import('./hardware-test.js');
+  const {runHardwareTest,signingFailureLabel,auditFailureLabel}=await import('./hardware-test.js');
   const gate=async()=>{assertAccount(account);window.vaultGate?.();if($('test-identity').value!==choice)throw Error('Test identity changed.');};
   const result=await runHardwareTest({identity:selected,selection:hardwareIdentitySelection,native:hardwareRequest,gate,signal:hardwareTestAbort.signal,
    createSigningWorker:()=>new Worker(signingWorkerURL(),{type:'module'}),
@@ -612,6 +612,7 @@ event('test',async()=>{
   // Resolve the code through a fixed label table again at the display boundary.
   // Reports do not expose native stderr, WASM exception text or private inputs.
   if(result.failurePhase)$('test-details').textContent+='\nStopped while: '+signingFailureLabel(result.failurePhase)+'.';
+  if(result.auditFailure)$('test-details').textContent+='\nStopped while: '+auditFailureLabel(result.auditFailure)+'.';
   $('test-progress').textContent=result.status==='PASS'?'Local hardware test complete. Independent Sequoia interoperability remains a separate test.':'Test stopped without automatic retry.';
   say(result.status==='PASS'?'PASS — IWA signing, decryption and unchanged hardware audit.':result.status+' — review Hardware test results before trying again.',result.status!=='PASS');
  }finally{hardwareTestAbort=null;operationBusy(false);}

@@ -14,6 +14,16 @@ const exact=(value,fields)=>value&&typeof value==='object'&&!Array.isArray(value
 const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 const publicLabel=value=>typeof value==='string'&&value.length>0&&value.length<=80&&!/[\x00-\x1f\x7f]/.test(value);
 
+const auditFailureLabels={
+ identity:'Authenticating the signed bundle and selected identity',
+ 'identity-mac':'Authenticating the signed bundle (SCP11b response MAC rejected)',
+ metadata:'Reading the mapped PIV keys and PIN policies',
+ 'metadata-mac':'Reading mapped PIV metadata (SCP11b response MAC rejected)',
+ validation:'Validating the public audit against the enrolled slot mapping',
+};
+export const auditFailureLabel=code=>Object.hasOwn(auditFailureLabels,code)
+ ?auditFailureLabels[code]:'Checking the public audit';
+
 /** An absent key is explicit, never inferred from an omitted or failed read.
  * Reports contain either the complete historical snapshot or every signed-bundle
  * slot. No native paths,
@@ -93,7 +103,10 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
  };
  try{
   await check();progress('before-audit','Reading signed-bundle public keys and PIN/touch policies — no PIN required.');
-  before=validateHardwareAudit(await request('chat-hardware-audit',{identity:binding}),selected);await check();complete();
+  const initialAudit=await request('chat-hardware-audit',{identity:binding});
+  try{before=validateHardwareAudit(initialAudit,selected);}
+  catch{throw Object.assign(Error('Invalid initial hardware audit.'),{auditFailure:'validation'});}
+  await check();complete();
   progress('signing','Signing a fresh local test message — enter the PIN only in the PIV dialog, then touch if requested.');
   const material=await request('chat-selected-signing-material',{identity:binding});
   await selection.validateMaterial(material,selected,'signing');await check();
@@ -137,6 +150,7 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
   // browser/native signing boundaries using only our closed public vocabulary.
   // Never copy arbitrary provider error properties or diagnostics into exports.
   if(stage==='signing')report.failurePhase=signingFailurePhase(error?.failurePhase);
+  if(stage==='before-audit'&&Object.hasOwn(auditFailureLabels,error?.auditFailure))report.auditFailure=error.auditFailure;
  }finally{
   await Promise.allSettled([...inFlight]);
   if(before){

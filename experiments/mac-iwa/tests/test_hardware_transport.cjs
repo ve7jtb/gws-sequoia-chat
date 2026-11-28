@@ -64,10 +64,15 @@ async function testBrowserPinValidation() {
     async hardwareAuditViaSmartCard(id) { pivCalls.push('audit:' + id.serial); return { format: 'sequoia-iwa-hardware-audit', version: 1 }; },
     async signDigestViaSmartCard(req) { pivCalls.push('sign:' + req.requestId); return { requestId: req.requestId, ed25519: 'AA==', mldsa65: 'BB==' }; },
     async decapsulateComponentsViaSmartCard(req, identity, _prompt, options) { if(req.service==='Vault')assert.equal(options?.vaultUnlock,true); pivCalls.push('decap:' + req.requestId); return { requestId: req.requestId, mlkemSecret: 'CC==', x25519Secret: 'DD==' }; },
-    async readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle) {
-      if(includeBundle)assert.equal(typeof inspectBundle,'function');
-      pivCalls.push('snapshot:' + serial + ':' + includeBundle);
-      return { format: 'sequoia-iwa-public-snapshot', version: 1, serial: serial || '41088108', slots: [], warnings: [], ...(includeBundle ? { bundle: 'UFFNWklQMDE=', generation: 4 } : {}) };
+    async readMappedBundleViaSmartCard(serial, inspectBundle) {
+      assert.equal(typeof inspectBundle,'function');
+      pivCalls.push('mapped:' + serial);
+      return {format:'sequoia-iwa-public-snapshot',version:2,serial,slots:[],warnings:[],bundle:'UFFNWklQMDE=',generation:4};
+    },
+    async readPublicSnapshotViaSmartCard(serial) {
+      assert.equal(arguments.length,1);
+      pivCalls.push('snapshot:' + serial);
+      return {format:'sequoia-iwa-public-snapshot',version:1,serial,slots:[],warnings:[]};
     },
     async readVaultMaterialViaSmartCard() {
       pivCalls.push('vault-material');

@@ -958,10 +958,22 @@ async function readLevel3VaultBundle(serial, progress){
   },{onReader:found=>progress?.({stage:'found',serial:found})});
 }
 
-async function readPublicSnapshotViaSmartCard(serial, includeBundle, inspectBundle=null){
+// Signed-bundle callers use a separate entry point. A missing inspector, or
+// a caller with a stale method signature, must never select the full-slot probe.
+async function readMappedBundleViaSmartCard(serial, inspectBundle){
+  if(typeof inspectBundle!=='function')throw Error('Signed-bundle inspection is required.');
+  return readPublicSnapshot(serial,inspectBundle);
+}
+
+async function readPublicSnapshotViaSmartCard(serial){
+  if(arguments.length!==1)throw Error('Use the mapped-bundle reader for signed bundle checks.');
+  return readPublicSnapshot(serial);
+}
+
+async function readPublicSnapshot(serial, inspectBundle){
   return withPivSession(serial || null, async(conn, info)=>{
     const observed = new Map();
-    const stored = includeBundle ? await readCompressedPublicBundle(conn, observed) : null;
+    const stored = inspectBundle ? await readCompressedPublicBundle(conn, observed) : null;
 
     // Identity restore verifies the signed manifest first, then reads every
     // mapped key twice. Avoid unrelated empty beta slots without treating an
@@ -1338,6 +1350,7 @@ const api = {
   signSshComponents,
   decapsulateComponentsViaSmartCard,
   readPublicSnapshotViaSmartCard,
+  readMappedBundleViaSmartCard,
   readLevel3VaultBundle,
   verifyVaultKeyPresence,
   readVaultMaterialViaSmartCard,

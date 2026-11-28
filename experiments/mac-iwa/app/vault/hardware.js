@@ -19,7 +19,7 @@ export async function prepareVaultMaterial({serial,piv,inspectBundle,inspectIden
  if(level5)return {serial:caps.serial,level5,classicalAllowed:false};
  // Public restoration is mandatory for YK6. Verify signature, serial, every
  // mapped live key and exact certificate profile before saving any inventory.
- const live=await piv.readPublicSnapshotViaSmartCard(caps.serial,true,inspectBundle);
+ const live=await piv.readMappedBundleViaSmartCard(caps.serial,inspectBundle);
  const bundle=await parseCardBundle(live,inspectBundle);
  const candidates=[];
  for(const c of bundle.certificates){

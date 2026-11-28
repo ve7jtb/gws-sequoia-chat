@@ -146,3 +146,11 @@ test('mapped audit fails closed for an unauthenticated error or a mismatched key
   assert.equal(h.connections(),1);
  }
 });
+
+test('a stale bundle call cannot fall back to the full-slot diagnostic',async()=>{
+ const h=harness();
+ await assert.rejects(h.p.readPublicSnapshotViaSmartCard('123',true),/mapped-bundle reader/);
+ await assert.rejects(h.p.readMappedBundleViaSmartCard('123'),/inspection is required/);
+ assert.equal(h.connections(),0);
+ assert.equal(h.sent.length,0);
+});

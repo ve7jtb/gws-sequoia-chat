@@ -206,6 +206,15 @@ function createHardwareTransport(deps = {}){
     }
   }
 
+  function auditFailure(error, phase){
+    // Expose only fixed phase codes. Chromium can preserve the secure-channel
+    // message without the custom properties on its transaction error.
+    const mac=/Missing SCP response MAC|SCP response MAC mismatch/.test(error?.message);
+    return Object.assign(Error('Public card audit did not complete.'),{
+      auditFailure:mac?phase+'-mac':phase,
+    });
+  }
+
   async function dispatchSmartCard(op, data, ctx){
     if(!piv) throw Error('Web Smart Card PIV module is not loaded.');
     if(!global.navigator?.smartCard && !deps.piv){
@@ -232,17 +241,21 @@ function createHardwareTransport(deps = {}){
       // Beta 0 slots can return bare errors, which SCP11b must still reject.
       if(typeof ctx.inspectPublicBundle!=='function')throw Error('Public bundle verification unavailable.');
       ctx.say?.('Reading public certificate bundle and checking its mapped slots via Web Smart Card (no PIN required)…');
-      return piv.readPublicSnapshotViaSmartCard(data.serial || null, true,ctx.inspectPublicBundle);
+      return piv.readMappedBundleViaSmartCard(data.serial || null,ctx.inspectPublicBundle);
     }
 
     if(op === 'chat-identity-key-snapshot'){
       ctx.say?.('Reading all 24 PIV public keys via Web Smart Card (no PIN required)…');
-      return piv.readPublicSnapshotViaSmartCard(data.serial || null, false);
+      return piv.readPublicSnapshotViaSmartCard(data.serial || null);
     }
 
     if(op === 'chat-hardware-audit'){
       ctx.say?.('Checking signed-bundle slots via Web Smart Card (no PIN required)…');
-      return piv.hardwareAuditViaSmartCard(await resolveIdentity(data.identity,ctx));
+      let identity;
+      try{identity=await resolveIdentity(data.identity,ctx);}
+      catch(error){throw auditFailure(error,'identity');}
+      try{return await piv.hardwareAuditViaSmartCard(identity);}
+      catch(error){throw auditFailure(error,'metadata');}
     }
 
     if(op === 'chat-selected-signing-material'){

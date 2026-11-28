@@ -18,7 +18,7 @@ function harness(change={}){
   calls.push(op);
   if(op==='chat-hardware-audit'){
    assert.deepEqual(value,{identity:nativeIdentity(identity)});audits++;
-   if(change.auditFailure===audits)throw Error('Read failed');
+   if(change.auditFailure===audits)throw Object.assign(Error('Read failed'),{auditFailure:change.auditCode});
    const audit=snapshot();if(change.audit)change.audit(audit,audits);
    if(change.changeDuringFinalAudit&&audits===2)valid=false;
    return audit;
@@ -134,4 +134,14 @@ test('mapped audit requires the exact occupied slots and hashes in the signed bu
   const invalid=clone(audit);mutate(invalid);
   assert.throws(()=>validateHardwareAudit(invalid,mapped),/hardware audit/);
  }
+});
+
+test('the before-audit report keeps a fixed phase code and omits raw diagnostics',async()=>{
+ const h=harness({auditFailure:1,auditCode:'identity-mac'}),result=await h.run();
+ assert.equal(result.failureStage,'before-audit');
+ assert.equal(result.auditFailure,'identity-mac');
+ assert.equal(result.privateAttempts.signing,0);
+ assert(!JSON.stringify(result).includes('Read failed'));
+ const bad=await harness({auditFailure:1,auditCode:'sensitive text'}).run();
+ assert.equal(bad.auditFailure,undefined);
 });
