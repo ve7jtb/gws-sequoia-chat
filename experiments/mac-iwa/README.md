@@ -120,6 +120,22 @@ digest. The session used software ML-DSA-44 + Ed25519 authentication and
 ML-KEM-768 + X25519 key exchange (`mlkem768x25519-sha256`).
 [Signed 0.20.65 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.65)
 
+### macOS YubiKey SFTP round trip (0.20.66 Testing)
+
+On 2026-11-28, the Mac IWA repeated the 16,384-byte SFTP round trip from
+encrypted **Local files** to `/tmp` on `touchly2.local` and back, using
+YubiKey SN# 41088108 over Web Smart Card. The session used ML-DSA-44 + Ed25519
+authentication from PIV slots 8C and 8D, with ML-KEM-768 + X25519 key exchange
+(`mlkem768x25519-sha256`). The returned file matched the original byte for
+byte and had the same SHA-256 digest.
+
+Chromium had rejected the card connection when the detached terminal took
+focus. In 0.20.66, **Continue with YubiKey** in the main window provides the
+foreground interaction before the live card check and PIN prompt. The
+retest used existing keys and made no changes to keys or PIN and touch
+policies.
+[Signed 0.20.66 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.66)
+
 ## Encrypted local files
 
 After unlocking the vault, open **Local files** to encrypt and save a file.
