@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
+const source=['native-bridge.js','app.js'].map(name=>fs.readFileSync(new URL('../app/'+name,import.meta.url),'utf8')).join('\n');
 const fp='A'.repeat(64),mail='sender@example.invalid';
 const certificate=Buffer.from('synthetic public certificate').toString('base64');
 const packet={raw:Buffer.from('synthetic captured message bytes').toString('base64')};

@@ -1,19 +1,21 @@
+import {createBackupVaultAccess,registerBackupVaultSession} from './vault/backup-session.js';
 import {createLocalFileStore} from './local-files/store.js';
 import {createSshTrustStore} from './ssh/trust.js';
 import {createSshAddressBook} from './ssh/address-book.js';
 import {createImportedSshStore} from './ssh/imported-keys.js';
 import {verifyProvisioningRecovery} from './vault/provisioning-recovery.js';
-import {wrapLevel5,openLevel5} from './vault/level5.js';
+import {wrapLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
 import {confirmUnlockEnrollment,discoverOrCreate,hasMatchingPiv,requireAttachedUnlockMethod} from './vault/enrollment.js';
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
-import {classicalWrap,classicalOpen} from './vault/piv.js';
+import {classicalWrap} from './vault/piv.js';
+import {openPivWrapper} from './vault/open-piv.js';
 import {createSoftwareIdentityStore} from './software/store.js';
 import {softwareCrypto} from './software/client.js';
 import {operateImportedKey} from './piv-import.js';
 import {inspectIdentity} from './identities/client.js';
 import {discoverIdentityDevices} from './identities/devices.js';
-const engine=new Vault();let record=null,revision=0,active=false,epoch=0,timer;
+let engine=new Vault(),record=null,revision=0,active=false,epoch=0,timer;
 const el=id=>document.getElementById(id),tell=s=>el('vault-status').textContent=s;
 const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-vault-worker',{createScriptURL:u=>{if(u!=='/vault/worker.js')throw Error();return u;}});
 function wasm(op,input){return new Promise((resolve,reject)=>{const w=new Worker(workerPolicy?workerPolicy.createScriptURL('/vault/worker.js'):'/vault/worker.js',{type:'module'});const t=setTimeout(()=>{w.terminate();reject(Error('Vault cryptography timed out.'));},30000);w.onmessage=({data})=>{clearTimeout(t);w.terminate();data.ok?resolve(data.result):reject(Error(data.error));};w.onerror=()=>{clearTimeout(t);w.terminate();reject(Error('Vault cryptography failed.'));};w.postMessage({op,input});});}
@@ -77,16 +79,9 @@ window.importedSshKeys=createImportedSshStore(identityVaultAccess);
 window.softwareIdentities=Object.freeze(softwareIdentities);
 async function run(fn){if(active||busy){tell('Finish the current operation first.');return;}active=true;const token=epoch;try{await fn(()=>{if(token!==epoch)throw Error('Vault operation cancelled by locking.');});touch();}catch(e){tell(e.message);window.directFido?.complete(e.message,false);}finally{active=false;render();}}
 async function pivSecret(w){
- if(w.binding.kind==='mlkem1024-p384-v1')return openLevel5(w.binding,call);
- if(w.binding.kind==='ecdh')return classicalOpen(w.binding,call);
- // Reuse the message component boundary, but authenticate a distinct unsigned
- // vault purpose inside WASM. The native helper never sees the vault envelope.
  const started=epoch;
- const v=await decryptInIwa({cipher:w.binding.cipher,recipientKey:w.binding.recipientKey,
-  native:(op,data,options)=>hardwareRequest(op,op==='chat-decryption-material'?{...data,serial:w.binding.serial,recipientKey:w.binding.recipientKey}:data,options),
-  service:'Vault',purpose:'vault',vault:{vaultId:record?.id||w.vaultId,wrapperId:w.id},
-  gate:async()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
- try{return bytes(v.secret);}finally{delete v.secret;}
+ return openPivWrapper(record,w,{request:hardwareRequest,vaultRequest:call,decrypt:decryptInIwa,
+  guard:()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
 }
 async function prf(w){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{return bytes(r.secret);}finally{delete r.secret;}}
 async function checkExistingUnlockDevice(check){
@@ -229,6 +224,20 @@ el('vault-restore').onclick=()=>run(async()=>{if(revision||!engine.unlocked)thro
 window.vaultGate=()=>{if(record&&!engine.unlocked)throw Error('Unlock the credential vault first (Vault tab).');};
 window.addEventListener('pagehide',lock);for(const e of ['pointerdown','keydown'])document.addEventListener(e,touch,{passive:true});
 record=await load();revision=record?.revision||0;if(record)validate(record);render();
+// Keep the vault key inside the active engine even when changing screens.
+registerBackupVaultSession(createBackupVaultAccess({
+ current:()=>({engine,epoch,revision,active}),
+ load,settings:localStorage,origin:location.origin,touch,
+ activate(candidate,saved,restored){
+  if(engine!==candidate)engine.lock();
+  engine=candidate;
+  record=saved;revision=saved.revision;epoch++;
+  tell(restored?'Restored vault unlocked.':'Vault unlocked.');
+  render();touch();
+  if(restored)window.dispatchEvent(new Event('iwa-vault-restored'));
+  window.dispatchEvent(new Event('iwa-vault-unlocked'));
+ },
+}));
 
 // Read-only gate for the experimental in-memory Google session.
 window.vaultIsUnlocked=()=>engine.unlocked;

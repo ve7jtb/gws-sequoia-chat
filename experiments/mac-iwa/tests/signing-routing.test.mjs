@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
+const source=['native-bridge.js','app.js'].map(name=>fs.readFileSync(new URL('../app/'+name,import.meta.url),'utf8')).join('\n');
 function app(){
  const nodes=new Map(),native=[],google=[],buttons=[{closest(){return null;}}];let unlocked=true;
  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:id==='transport'?'mail':'',classList:{toggle(){}}});return nodes.get(id);};

@@ -57,8 +57,7 @@ export function mountStartup(doc,win){
   el('vault-methods').value=el('startup-method').value;el('vault-unlock').click();
  };
  function setup(){creating=true;panel=true;step=1;el('startup-create-status').textContent='';render();}
- // IWA CSP forbids form submissions; use a fixed same-origin navigation target.
- el('startup-restore').onclick=()=>win.location.assign('/backup.html');
+ el('startup-restore').onclick=()=>win.openEncryptedBackup?win.openEncryptedBackup():win.location.assign('/backup.html');
  el('startup-next').onclick=()=>{
   const name=el('startup-vault-name').value.trim();
   if(!name||name.length>80){el('startup-create-status').textContent='Enter a name (1–80 characters).';return;}

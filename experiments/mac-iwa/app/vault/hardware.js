@@ -28,8 +28,11 @@ export async function prepareVaultMaterial({serial,piv,inspectBundle,inspectIden
  }
  if(candidates.length!==1)throw Error('YK6 requires one supported native Level 3 hybrid vault certificate; no classical fallback.');
  const info=candidates[0];
- const review=await store.previewBundle(bundle);
- if(review.unchanged)store.cancel(review);else await store.save(review,true);
+ // Recovery verifies the live bundle without populating the instance being restored.
+ if(store){
+  const review=await store.previewBundle(bundle);
+  if(review.unchanged)store.cancel(review);else await store.save(review,true);
+ }
  return {serial:bundle.serial,certificate:info.certificate,classical:null,classicalAllowed:false,
   identity:{...info,serial:bundle.serial,bundleHash:bundle.bundleHash,slots:bundle.slots}};
 }

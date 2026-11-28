@@ -64,10 +64,11 @@ export async function capture(storage,origin){
  const settings=[];for(let i=0;i<storage.settings.length;i++){const k=storage.settings.key(i);if(k!==PENDING)settings.push([k,storage.settings.getItem(k)]);}settings.sort((a,b)=>a[0].localeCompare(b[0]));
  return validateSnapshot({format:'sequoia-complete-state',version:1,origin,databases,settings},origin);
 }
-export async function restore(storage,snapshot,origin){
+export async function restore(storage,snapshot,origin,{guard=()=>{}}={}){
+ guard();
  validateSnapshot(snapshot,origin);const hash=await digest(snapshot),pending=storage.settings.getItem(PENDING);
  if(pending&&pending!==hash)fail('A different restore is pending');
- const before=await capture(storage,origin);
+ const before=await capture(storage,origin);guard();
  // Validate *all* destinations before the first write. Never merge trust into
  // an unrelated installation. The only supported target is empty or identical.
  for(let i=0;i<3;i++)if(before.databases[i].value!==null&&canonical(before.databases[i].value)!==canonical(snapshot.databases[i].value))fail('Existing database differs; restore refused');
@@ -82,10 +83,11 @@ export async function restore(storage,snapshot,origin){
  // A durable marker blocks app startup until an idempotent retry verifies all
  // records. It contains only a digest; no password or decrypted vault content.
  storage.settings.setItem(PENDING,hash);
- for(const r of snapshot.databases)await storage.put(r.name,r.store,r.value);
+ for(const r of snapshot.databases){guard();await storage.put(r.name,r.store,r.value);}
+ guard();
  // Never write device-local policy, even with an identical value: another
  // window changing it must cause readback failure, not be silently undone.
  for(const [k,v] of expected.settings)if(!LOCAL_CONNECTION_SETTINGS.has(k))storage.settings.setItem(k,v);
  if(await digest(await capture(storage,origin))!==await digest(expected))fail('Restore readback failed; reopen backup to resume');
- storage.settings.removeItem(PENDING);return hash;
+ guard();storage.settings.removeItem(PENDING);return hash;
 }

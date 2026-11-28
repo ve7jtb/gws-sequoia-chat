@@ -2965,7 +2965,7 @@ signature verification passed in Chromium IWA Lab with a disposable Level 3
 identity. Physical YubiKey Drive operations and independent native Sequoia
 verification of that live download remain pending. No hardware keys, certificates or policies were changed.
 
-### Complete authenticator-protected backup (local preview)
+### Complete authenticator-protected backup
 
 **Vault → Complete encrypted backup / restore and Google Drive** captures the
 sealed vault, own identities, public certificates/trust and local settings.
@@ -2973,9 +2973,10 @@ It encrypts with the existing random AES-256 vault key, fresh nonce and distinct
 associated data; there is no backup password. The recovery header contains the
 encrypted vault and existing authenticator wrappers, including public wrapper
 names/identifiers. Restore requires the same signed IWA origin and an enrolled
-authenticator. The separate restore page currently supports FIDO PRF unlock
-through Web Smart Card; other wrapper types are preserved but cannot yet unlock
-that page.
+credential from the export. In 0.20.68, choose an enrolled FIDO PRF, hybrid PIV,
+or classical PIV method on the restore screen. The picker shows the saved names
+and YubiKey serials where available. Export reuses an active vault session, and
+the app carries a verified restore into an unlocked session after readback.
 
 Restore refuses conflicting destination data, supports an interrupted identical
 restore, and checks all records by readback. A pending marker blocks ordinary

@@ -1,17 +1,46 @@
-// Do not load mail or vault modules against a partially restored database.
-// A successful idempotent restore removes the marker after full readback.
-if(localStorage.getItem("sequoia-complete-restore-pending")){
- location.replace("/backup.html");
-}else{
- // Initialize secure-channel policy before any hardware or vault UI can
- // dispatch an operation. Missing policy must continue to fail closed.
- const scripts=[{"src": "/config.js", "module": false}, {"src": "/format.js", "module": false}, {"src": "/secure-channel-ui.js", "module": true}, {"src": "/message-client.js", "module": false}, {"src": "/app.js", "module": false}, {"src": "/ctap2-ui.js", "module": true}, {"src": "/vault-ui.js", "module": true}, {"src": "/wasm-test.js", "module": false}, {"src": "/smartcard-piv.js", "module": false}, {"src": "/hardware-transport.js", "module": false}, {"src": "/google-browser.js", "module": true}, {"src": "/google-transport.js", "module": true}, {"src": "/startup-ui.js", "module": true}];
- // IWA enforces Trusted Types even when an ordinary browser does not. Only
- // these fixed signed-bundle script URLs can pass; no restored setting, query
- // parameter, or remote message can choose executable code.
- const allowed=new Set(scripts.map(item=>item.src));
- const policy=globalThis.trustedTypes?.createPolicy('sequoia-application-bootstrap',{
-  createScriptURL:url=>{if(!allowed.has(url))throw Error('Unexpected application script');return url;}
+// The backup screen must be usable while a partial restore blocks the main
+// application. Both screens use this document so an unlocked vault survives
+// the switch in either direction.
+const common=[
+ {src:'/config.js'}, {src:'/native-bridge.js'},
+ {"src": "/secure-channel-ui.js", "module": true},
+ {src:'/smartcard-piv.js'}, {src:'/hardware-transport.js'},
+];
+const scripts=[
+ {src:'/format.js'}, {src:'/message-client.js'}, {src:'/app.js'},
+ {src:'/ctap2-ui.js',module:true}, {src:'/vault-ui.js',module:true}, {src:'/wasm-test.js'},
+ {src:'/google-browser.js',module:true}, {src:'/google-transport.js',module:true},
+ {src:'/startup-ui.js',module:true},
+];
+const backup={src:'/backup-ui.js',module:true};
+// Keep the same fixed Trusted Types allowlist for initial and deferred load.
+const allowed=new Set([...common,...scripts,backup].map(item=>item.src));
+const policy=globalThis.trustedTypes?.createPolicy('sequoia-application-bootstrap',{
+ createScriptURL:url=>{if(!allowed.has(url))throw Error('Unexpected application script');return url;}
+});
+function loadScript(item){
+ return new Promise((resolve,reject)=>{
+  const script=document.createElement('script');
+  script.src=policy?policy.createScriptURL(item.src):item.src;
+  if(item.module)script.type='module';
+  script.onload=resolve;
+  script.onerror=()=>reject(Error('Application module failed to load'));
+  document.head.append(script);
  });
- for(const item of scripts){await new Promise((resolve,reject)=>{const s=document.createElement("script");s.src=policy?policy.createScriptURL(item.src):item.src;if(item.module)s.type="module";s.onload=resolve;s.onerror=()=>reject(Error("Application module failed to load"));document.head.append(s);});}
 }
+const pending='sequoia-complete-restore-pending';
+let application;
+function startApplication(){
+ if(localStorage.getItem(pending))throw Error('Complete the encrypted restore first.');
+ application??=(async()=>{
+  for(const item of scripts)await loadScript(item);
+ })();
+ return application;
+}
+window.startIwaApplicationAfterRestore=startApplication;
+for(const item of common)await loadScript(item);
+const openBackup=!!localStorage.getItem(pending)||location.hash==='#backup';
+if(!localStorage.getItem(pending))await startApplication();
+document.getElementById('application-screen').hidden=openBackup;
+await loadScript(backup);
+if(openBackup)await window.openEncryptedBackup();

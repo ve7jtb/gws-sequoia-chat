@@ -4,6 +4,7 @@ import {decapsulate, diffieHellman, createPublicKey, generateKeyPairSync} from '
 import fs from 'node:fs';
 import init,{vault_mlkem1024_encapsulate} from '../wasm/pkg/sequoia_iwa_verify.js';
 import {wrapLevel5,openLevel5} from '../app/vault/level5.js';
+import {unlockBackup} from '../app/vault/backup-unlock.js';
 import {Vault} from '../app/vault/core.js';
 
 test('Level 5 WASM and independent OpenSSL components recover the vault after lock',async()=>{
@@ -31,6 +32,6 @@ test('Level 5 WASM and independent OpenSSL components recover the vault after lo
   secret.fill(0);
   engine.lock();
   await assert.rejects(engine.unlock(record,id,await openLevel5({...binding,serial:'124'},open)));
-  await engine.unlock(record,id,await openLevel5(binding,open));
+  await unlockBackup(record,id,engine,{signal:new AbortController().signal,request:open});
   assert.equal(engine.unlocked,true);
 });

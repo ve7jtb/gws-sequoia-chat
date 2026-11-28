@@ -10,7 +10,7 @@ import * as accountModule from '../app/account-settings.js';
 import {createTransport} from '../app/google-transport.js';
 import {createProviderSelection} from '../app/identities/providers.js';
 import {signingFailureLabel} from '../app/signing-phases.js';
-const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
+const source=['native-bridge.js','app.js'].map(name=>fs.readFileSync(new URL('../app/'+name,import.meta.url),'utf8')).join('\n');
 function memoryStorage(){const rows=new Map();return {getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value),removeItem:key=>rows.delete(key)};}
 function application(savedEmail){
  const storage=memoryStorage(),settings=accountModule.createAccountSettings({storage,newRevision:()=>webcrypto.randomUUID()});

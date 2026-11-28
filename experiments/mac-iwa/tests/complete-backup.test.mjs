@@ -72,3 +72,36 @@ test('interrupted restore with local SCP policy resumes and verifies',async()=>{
  const f=await fixture(),d=storage(),put=d.put;d.settings.setItem('sequoia_secure_yubikey_connection','required');let n=0;d.put=async(...a)=>{if(++n===2)throw Error('interrupted');return put(...a);};
  await assert.rejects(restore(d,f.snapshot,origin));d.put=put;await restore(d,f.snapshot,origin);assert.equal(d.settings.getItem(PENDING),null);assert.equal(d.settings.getItem('sequoia_secure_yubikey_connection'),'required');
 });
+
+test('active vault verifies backup and a single credential unlock carries through restore',async()=>{
+ const {createBackupVaultAccess}=await import('../app/vault/backup-session.js');
+ const f=await fixture(),destination=storage();
+ let engine=f.vault,epoch=0,touched=0,activations=0,db=f.source;
+ const access=createBackupVaultAccess({
+  current:()=>({engine,revision:engine.record?.revision,epoch}),
+  load:()=>db.read(DATABASES[0][0]),settings:destination.settings,origin,
+  touch:()=>touched++,activate:(candidate,saved,restored)=>{
+   assert.equal(restored,true);assert.equal(candidate.record.id,saved.id);
+   engine=candidate;epoch++;activations++;
+  }
+ });
+ const archive=await access.create(f.snapshot);
+ assert.equal(touched,1);
+ engine=new Vault();epoch++;db=destination;
+ const reviewed=new Vault();
+ await reviewed.unlock(recoveryVault(archive,origin),f.id,f.secret);
+ const snapshot=await unseal(archive,reviewed,origin);
+ await assert.rejects(access.adopt(reviewed,{restored:true}),/saved vault changed/);
+ await restore(destination,snapshot,origin);
+ await access.adopt(reviewed,{restored:true});
+ assert.equal(engine,reviewed);assert.equal(access.unlocked(),true);assert.equal(activations,1);
+});
+
+test('locking during backup verification prevents a partial restore from starting the app',async()=>{
+ const f=await fixture(),d=storage(),put=d.put;let cancelled=false;
+ d.put=async(...args)=>{await put(...args);cancelled=true;};
+ const guard=()=>{if(cancelled)throw Error('Backup review expired');};
+ await assert.rejects(restore(d,f.snapshot,origin,{guard}),/review expired/);
+ assert.ok(d.settings.getItem(PENDING));assert.equal(d.db.size,1);
+ d.put=put;await restore(d,f.snapshot,origin);assert.equal(d.settings.getItem(PENDING),null);
+});

@@ -43,21 +43,7 @@ function nativeRequest(op,data={},options={}) {
  // before each private operation, including the new digest-only signing route.
  if(['chat-selected-signing-material','chat-selected-decryption-material','chat-sign-digest'].includes(op)||
     (['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data.service!=='Vault')){try{window.vaultGate?.();}catch(e){return Promise.reject(e);}}
- return new Promise((resolve,reject)=>{
-  let port,finished=false;
-  // Disconnecting abandons this request; it cannot undo an already-started
-  // hardware operation. Ignore late results and never issue an automatic retry.
-  const cancel=()=>finish(Error('Native operation cancelled; no retry.'));
-  function finish(err,value){if(finished)return;finished=true;options.signal?.removeEventListener('abort',cancel);if(port)port.disconnect();err?reject(err):resolve(value);}
-  try {
-   if(options.signal?.aborted){cancel();return;}
-   options.signal?.addEventListener('abort',cancel,{once:true});
-   port=chrome.runtime.connect(EXTENSION_ID,{name:'sequoia-chat'});
-   port.onMessage.addListener(r=>{if(r.type==='progress'){say(r.message);return;}if(r.type==='error')finish(Error(r.message));else finish(null,r.data??r);});
-   port.onDisconnect.addListener(()=>{const e=chrome.runtime.lastError;if(!finished)finish(Error(e?'Native bridge unavailable. Check the extension/helper installation.':'Connection closed; check local results before retrying.'));});
-   port.postMessage({op,...data});
-  }catch(_){finish(Error('Companion extension unavailable.'));}
- });
+ return requestCompanion(op,data,{...options,progress:say});
 }
 // Route hardware requests explicitly through the user-selected hardware transport
 // ('native' helper PKCS#11 or 'smartcard' navigator.smartCard). No silent fallback.
@@ -361,6 +347,11 @@ event('account-forget',async()=>{
  if(busy)throw Error('Finish the current operation first.');
  if(!window.confirm('Forget this IWA’s public account email and clear its Google session? Your saved vault, identities and contacts remain available.'))return;
  accountSettings.clear(true);clearAccountSession();await refreshAccount();say('Public account setting removed. Configure an account before signing in.');
+});
+window.addEventListener('iwa-vault-restored',()=>{
+ if(!accountSettings)return;
+ clearAccountSession();
+ Promise.all([refreshAccount(),refreshCertificates(),identityUi?.refresh(),softwareUi?.refresh()]).catch(error=>say(error.message,true));
 });
 window.addEventListener('storage',event=>{
  if(!accountSettings||(event.key!==accountSettingsKey&&event.key!==null))return;
