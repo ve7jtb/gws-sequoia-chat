@@ -3041,6 +3041,20 @@ Read-only post-test PC/SC snapshots matched both pre-test baselines across all
 policies, PIN retry counts, and stable FIDO settings.
 [Signed 0.20.72 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.72)
 
+#### macOS Level 3 hybrid PIV login on SN# 41088008 (0.20.72 Testing)
+
+Sequoia Chat Lab opened the vault from the macOS login screen using
+**YubiKey SN# 41088008** over Web Smart Card with SCP11b required. The login
+checked the enrolled public keys in slots **9D (ML-KEM-768)** and
+**85 (X25519)** before showing a single PIV PIN prompt. The smart-card
+regression test confirmed one authenticated metadata read per slot and that
+a mismatch in either slot stops login before the PIN prompt.
+
+Read-only PC/SC snapshots before and after login matched across all 24 PIV
+slots, including the 10 populated public keys, PIN and touch policies, and
+PIN retry counts. The stable FIDO settings reported by the key also matched.
+[Signed 0.20.72 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.72)
+
 #### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
 
 The Chromebook restored the complete encrypted Google Drive backup over Web
