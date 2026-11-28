@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {initializeSsh} from '../app/ssh/ui.js';
+import {once} from 'node:events';
 function fakeDocument(){
  const nodes=new Map();
  return {getElementById(id){if(!nodes.has(id))nodes.set(id,Object.assign(new EventTarget(),{hidden:false,value:'',textContent:'',children:[],replaceChildren(){this.children=[];},append(x){this.children.push(x);}}));return nodes.get(id);},createElement(){return {};}};
@@ -176,4 +177,44 @@ test('SSH key authorization reports validation, success and failure beside its b
  assert.equal(status.textContent,'Success: SSH public key authorization confirmed: ssh-mldsa44-ed25519.');
  assert.equal(button.disabled,false);
  assert.equal(document.getElementById('ssh-status').textContent,'');
+});
+
+test('locking the vault closes the detached SSH worker and clears its terminal view',async t=>{
+ const document=fakeDocument(),window=new EventTarget(),priorWorker=globalThis.Worker;
+ t.after(()=>{if(priorWorker===undefined)delete globalThis.Worker;else globalThis.Worker=priorWorker;});
+ let worker,port,unlocked=true;
+ globalThis.Worker=class{
+  constructor(){worker=this;}
+  postMessage(){}
+  terminate(){this.closed=true;}
+  emit(data){return this.onmessage({data});}
+ };
+ window.vaultIsUnlocked=()=>unlocked;
+ window.location={origin:'isolated-app://ssh-test'};
+ Object.assign(window,{MessageChannel,setTimeout,clearTimeout,setInterval,clearInterval});
+ const popup={closed:false,close(){this.closed=true;},postMessage(_data,_origin,ports){port=ports[0];port.postMessage({type:'initialized'});}};
+ window.open=()=>popup;
+ window.Terminal=class{constructor(){assert.fail('The detached view owns its terminal renderer');}};
+ const identity={id:'identity',name:'SSH test',email:'ssh@example.invalid',emails:['ssh@example.invalid'],hasSsh:true,hasSshPublic:true};
+ window.softwareIdentities={records:async()=>[identity],get:async()=>identity,provisioningCertificates:async()=>({ssh:{publicKey:'ssh-mldsa44-ed25519 AQID'}}),assert:async()=>{},signSsh:async()=>Uint8Array.of(7)};
+ window.sshTrust={list:async()=>[{hosts:'server.invalid',type:'ssh-ed25519',key:'AQID'}]};
+ await initializeSsh({window,document}).refresh();
+ document.getElementById('ssh-host').value='server.invalid';
+ document.getElementById('ssh-port').value='22';
+ document.getElementById('ssh-username').value='fixture';
+ const connection=document.getElementById('ssh-connect-window').onclick();
+ window.dispatchEvent(Object.assign(new Event('message'),{origin:window.location.origin,source:popup,data:{type:'ssh-terminal-ready'}}));
+ const connected=Promise.withResolvers();
+ port.on('message',event=>{if(event.kind==='ready')connected.resolve(event);});
+ t.after(()=>{window.dispatchEvent(new Event('iwa-vault-locked'));port.close();});
+ await connection;
+ await worker.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:Uint8Array.of(1,2,3)});
+ await worker.emit({type:'sign',id:2,data:Uint8Array.of(4,5,6)});
+ await worker.emit({type:'ready',credential:'ssh-mldsa44-ed25519',keyExchange:'mlkem768x25519-sha256'});
+ assert.match((await connected.promise).connection.login,/Post-quantum hybrid login/);
+ const cleared=once(port,'message');
+ unlocked=false;window.dispatchEvent(new Event('iwa-vault-locked'));
+ assert.deepEqual((await cleared)[0],{type:'clear'});
+ assert.equal(worker.closed,true);
+ assert.equal(popup.closed,true);
 });

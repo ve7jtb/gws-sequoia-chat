@@ -34,9 +34,9 @@ globalThis.sshPassword=algorithms=>rpc('password',{algorithms});
 globalThis.sshVerifyHost=(algorithm,data)=>rpc('host',{algorithm,data});
 globalThis.sshFailure=fail;
 globalThis.sshAuthorized=algorithms=>finish({type:'authorized',algorithms});
-globalThis.sshReady=keyExchange=>{
+globalThis.sshReady=(keyExchange,credential)=>{
  if(!socket){fail('SSH server closed the session before the terminal was ready.');return;}
- ready=true;clearTimeout(timer);postMessage({type:'ready',keyExchange});
+ ready=true;clearTimeout(timer);postMessage({type:'ready',keyExchange,credential});
 };
 globalThis.onmessage=async({data})=>{
  try{

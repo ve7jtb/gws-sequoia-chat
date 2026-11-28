@@ -3,16 +3,20 @@ import {connectSsh} from './client.js';
 import {probe} from './transport.js';
 import {sshHostFingerprint} from './trust.js';
 import {promptSshPassword} from './password-dialog.js';
+import {openTerminalWindow} from './terminal-window.js';
 // The module receives no private seeds. Unlock grants access to public identity
 // choices only; a future SSH engine must request narrowly scoped signatures.
 export function initializeSsh({window,document}){
  const $=id=>document.getElementById(id);let controller=null,epoch=0,trustReview=null,session=null,terminal=null;
- let identities=[],connecting=false,authorizing=false;
+ let identities=[],connecting=false,authorizing=false,terminalWindow=null;
  let importing;
  const gate=()=>{if(!window.vaultIsUnlocked?.())throw Error('Unlock the credential vault first.');};
  const authorizationStatus=$('ssh-authorize-status'),authorizeButton=$('ssh-authorize');
  function finishAuthorization(message){
   authorizing=false;authorizeButton.disabled=false;authorizationStatus.textContent=message;
+ }
+ function closeTerminalWindow(){
+  terminalWindow?.dispose();terminalWindow=null;
  }
  function updateCardPicker(){
   const checkbox=$('ssh-use-card'),picker=$('ssh-card-serial');
@@ -40,6 +44,7 @@ export function initializeSsh({window,document}){
  }
  async function refresh(){
   controller?.abort();session?.close();session=null;
+  closeTerminalWindow();
   if(authorizing)finishAuthorization('SSH key authorization cancelled.');
   const started=++epoch,chooser=$('ssh-identities'),previous=chooser.value;
   identities=[];chooser.replaceChildren();
@@ -148,7 +153,7 @@ export function initializeSsh({window,document}){
    const n=await window.sshTrust.import(reviewed);gate();$('ssh-status').textContent='Imported '+n+' reviewed host trust entries into the encrypted vault.';
   }catch(e){$('ssh-status').textContent=e.message;}
  };
- async function openSsh(authorizeKey){
+ async function openSsh(authorizeKey,windowed=false){
   const status=authorizeKey?authorizationStatus:$('ssh-status');
   if(connecting||session){if(!authorizing||!authorizeKey)status.textContent='Disconnect the current SSH connection first.';return;}
   connecting=true;
@@ -156,11 +161,36 @@ export function initializeSsh({window,document}){
    authorizing=true;authorizeButton.disabled=true;status.textContent='Verifying SSH host…';
   }
   const started=epoch;
+  let view,dimensions;
+  const guard=()=>{
+   gate();
+   if(started!==epoch||(authorizeKey&&!authorizing)||(view&&terminalWindow!==view))throw Error('SSH context changed.');
+  };
+  function input(text){
+   try{session?.input(new TextEncoder().encode(text));}
+   catch(error){status.textContent=error.message;view?.status(error.message,'error');}
+  }
   try{
    gate();
+   const host=$('ssh-host').value,port=$('ssh-port').value,username=$('ssh-username').value;
    const identityId=$('ssh-identities').value,serial=$('ssh-card-serial').value,useCard=!authorizeKey&&$('ssh-use-card').checked;
    const trustFirstUse=$('ssh-trust-first-use').checked;
    const fallbackId=$('ssh-fallback-ed25519').value;
+   closeTerminalWindow();
+   if(windowed){
+    // Open during the user's click. Waiting for the vault or network first
+    // could lose browser activation and leave the popup blocked.
+    view=openTerminalWindow({window,onInput:input,onResize:(rows,cols)=>{
+     dimensions=[rows,cols];
+     if(terminalWindow===view&&window.vaultIsUnlocked?.())session?.resize(rows,cols);
+    },onClose:()=>{
+     if(terminalWindow!==view)return;
+     terminalWindow=null;session?.close();session=null;status.textContent='SSH terminal window closed.';
+    }});
+    terminalWindow=view;
+    await view.ready;guard();
+    view.status('Verifying SSH host…','progress');
+   }
    if(useCard&&!serial)throw Error('Choose a YubiKey provisioned for this SSH identity.');
    if(useCard&&window.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card hardware transport first.');
    let {store,selected,publicLine,imported,hasSsh}=await readIdentity(identityId);
@@ -171,11 +201,17 @@ export function initializeSsh({window,document}){
    const publicKey=keyBlob(publicLine);
    const additionalPublicKey=authorizeKey&&!imported&&fallbackId?keyBlob((await window.importedSshKeys.get(fallbackId)).publicKey):undefined;
    const card=useCard?await store.sshHardware(selected,serial):null;
-   const guard=()=>{gate();if(started!==epoch||(authorizeKey&&!authorizing))throw Error('SSH context changed.');};guard();
-   if(!authorizeKey){terminal?.dispose();terminal=new window.Terminal({cols:80,rows:24,scrollback:1000,disableStdin:false,allowProposedApi:false});terminal.open($('ssh-terminal'));}
+   guard();
+   if(!authorizeKey){
+    terminal?.dispose();terminal=null;
+    if(!view){
+     terminal=new window.Terminal({cols:80,rows:24,scrollback:1000,disableStdin:false,allowProposedApi:false});
+     terminal.open($('ssh-terminal'));
+    }
+   }
    // xterm renders terminal controls without HTML or link/clipboard addons.
    // Scrollback is memory-only and is disposed when the vault locks.
-   session=connectSsh({host:$('ssh-host').value,port:$('ssh-port').value,username:$('ssh-username').value,
+   session=connectSsh({host,port,username,
     publicKey,additionalPublicKey,entries,getEntries:()=>window.sshTrust.list(),guard,authorizeKey,
     requestPassword:authorizeKey?async(target,signal)=>{
      status.textContent='Waiting for the SSH account password…';
@@ -186,6 +222,7 @@ export function initializeSsh({window,document}){
     acceptUnknownHost:trustFirstUse?async(candidate,check,signal)=>{
      const fingerprint=await sshHostFingerprint(candidate.key);check();
      const endpoint=(candidate.host.includes(':')?'['+candidate.host+']':candidate.host)+':'+candidate.port;
+     if(view){view.status('Review the server fingerprint in the main window.','progress');window.focus();}
      if(!window.confirm('Trust this SSH host and connect?\n\n'+endpoint+'\n'+candidate.type+'  '+fingerprint+'\n\nCompare this fingerprint with a trusted source. If you continue, the key will be saved in your encrypted vault and required on future connections.'))throw Error('SSH host trust declined.');
      await store.assert(selected);check();
      await window.sshTrust.pinFirstUse({...candidate,guard:check,signal});check();
@@ -197,31 +234,58 @@ export function initializeSsh({window,document}){
      if(JSON.stringify(previousIdentity)!==JSON.stringify(currentIdentity))throw Error('SSH identity changed while saving host trust. Connect again.');
      selected=refreshed;
     }:undefined,
-    sign:async data=>{await store.assert(selected);if(card){const signature=await signCardSsh({identity:card,publicKey,message:data,piv:window.SequoiaSmartCardPiv,promptPin:window.hardwareTransport.promptPin,guard,onProgress:text=>{status.textContent=text;}});await store.assert(selected);return signature;}return store.signSsh(selected,data);},
-    onOutput:data=>{if(!authorizeKey)terminal.write(data);},
-    onStatus:(text,result)=>{
+    sign:async data=>{
+     await store.assert(selected);
+     if(!card)return store.signSsh(selected,data);
+     const signature=await signCardSsh({
+      identity:card,publicKey,message:data,piv:window.SequoiaSmartCardPiv,guard,
+      promptPin:details=>{
+       if(view){view.status('Enter the YubiKey PIN in the main window.','progress');window.focus();}
+       return window.hardwareTransport.promptPin(details);
+      },
+      onProgress:text=>{status.textContent=text;view?.status(text,'progress');},
+     });
+     await store.assert(selected);
+     return signature;
+    },
+    onOutput:data=>{if(view)view.write(data);else if(!authorizeKey)terminal.write(data);},
+    onStatus:(text,result,connection)=>{
      if(result!=='ready')session=null;
      if(authorizeKey)finishAuthorization((result==='success'?'Success: ':'Error: ')+text);
      else status.textContent=text;
+     if(view){
+      view.status(result==='ready'?'Connected to '+username+' @ '+host+'.':text,result,connection);
+      if(result==='ready'&&dimensions)session?.resize(...dimensions);
+     }
     }});
-   if(!authorizeKey){terminal.onData(text=>{try{session?.input(new TextEncoder().encode(text));}catch(e){status.textContent=e.message;}});terminal.focus();status.textContent='Connecting and verifying SSH host…';}
+   if(!authorizeKey){
+    if(terminal){terminal.onData(input);terminal.focus();}
+    status.textContent='Connecting and verifying SSH host…';
+   }
   }catch(e){
    if(started===epoch){
     if(authorizeKey){if(authorizing)finishAuthorization('Error: '+e.message);}
-    else status.textContent=e.message;
+    else{
+     status.textContent=e.message;
+     view?.status(e.message,'error');
+    }
    }
    session?.close();session=null;
   }
   finally{connecting=false;}
  }
  $('ssh-connect').onclick=()=>openSsh(false);
+ $('ssh-connect-window').onclick=()=>openSsh(false,true);
  authorizeButton.onclick=()=>openSsh(true);
  $('ssh-disconnect').onclick=()=>{
   session?.close();session=null;
   if(authorizing)finishAuthorization('SSH key authorization cancelled.');
-  else $('ssh-status').textContent='SSH disconnected.';
+  else{
+   closeTerminalWindow();
+   $('ssh-status').textContent='SSH disconnected.';
+  }
  };
- const clear=()=>{clearImport();session?.close();session=null;finishAuthorization('');terminal?.dispose();terminal=null;trustReview=null;$('ssh-trust-import').disabled=true;$('ssh-trust-summary').textContent='';$('ssh-trust-file').value='';epoch++;controller?.abort();$('ssh').hidden=true;$('ssh-tab').hidden=true;$('ssh-host').value='';$('ssh-username').value='';$('ssh-use-card').checked=false;$('ssh-trust-first-use').checked=false;$('ssh-fallback-ed25519').replaceChildren();$('ssh-port').value='22';$('ssh-public-text').textContent='';$('ssh-probe-status').textContent='';$('ssh-status').textContent='';$('ssh-identities').replaceChildren();identities=[];updateCardPicker();};
+ const clear=()=>{clearImport();session?.close();session=null;closeTerminalWindow();finishAuthorization('');terminal?.dispose();terminal=null;trustReview=null;$('ssh-trust-import').disabled=true;$('ssh-trust-summary').textContent='';$('ssh-trust-file').value='';epoch++;controller?.abort();$('ssh').hidden=true;$('ssh-tab').hidden=true;$('ssh-host').value='';$('ssh-username').value='';$('ssh-use-card').checked=false;$('ssh-trust-first-use').checked=false;$('ssh-fallback-ed25519').replaceChildren();$('ssh-port').value='22';$('ssh-public-text').textContent='';$('ssh-probe-status').textContent='';$('ssh-status').textContent='';$('ssh-identities').replaceChildren();identities=[];updateCardPicker();};
  window.addEventListener('iwa-vault-locked',clear);window.addEventListener('pagehide',clear);
  for(const event of ['iwa-vault-unlocked','iwa-software-identities-changed'])window.addEventListener(event,change=>{
   // The first-use pin advances the vault revision without editing identities.

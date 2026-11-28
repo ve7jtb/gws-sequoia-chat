@@ -1,5 +1,6 @@
 import {endpoint} from './transport.js';
 import {UnknownSshHostError,verifyHost} from './host-verifier.js';
+import {usesHybridSshKex} from './kex-probe.js';
 const b64=b=>btoa(String.fromCharCode(...b));
 const sshWorkerPath='/ssh/worker.js';
 const sshWorkerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-ssh-worker',{
@@ -21,8 +22,8 @@ export function connectSsh({host,port,username,publicKey,additionalPublicKey,ent
  if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
  if(authorizeKey&&typeof requestPassword!=='function')throw Error('Password prompt is unavailable.');
  const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
- let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,reviewedAlgorithms,hostKey=null;
- const close=()=>{if(closed)return;closed=true;lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
+ let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,reviewedAlgorithms,hostKey=null,resizeTimer;
+ const close=()=>{if(closed)return;closed=true;clearTimeout(resizeTimer);lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
  const check=()=>{if(closed)throw Error('SSH connection closed.');guard();};
  const verify=async candidate=>verifyHost({entries:getEntries?await getEntries():entries,...candidate,guard:check});
  signal?.addEventListener('abort',close,{once:true});if(signal?.aborted){close();throw Error('SSH cancelled.');}
@@ -63,15 +64,36 @@ export function connectSsh({host,port,username,publicKey,additionalPublicKey,ent
     const description=reviewedAlgorithms.includes('ssh-mldsa44-ed25519')?'SSH public key authorization confirmed: '+reviewedAlgorithms.join(', ')+'.':'SSH public key authorized: Ed25519 only.';
     onStatus(description,'success');close();
    }else if(data.type==='ready'){
+    if(authorizeKey||!hostAccepted||signing||ready)throw Error('Unexpected SSH connection result.');
     ready=true;
-    onStatus(data.keyExchange?'SSH authenticated. Key exchange: '+data.keyExchange+'.':'SSH authenticated.','ready');
+    const credential=authUsed?data.credential:'';
+    const login=credential==='ssh-mldsa44-ed25519'?'Post-quantum hybrid login: ML-DSA-44 + Ed25519.':
+     credential==='ssh-ed25519'?'Warning: classical Ed25519 login credential.':
+     'Warning: no post-quantum login credential was confirmed.';
+    const transport=usesHybridSshKex(data.keyExchange)?'Hybrid key exchange: '+data.keyExchange+'.':
+     data.keyExchange?'Warning: classical key exchange: '+data.keyExchange+'.':'Key exchange unreported.';
+    onStatus('SSH connected. '+login+' '+transport,'ready',{login,transport});
    }
    else if(data.type==='output'){if(hostAccepted)onOutput(data.data);}
    else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.',data.type);close();}
   }catch(e){if(!closed){onStatus(e.message,'error');close();}}
  };
  worker.postMessage({type:'connect',...target,username,publicKey,additionalPublicKey,authorizeKey});
- return {close,input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},resize(rows,cols){guard();if(!closed&&ready)worker.postMessage({type:'resize',rows,cols});}};
+ return {
+  close,
+  input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},
+  resize(rows,cols){
+   guard();
+   if(closed||!ready)return;
+   // Window dragging generates many geometry events. Send the latest size
+   // once the layout settles so the remote PTY can keep up.
+   clearTimeout(resizeTimer);
+   resizeTimer=setTimeout(()=>{
+    try{check();worker.postMessage({type:'resize',rows,cols});}
+    catch(error){if(!closed){onStatus(error.message,'error');close();}}
+   },80);
+  },
+ };
 }
 // Signing workers are short-lived and receive a copy of the selected seeds only.
 // No raw key is returned to UI code or persisted outside the encrypted vault.

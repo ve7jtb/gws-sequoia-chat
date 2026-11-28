@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>SSH terminal · Sequoia Chat Lab</title>
+ <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+ <link rel="stylesheet" href="/ssh-terminal.css">
+ <script src="/vendor/xterm/xterm.js" defer></script>
+ <script type="module" src="/ssh-terminal.js"></script>
+</head>
+<body>
+ <header>
+  <div>
+   <h1>SSH terminal</h1>
+   <p id="status" role="status">Opening terminal…</p>
+   <p id="credential" hidden></p>
+   <p id="exchange" hidden></p>
+  </div>
+  <div class="controls" aria-label="Terminal font size">
+   <button type="button" id="smaller" aria-label="Decrease font size">−</button>
+   <button type="button" id="font-size" title="Reset font size" aria-label="Reset font size">14 px</button>
+   <button type="button" id="larger" aria-label="Increase font size">+</button>
+   <button type="button" id="close">Close terminal</button>
+  </div>
+ </header>
+ <main id="terminal" aria-label="SSH terminal"></main>
+</body>
+</html>

@@ -4,6 +4,7 @@ const encoder=new TextEncoder(),decoder=new TextDecoder();
 const kexInit=20;
 const compression=['none'];
 const aead=new Set(['aes128-gcm@openssh.com','aes256-gcm@openssh.com','chacha20-poly1305@openssh.com']);
+export const usesHybridSshKex=algorithm=>algorithm==='mlkem768x25519-sha256';
 
 // RFC 4253 KEXINIT is sent before SSH encryption begins. Exchange only the
 // public proposals. The transport probe never sends a user name or a key.
@@ -51,5 +52,5 @@ export function predictTransport(payload){
     !sendCompression.includes('none')||!receiveCompression.includes('none')){
   throw Error('No compatible SSH transport algorithms were advertised.');
  }
- return {keyExchange,clientToServer,serverToClient,postQuantum:keyExchange==='mlkem768x25519-sha256'};
+ return {keyExchange,clientToServer,serverToClient,postQuantum:usesHybridSshKex(keyExchange)};
 }

@@ -12,6 +12,26 @@ test('client rejects changed host before signing',async()=>{
  await FakeWorker.instance.emit({type:'host',id:1,algorithm:'ssh-ed25519',data:new Uint8Array([4])});assert(FakeWorker.instance.stopped);assert(!signed);
 });
 
+test('connected status distinguishes the confirmed login key from transport key exchange',async()=>{
+ for(const {credential,keyExchange,sign,login,transport} of [
+  {credential:'ssh-mldsa44-ed25519',keyExchange:'mlkem768x25519-sha256',sign:true,login:/Post-quantum hybrid login/,transport:/Hybrid key exchange/},
+  {credential:'ssh-ed25519',keyExchange:'mlkem768x25519-sha256',sign:true,login:/Warning: classical Ed25519 login/,transport:/Hybrid key exchange/},
+  {credential:'ssh-mldsa44-ed25519',keyExchange:'curve25519-sha256',sign:true,login:/Post-quantum hybrid login/,transport:/Warning: classical key exchange/},
+  {credential:'ssh-mldsa44-ed25519',keyExchange:'mlkem768x25519-sha256',sign:false,login:/Warning: no post-quantum login credential was confirmed/,transport:/Hybrid key exchange/},
+ ]){
+  const status=[];
+  const session=connectSsh({host:'host',port:22,username:'user',publicKey:b,entries:[entry],guard(){},sign:async()=>b,onOutput(){},onStatus:(text,kind)=>status.push({text,kind}),WorkerClass:FakeWorker});
+  const worker=FakeWorker.instance;
+  await worker.emit({type:'host',id:1,algorithm:entry.type,data:b});
+  if(sign)await worker.emit({type:'sign',id:2,data:b});
+  await worker.emit({type:'ready',credential,keyExchange});
+  assert.equal(status.at(-1).kind,'ready');
+  assert.match(status.at(-1).text,login);
+  assert.match(status.at(-1).text,transport);
+  session.close();
+ }
+});
+
 test('first-use review must save the same host key before any authentication',async()=>{
  let entries=[],signatures=0,reviewed=0,save=false;
  const attempt=()=>connectSsh({host:'host',port:22,username:'user',publicKey:b,getEntries:()=>entries,

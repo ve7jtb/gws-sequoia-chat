@@ -130,11 +130,15 @@ func main() {
 				js.Global().Call("sshFailure", e.Error())
 				return
 			}
+			var credential string
 			signer := &engine.ExternalSigner{Key: pub, Callback: func(m []byte) ([]byte, error) {
 				v, e := await(js.Global().Call("sshSign", array(m)))
 				if e != nil {
 					return nil, e
 				}
+				// The engine verifies this signature before sending it. A
+				// successful Connect confirms the server accepted this key.
+				credential = pub.Type()
 				return octets(v), nil
 			}}
 			address, user := options.Get("address").String(), options.Get("username").String()
@@ -161,12 +165,11 @@ func main() {
 				js.Global().Call("sshFailure", e.Error())
 				return
 			}
-			negotiated, ok := terminal.Client.Conn.(ssh.AlgorithmsConnMetadata)
-			if ok {
-				js.Global().Call("sshReady", negotiated.Algorithms().KeyExchange)
-			} else {
-				js.Global().Call("sshReady")
+			var keyExchange string
+			if negotiated, ok := terminal.Client.Conn.(ssh.AlgorithmsConnMetadata); ok {
+				keyExchange = negotiated.Algorithms().KeyExchange
 			}
+			js.Global().Call("sshReady", keyExchange, credential)
 		}()
 		return nil
 	}))
