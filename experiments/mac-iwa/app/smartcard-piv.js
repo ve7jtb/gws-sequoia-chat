@@ -361,7 +361,11 @@ async function sha256Hex(bytes){
   return toHex(digest);
 }
 
-async function withPivSession(expectedSerial, fn, {exclusive=false,trace}={}){
+const PUBLIC_READER_DISCOVERY=Symbol('Public reader discovery');
+
+async function withPivSession(expectedSerial, fn, {exclusive=false,trace,discovery}={}){
+  const enumerate=discovery===PUBLIC_READER_DISCOVERY;
+  const devices=[];
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');
   }
@@ -411,17 +415,21 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace}={}){
       // cleanup can otherwise wait indefinitely on the pending transmit.
       if(exclusive)await operate();
       else await conn.startTransaction(operate);
-      if(matched) return result;
+      if(matched){
+        if(!enumerate)return result;
+        if(result)devices.push(result);
+      }
     }catch(e){
       lastError = e;
       // Never scan another reader or obscure an error after selecting the
       // requested device: PIN rejection/private operations must not be retried.
-      if(global.SequoiaSecureChannel?.isRequired() || operationStarted || (pivSelected && !expectedSerial)) throw e;
+      if(!enumerate&&(global.SequoiaSecureChannel?.isRequired() || operationStarted || (pivSelected && !expectedSerial)))throw e;
     }finally{
       secured?.close();
       if(conn){ try{ await conn.disconnect('leave'); }catch(_){} }
     }
   }
+  if(enumerate&&devices.length)return devices;
   if(expectedSerial){
     throw Error('Expected YubiKey ' + expectedSerial + ' is not connected.');
   }
@@ -430,7 +438,12 @@ async function withPivSession(expectedSerial, fn, {exclusive=false,trace}={}){
 
 async function listYubiKeys(){
   if(global.SequoiaSecureChannel?.isRequired()){
-    return withPivSession(null,async(_conn,info)=>[{reader:info.reader,serial:info.serial,version:info.version}]);
+    // Authenticate each reader independently. Discovery may skip a failed
+    // public probe; selected-device operations retain their fail-closed path.
+    return withPivSession(null,async(_conn,{reader,serial,version})=>{
+      if(!/^[1-9][0-9]{0,9}$/.test(serial||''))return null;
+      return {reader,serial,version};
+    },{discovery:PUBLIC_READER_DISCOVERY});
   }
   if(!global.navigator?.smartCard){
     throw Error('Web Smart Card API (navigator.smartCard) is not available in this browser build.');

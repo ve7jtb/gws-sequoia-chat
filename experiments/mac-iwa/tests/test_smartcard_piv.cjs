@@ -181,5 +181,49 @@ assert.deepEqual(Array.from(piv.extractEcUncompressedPointFromSpki(fakeSpki)), A
     delete ctx.navigator;
   }
 
+  // Secure enumeration authenticates every candidate and releases each
+  // reader. Failure to authenticate a reader never leaks its serial or
+  // permits scanning onward in an ordinary selected-device operation.
+  {
+    const attempts=[],cleanups=[],readers=['YubiKey untrusted','YubiKey A','YubiKey B'];
+    const serials={'YubiKey A':41088008,'YubiKey B':41088108};
+    ctx.SequoiaSecureChannel={
+      isRequired:()=>true,
+      acquire:async conn=>{
+        attempts.push(conn.reader);
+        if(!serials[conn.reader])throw Error('Untrusted test device');
+        return {connection:conn,close(){}};
+      },
+    };
+    ctx.navigator={smartCard:{establishContext:async()=>({
+      listReaders:async()=>readers,
+      connect:async reader=>({connection:{
+        reader,status:async()=>({answerToReset:new Uint8Array()}),
+        startTransaction:async run=>run(),
+        disconnect:async()=>cleanups.push(reader),
+        transmit:async apdu=>{
+          switch(apdu[1]){
+            case 0xa4:return new Uint8Array([0x90,0]);
+            case 0xfd:return new Uint8Array([6,0,0,0x90,0]);
+            case 0xf8:{
+              const serial=Buffer.alloc(4);serial.writeUInt32BE(serials[reader]);
+              return new Uint8Array([...serial,0x90,0]);
+            }
+            default:assert.fail('Discovery must use public PIV commands only');
+          }
+        },
+      }}),
+    })}};
+    const devices=await piv.listYubiKeys();
+    assert.deepEqual(Array.from(devices,d=>d.serial),['41088008','41088108']);
+    assert.deepEqual(attempts,readers);
+    assert.deepEqual(cleanups,readers);
+    attempts.length=0;
+    await assert.rejects(piv.withPivSession('41088108',()=>assert.fail('Untrusted reader')),/Untrusted test device/);
+    assert.deepEqual(attempts,[readers[0]]);
+    delete ctx.SequoiaSecureChannel;
+    delete ctx.navigator;
+  }
+
   console.log('PASS smartcard-piv APDU, TLV, PIN, command chaining, SPKI, and GET RESPONSE tests');
 })();
