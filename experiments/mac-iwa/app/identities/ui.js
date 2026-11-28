@@ -1,11 +1,9 @@
-// Own public identities are an inventory, separate from recipient trust. This
-// controller never passes an imported slot, serial, file path or certificate to
-// a private-key operation. The helper independently verifies any later selection.
+// Own public identities are separate from recipient trust. Card operations
+// independently verify any selected identity against the live bundle.
 import {createIdentityStore} from './store.js';
 import {inspectCertificate} from '../certificates/client.js';
 import {inspectBundle} from './client.js';
-import {parseCardBundle,parseCardCompanion} from './bundle.js';
-import {inspectCompanion} from './client.js';
+import {parseCardBundle} from './bundle.js';
 import {discoverIdentityDevices} from './devices.js';
 
 const MAX_FILE=262144;
@@ -27,13 +25,13 @@ export function identityFileKind(bytes){
  return 'certificate';
 }
 
-/** Initialize after the app's normal bootstrap. All native calls here are
+/** Initialize after the app's normal bootstrap. All hardware calls here are
  * public reads. Store commits are explicit, atomic, and independent of both
  * Gmail/Chat sign-in and the encrypted credential vault.
  */
 export async function initializeIdentities({request,say,isBusy,setBusy,identityStore}){
  const $=id=>document.getElementById(id),store=identityStore||createIdentityStore({inspect:inspectCertificate});
- let pending=null,removal=null,current=null,deviceChoice=null,refreshTicket=0;
+ let pending=null,removal=null,deviceChoice=null,refreshTicket=0;
  const channel=typeof BroadcastChannel==='function'?new BroadcastChannel('sequoia-iwa-own-identities'):null;
  // A second window may change the inventory while this dialog is open. Invalidate
  // its review immediately; the store's revision check independently prevents a
@@ -101,8 +99,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   if(!inventory.identities.length)list.append(element('p','No own identities saved in this IWA yet. Restore from your YubiKey or import a public certificate from file.'));
   for(const identity of inventory.identities){
    const card=document.createElement('article');card.className='identity-card';
-   const matches=current&&identity.serial===current.serial&&identity.certificates.some(c=>c.fingerprint===current.fingerprint);
-   card.append(element('h3',matches?'Matches default vault identity':'Saved public identity'));
+   card.append(element('h3','Saved public identity'));
    describe(card,identity);
    if(identity.bundleHash&&!identity.liveKeysMatched){
     const match=element('button','Match connected YubiKey…');
@@ -117,16 +114,6 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
     removal={id:identity.id,revision:inventory.revision};$('identity-remove-details').textContent=(identity.serial?'YubiKey '+identity.serial+'\n':'')+identity.certificates.map(c=>c.fingerprint).join('\n');$('identity-remove-dialog').showModal();
    });card.append(remove);list.append(card);
   }
- }
- async function configured(){
-  // This certificate is read from fixed native configuration. It is displayed
-  // separately, never automatically inserted into the IWA inventory or trusted.
-  const value=await request('chat-identity-current');
-  const cert=await inspectCertificate(value.certificate);
-  if(cert.fingerprint!==value.fingerprint)throw Error('Configured identity fingerprint mismatch.');
-  current=value;const box=$('identity-current');box.replaceChildren();
-  box.append(element('p','YubiKey serial: '+value.serial+' · default native identity for existing vault enrollment'));
-  describeCertificate(box,{...cert,label:'Current public certificate'});describeSlots(box,value.slots);
  }
  function review(value){
   pending=value;const box=$('identity-review-details');box.replaceChildren();describe(box,value.identity);
@@ -144,16 +131,6 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
   review(await store.previewBundle(await parseCardBundle(await request('chat-identity-bundle-read',{serial}),inspectBundle,{compatibilityCertificate})));
   say('Review the YubiKey certificate bundle before saving.');
  });
- listen('identity-companion-restore',async()=>{
-  clearReview();const serial=await chooseDevice();say('Reading encrypted companion and public keys from YubiKey '+serial+'. No PIN or decryption is required for review.');
-  // A companion import is deliberately distinct from the ordinary public
-  // bundle. Both may coexist on one card and have different certificate views.
-  const file=$('identity-companion-certificate').files[0];let certificate;
-  if(file){if(!file.size||file.size>MAX_FILE)throw Error('Choose a public companion certificate up to 256 KiB.');certificate=encode(new Uint8Array(await file.arrayBuffer()));}
-  const read=await request('chat-identity-companion-read',{serial,...(certificate?{certificate}:{})});
-  review(await store.previewBundle(await parseCardCompanion(read,inspectCompanion)));
-  say('Review the encrypted companion custody, certificate and mapped hardware keys before saving.');
- });
  listen('identity-file-review',async()=>{
   clearReview();const file=$('identity-file').files[0];
   if(!file||!file.size||file.size>MAX_FILE)throw Error('Choose a public certificate or bundle up to 256 KiB.');
@@ -167,7 +144,7 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  listen('identity-review-save',async()=>{
   if(!pending||!$('identity-review-confirmed').checked)throw Error('Review and confirm the certificates and slot mappings first.');
   await store.save(pending,true);clearReview();channel?.postMessage({changed:true});await refresh();
-  say('Own public identity saved. Hardware-matched, supported v4/v5/v6 profiles are available in Compose and incoming matching. For an unmatched bundle, use Match connected YubiKey first. Recipient trust and vault enrollment are unchanged.');
+  say('Own public identity saved. Hardware-matched Level 3 RFC 9980 v6 identities are available for sending and decrypting. For an unmatched bundle, use Match connected YubiKey first. Recipient trust and vault enrollment are unchanged.');
  });
  listen('identity-review-cancel',()=>clearReview());
  $('identity-review').addEventListener('cancel',()=>{if(pending)store.cancel(pending);pending=null;});
@@ -176,12 +153,9 @@ export async function initializeIdentities({request,say,isBusy,setBusy,identityS
  listen('identity-remove-confirm',async()=>{
   if(!removal)throw Error('Choose an identity to forget first.');
   await store.remove(removal.id,true,removal.revision);clearReview();channel?.postMessage({changed:true});await refresh();
-  say('Local identity forgotten. YubiKey data, contact trust and the configured helper remain unchanged.');
+  say('Local identity forgotten. YubiKey data, contact trust remain unchanged.');
  });
  if(channel)channel.onmessage=()=>{clearReview();refresh().catch(e=>say(e.message,true));};
  window.addEventListener('pagehide',()=>{finishDevice(true);clearReview();channel?.close();});
- // Startup must work without an extension/native host. Native enrollment is
- // read only after the user explicitly requests Read default vault identity from helper.
- $('identity-current').textContent='Default vault identity metadata is available through Read default vault identity from helper. No hardware is contacted at startup.';
  await refresh();return {refresh};
 }

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const source=['native-bridge.js','app.js'].map(name=>fs.readFileSync(new URL('../app/'+name,import.meta.url),'utf8')).join('\n');
+const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
 const fp='A'.repeat(64),mail='sender@example.invalid';
 const certificate=Buffer.from('synthetic public certificate').toString('base64');
 const packet={raw:Buffer.from('synthetic captured message bytes').toString('base64')};
@@ -52,12 +52,7 @@ function application({software=false}={}){
  const context={Promise,Error,AbortController,structuredClone,setTimeout,clearTimeout,Uint8Array,btoa:value=>Buffer.from(value,'binary').toString('base64'),
   document:{getElementById:node,querySelectorAll:()=>[],createElement:element},
   EXTENSION_ID:'synthetic-extension',
-  window:{softwareIdentities:software?{native:selected=>{assert.equal(selected.provider,'software');return async(op,data)=>{softwareCalls.push({op,data});return {software:true};};}}:undefined,addEventListener:(name,fn)=>events.set(name,fn),vaultGate(){if(!unlocked)throw Error('Vault locked');},googleTransport:{handles:op=>op==='chat-mail-read',call:async()=>({...packet})}},
-  chrome:{runtime:{connect(){
-   const listeners=[];
-   return {disconnect(){},onMessage:{addListener:fn=>listeners.push(fn)},onDisconnect:{addListener(){}},
-    postMessage(request){native.push(request);queueMicrotask(()=>listeners.forEach(fn=>fn({type:'result',data:{ok:true}})));}};
-  }}},
+  window:{hardwareTransport:{async dispatch(op,data){native.push({op,...data});return {ok:true};}},softwareIdentities:software?{native:selected=>{assert.equal(selected.provider,'software');return async(op,data)=>{softwareCalls.push({op,data});return {software:true};};}}:undefined,addEventListener:(name,fn)=>events.set(name,fn),vaultGate(){if(!unlocked)throw Error('Vault locked');},googleTransport:{handles:op=>op==='chat-mail-read',call:async()=>({...packet})}},
   accountSettingsArg:{assert:s=>{if(accountChanged)throw Error('Account settings changed');return s.email;}},storeArg:store,identitySelectionArg:selections,workerArg:(...args)=>worker(...args),displayArg:(result,message)=>{displays.push({result,message});node('reader').hidden=false;},
   // Keep the real app's trust/reader checks around its new WASM coordinator.
   // The coordinator's component/native boundary is tested separately; this
@@ -99,7 +94,7 @@ test('all public certificate and trust UI aliases stay in IWA storage',async()=>
  assert.equal(a.native.length,0);
  // Message discovery now carries the selected public authority tuple, but
  // does not send MIME or permit the browser to select native executable paths.
- await a.context.nativeRequest('chat-selected-decryption-material',{service:'Gmail',identity:{serial:'12345678'}});
+ await a.context.hardwareRequest('chat-selected-decryption-material',{service:'Gmail',identity:{serial:'12345678'}});
  assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-selected-decryption-material');
 });
 

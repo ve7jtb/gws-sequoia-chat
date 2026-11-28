@@ -35,9 +35,28 @@ test('either enrolled PRF or legacy PIV credential opens the same encrypted vaul
   assert.deepEqual(input.credentialId,credentialId);
   return {secret:prfSecret.slice(),credentialId};
  };
- await unlockBackup(source.record,prf.id,restored,{signal,mode:'smartcard',evaluate});
+ await unlockBackup(source.record,prf.id,restored,{signal,evaluate});
  assert.equal(restored.unlocked,true);
  await assert.rejects(unlockBackup(source.record,'unknown',new Vault(),{signal}),/Select an enrolled/);
+});
+
+test('older PRF wrappers use their original extension RP over Web Smart Card',async()=>{
+ const secret=crypto.getRandomValues(new Uint8Array(32)),credentialId=new Uint8Array([1,2,3]);
+ const method={id:crypto.randomUUID(),name:'Legacy FIDO',type:'prf',
+  binding:{salt:b64(new Uint8Array(32)),credentialId:b64(credentialId)}};
+ const source=new Vault(),restored=new Vault();
+ await source.create(method,secret);
+ const legacyRp='chrome-extension://test';
+ const {serial}=await unlockBackup(source.record,method.id,restored,{
+  signal:new AbortController().signal,legacyRp,
+  request:async op=>{assert.equal(op,'chat-identity-devices');return {devices:[{serial:'12'}]};},
+  evaluate:async input=>{
+   assert.equal(input.rpId,legacyRp);assert.equal(input.serial,'12');
+   assert.deepEqual(input.credentialId,credentialId);
+   return {secret:secret.slice(),credentialId};
+  }
+ });
+ assert.equal(serial,'12');assert.equal(restored.unlocked,true);
 });
 
 test('hybrid recovery binds the selected card and vault wrapper to the WASM operation',async()=>{

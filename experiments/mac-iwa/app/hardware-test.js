@@ -1,4 +1,4 @@
-// Browser-owned, offline hardware-test orchestration. The native helper sees
+// Browser-owned, offline hardware-test orchestration. The card transport sees
 // only public audit/identity requests and the existing signature/decapsulation
 // components. This module has no Google transport, provisioning or file API.
 import {signAndEncrypt} from './signing-session.js';
@@ -80,14 +80,14 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
  };
  const request=(op,data)=>{
   // Do not pass the worker's cancellation signal into Native Messaging. Once
-  // PIN/touch began, only the native operation can report its final outcome.
+  // PIN/touch began, only the card operation can report its final outcome.
   const pending=Promise.resolve().then(()=>native(op,data));inFlight.add(pending);
   pending.then(()=>inFlight.delete(pending),()=>inFlight.delete(pending));return pending;
  };
  try{
   await check();progress('before-audit','Reading all 24 public slots and PIN/touch policies — no PIN required.');
   before=validateHardwareAudit(await request('chat-hardware-audit',{identity:binding}),selected);await check();complete();
-  progress('signing','Signing a fresh local test message — enter the PIN only in the native dialog, then touch if requested.');
+  progress('signing','Signing a fresh local test message — enter the PIN only in the PIV dialog, then touch if requested.');
   const material=await request('chat-selected-signing-material',{identity:binding});
   await selection.validateMaterial(material,selected,'signing');await check();
   compose=hardwareTestFixture(selected.email,id);
@@ -104,7 +104,7 @@ export async function runHardwareTest({identity,selection,native,gate,signal,onP
   const matched=await selection.match(cipher,selected.email);await check();
   const recipient=matched.choices.find(choice=>choice.id===selected.id);
   if(!recipient||!same(nativeIdentity(recipient),binding)||recipient.recipientKey!==selected.recipientKey||matched.recipientKey!==selected.recipientKey)throw Error('Hardware test recipient mismatch');
-  complete();progress('decryption','Decrypting the local test message — enter the PIN only in the native dialog, then touch if requested.');
+  complete();progress('decryption','Decrypting the local test message — enter the PIN only in the PIV dialog, then touch if requested.');
   // Self-verification is explicitly scoped to this test. This in-memory binding
   // never saves a contact or grants trust to any mailbox in the IWA database.
   const verification={expectedEmail:selected.email,expectedFingerprint:selected.fingerprint,recipient:selected.email,

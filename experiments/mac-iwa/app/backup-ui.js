@@ -1,7 +1,7 @@
 // Load the same required-SCP policy before any backup PRF assertion.
 import './secure-channel-ui.js';
 import {Vault,load} from './vault/core.js';
-import {evaluate} from './ctap2-smartcard.js';
+import {evaluate,extensionRp} from './ctap2-smartcard.js';
 import {capture,unseal,digest,restore,browserStorage,recoveryVault,PENDING} from './complete-backup.js';
 import {createBackupDrive,DRIVE_SCOPE} from './backup-drive.js';
 import {runLoopbackPkceOAuth,getLoopbackClientId,getLoopbackClientSecret} from './google-loopback-oauth.js';
@@ -19,9 +19,8 @@ const workerPolicy=globalThis.trustedTypes?.createPolicy('sequoia-backup-decrypt
 const el=id=>document.getElementById('backup-'+id),storage=browserStorage(),drive=createBackupDrive();
 const screen=el('screen'),application=document.getElementById('application-screen');
 let verificationVault=new Vault(),source;
-const securityIds=['secure-yubikey-connection','secure-yubikey-beta','secure-yubikey-status','hardware-transport'];
-const security=[document.querySelector('label[for=hardware-transport]'),...securityIds.map(id=>document.getElementById(id))].map((node,i)=>{
- const control=i===1||i===2?node.closest('label'):node;
+const security=['secure-yubikey-connection','secure-yubikey-beta','secure-yubikey-status'].map((id,index)=>{
+ const node=document.getElementById(id),control=index<2?node.closest('label'):node;
  const home=document.createComment('security control home');control.before(home);
  return {control,home};
 });
@@ -95,19 +94,18 @@ async function unlock(record,vault,methodId){
  tell('Checking '+detailedUnlockMethodLabel(w)+' — keep the key connected.');
  const abort=new AbortController(),dialog=el('pin-dialog');unlockAbort=abort;
  const guard=()=>abort.signal.throwIfAborted();
- const mode=window.hardwareTransport.getMode();
- const progress=w.type==='piv'&&w.binding.kind==='hybrid'&&mode==='smartcard'
+ const progress=w.type==='piv'&&w.binding.kind==='hybrid'
   ?showVaultUnlockProgress(el('vault-progress'),w.binding.serial):null;
  const vaultProgress=event=>{guard();progress?.update(event);};
  const request=(op,data,options={})=>{
   guard();
   // Allow only the read and unwrap operations needed before the app unlocks.
-  if(!['chat-identity-devices','vault-prf','chat-vault-ecdh','chat-vault-level5-open',
+  if(!['chat-identity-devices','chat-vault-ecdh','chat-vault-level5-open',
    'chat-decryption-material','chat-decapsulate-components'].includes(op))throw Error('Unsupported backup unlock operation.');
   if(['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data?.service!=='Vault')
    throw Error('Backup recovery requires a vault operation.');
   return window.hardwareTransport.dispatch(op,data,{signal:abort.signal,...options,vaultProgress},
-   (op,data,options)=>requestCompanion(op,data,{...options,progress:tell}),{
+   {
     say:tell,assertVault:guard,
     prepareLevel3VaultUnlock:async(serial,recipientKey,progress)=>{
      const {inspectBundle,inspectIdentity}=await import('./identities/client.js');
@@ -134,11 +132,11 @@ async function unlock(record,vault,methodId){
    request,evaluate,promptPin,
    decrypt:options=>decryptWithHardware({...options,signal:abort.signal,
     createWorker:()=>new Worker(workerPolicy?workerPolicy.createScriptURL(workerPath):workerPath,{type:'module'})}),
-   mode,legacyRp:'chrome-extension://'+EXTENSION_ID,
+   legacyRp:extensionRp(),
    expectedSerial:localStorage.getItem('iwa-fido-expected-serial'),signal:abort.signal,
    progress:m=>el('pin-progress').textContent=m,
   });
-  verificationPresence.start(monitoredVaultSerial(authenticated.serial,authenticated.mode));
+  verificationPresence.start(monitoredVaultSerial(authenticated.serial));
   tell('Authenticator unlocked the vault. Keep the unlock key connected.');
  }catch(e){
   if(/No PC\/SC smart card readers detected/i.test(e.message)){

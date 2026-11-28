@@ -15,7 +15,7 @@ from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
 import identities
 from chat_bridge import ChatBridge,validate
-from host import operation_error
+from chat_bridge import operation_error
 
 ENCODED=base64.b64encode(b'PQMZIP01synthetic').decode()
 

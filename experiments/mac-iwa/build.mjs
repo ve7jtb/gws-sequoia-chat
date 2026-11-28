@@ -22,7 +22,7 @@ const extensionId=crypto.createHash('sha256').update(pub).digest('hex').slice(0,
 // Chat attachment uploads/downloads need extension HTTPS permission because
 // Google's upload response omits CORS access for the isolated-app origin.
 // Restrict the host to Chat; the broker further restricts methods and paths.
-fs.writeFileSync('extension/manifest.json',JSON.stringify({manifest_version:3,name:'Sequoia IWA native bridge (experiment)',version:'0.20.72',key:pub.toString('base64'),permissions:['nativeMessaging','identity'],host_permissions:['https://chat.googleapis.com/*'],background:{service_worker:'background.js'},externally_connectable:{matches:[origin+'/*']}},null,2));
+fs.writeFileSync('extension/manifest.json',JSON.stringify({manifest_version:3,name:'Sequoia IWA Google broker',version:'0.20.72',key:pub.toString('base64'),permissions:['identity'],host_permissions:['https://chat.googleapis.com/*'],background:{service_worker:'background.js'},externally_connectable:{matches:[origin+'/*']}},null,2));
 fs.writeFileSync('extension/config.js','const IWA_ORIGIN = '+JSON.stringify(origin)+';\n');
 // Only the installed Desktop app registration is bundled. Explicitly select
 // its two configuration fields so this cannot ship a refresh/access token.

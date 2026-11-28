@@ -74,7 +74,7 @@ test('a stalled browser and restore handoff retain the original deadline',()=>{
 
 test('presence monitoring requires an SCP11b-enabled direct Web Smart Card session',()=>{
  const secure={SequoiaSecureChannel:{isRequired:()=>true}};
- assert.equal(monitoredVaultSerial('41088108','smartcard',secure),'41088108');
- for(const [serial,mode,scope] of [['41088108','native',secure],['41088108','smartcard',{}],
-  [undefined,'smartcard',secure]])assert.equal(monitoredVaultSerial(serial,mode,scope),null);
+ assert.equal(monitoredVaultSerial('41088108',secure),'41088108');
+ for(const [serial,scope] of [['41088108',{}],[undefined,secure]])
+  assert.equal(monitoredVaultSerial(serial,scope),null);
 });

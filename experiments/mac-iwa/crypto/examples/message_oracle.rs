@@ -331,7 +331,7 @@ fn execute()->Result<()> {
 // PIV_UNLOCK_DIAGNOSTICS: safe component status protocol for investigating the
 // intermittent vault failure, separate from Python's optional on-disk history.
 // If retiring this protocol, replace main's status emission with a fixed generic
-// error and keep exit(1). Update native/chat_bridge.py, native/host.py, piv_soak.py
+// error and keep exit(1). Update native/chat_bridge.py, piv_soak.py,
 // and diagnostics tests together. Never replace it with Debug/Display of the
 // full error chain, and never remove failure propagation or add a retry.
 // Map errors to a closed vocabulary. Never print the error chain: provider

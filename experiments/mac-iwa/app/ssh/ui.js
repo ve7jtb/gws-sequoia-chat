@@ -360,7 +360,6 @@ export function initializeSsh({window,document}){
    const identity=identities.find(row=>row.id===identityId);
    if(!identity)throw Error('Select an SSH identity.');
    if(useCard&&!identity.sshCardSerials?.includes(serial))throw Error('Choose a YubiKey provisioned for this SSH identity.');
-   if(useCard&&window.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card hardware transport first.');
    endpoint(host,port);sshUsername(username);
    if(!authorizeKey){
     // Open during the user's click. Waiting for the vault or network first

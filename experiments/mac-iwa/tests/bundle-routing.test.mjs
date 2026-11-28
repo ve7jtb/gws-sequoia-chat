@@ -41,7 +41,7 @@ test('public UI has no automatic native startup or legacy native bundle parser f
  assert.match(source,/parseCardBundle\(await request\('chat-identity-bundle-read',\{serial\}\),inspectBundle,\{compatibilityCertificate\}\)/);
  assert.doesNotMatch(source,/try\{await configured\(\);\}/);
 });
-test('identities initialize and list saved public data with an unavailable native helper',async()=>{
+test('identities initialize and list saved public data without contacting Web Smart Card',async()=>{
  // A small DOM substitute runs the actual initialization controller. The
  // request function would fail if startup accidentally called the extension;
  // imported identity inspection and UI event handlers remain untriggered.
@@ -54,7 +54,6 @@ test('identities initialize and list saved public data with an unavailable nativ
  try{
   const ui=await initializeIdentities({request:async()=>{calls++;throw Error('Native helper unavailable');},say:()=>{},isBusy:()=>false,setBusy:()=>{},identityStore:{list:async()=>{lists++;return {identities:[],revision:0};}}});
   await ui.refresh();assert.equal(calls,0);assert.equal(lists,2);
-  assert.match(nodes.get('identity-current').textContent,/No hardware is contacted at startup/);
   assert.equal(nodes.get('identity-list').children.length,1);
  }finally{for(const [key,value] of Object.entries(previous)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}
 });

@@ -8,7 +8,7 @@ export function backupUnlockChoices(record,previous){
 
 // Restore uses only the selected wrapper. There is no credential creation,
 // automatic retry, or fallback to a different credential or transport.
-export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,decrypt,mode,legacyRp,expectedSerial,signal,progress}){
+export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,decrypt,legacyRp,expectedSerial,signal,progress}){
  const method=record?.wrappers.find(w=>w.id===id);
  if(!method)throw Error('Select an enrolled unlock method.');
  const {binding}=method;
@@ -18,7 +18,7 @@ export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,d
   guard();
   if(method.type==='piv'){
    secret=await openPivWrapper(record,method,{request,decrypt,guard});
-  }else if(mode==='smartcard'){
+  }else{
    serial ||= expectedSerial;
    if(!serial){
     const {devices}=await request('chat-identity-devices');
@@ -31,16 +31,11 @@ export async function unlockBackup(record,id,vault,{request,evaluate,promptPin,d
     promptPin,{signal,progress});
    secret=result.secret;
    if(binding.credentialId&&b64(result.credentialId)!==binding.credentialId)throw Error('Unexpected FIDO credential.');
-  }else{
-   if(binding.rpId&&binding.rpId!==legacyRp)throw Error('Select Web Smart Card to use this FIDO credential’s original RP ID.');
-   const result=await request('vault-prf',{name:method.name,salt:binding.salt,credentialId:binding.credentialId||''});
-   try{secret=bytes(result.secret);}finally{delete result.secret;}
-   if(binding.credentialId&&result.credentialId!==binding.credentialId)throw Error('Unexpected FIDO credential.');
   }
   guard();
   await vault.unlock(record,method.id,secret);
   guard();
-  return {serial,mode};
+  return {serial};
  }catch(error){
   vault.lock();
   throw error;

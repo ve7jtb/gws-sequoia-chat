@@ -8,7 +8,7 @@ import {wrapLevel5} from './vault/level5.js';
 import {unlockMethodLabel} from './vault/labels.js';
 import {confirmUnlockEnrollment,discoverOrCreate,hasMatchingPiv,requireAttachedUnlockMethod} from './vault/enrollment.js';
 import {Vault,load,persist,validate,random,b64,bytes} from './vault/core.js';
-import {classicalWrap} from './vault/piv.js';
+import {classicalWrap,classicalOpen} from './vault/piv.js';
 import {openPivWrapper} from './vault/open-piv.js';
 import {showVaultUnlockProgress} from './vault/unlock-progress.js';
 import {createVaultPresenceMonitor,monitoredVaultSerial} from './vault/presence.js';
@@ -27,8 +27,8 @@ const presence=createVaultPresenceMonitor({
  onTimeout:serial=>lock('Vault locked. Could not verify unlock key SN# '+serial+' over SCP11b for 30 seconds.'),
 });
 function vaultStillUnlocked(){presence.check();return engine.unlocked;}
-function trackUnlockKey(serial,mode){
- presence.start(monitoredVaultSerial(serial,mode));
+function trackUnlockKey(serial){
+ presence.start(monitoredVaultSerial(serial));
 }
 function lock(message){presence.stop();if(message)tell(message);window.sshTrust?.cancel();softwareIdentities.cancel();epoch++;engine.lock();clearTimeout(timer);el('vault-password').value='';el('vault-file').value='';el('vault-secret').value='';render();window.dispatchEvent(new Event('iwa-vault-locked'));}
 function render(){
@@ -96,7 +96,15 @@ async function pivSecret(w,vaultProgress){
  return openPivWrapper(record,w,{request:(op,data,options)=>hardwareRequest(op,data,{...options,vaultProgress}),vaultRequest:call,decrypt:decryptInIwa,
   guard:()=>{if(started!==epoch)throw Error('Vault operation cancelled by locking.');}});
 }
-async function prf(w,options){if(w.binding.rpId&&w.binding.rpId!==('chrome-extension://'+EXTENSION_ID)&&globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('This wrapper requires direct Web Smart Card for its original RP.');const r=globalThis.hardwareTransport?.getMode()==='smartcard'?await window.directFido.prf(w.binding,options):await call('vault-prf',{name:w.name,salt:w.binding.salt,credentialId:w.binding.credentialId||''});if(w.binding.credentialId&&r.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');w.binding.credentialId=r.credentialId;try{options?.onAuthenticatedSerial?.(r.serial);return bytes(r.secret);}finally{delete r.secret;}}
+async function prf(w,options){
+ const result=await window.directFido.prf(w.binding,options);
+ try{
+  if(w.binding.credentialId&&result.credentialId!==w.binding.credentialId)throw Error('Wrong passkey');
+  w.binding.credentialId=result.credentialId;
+  options?.onAuthenticatedSerial?.(result.serial);
+  return bytes(result.secret);
+ }finally{delete result.secret;}
+}
 async function checkExistingUnlockDevice(check){
  check();
  if(!record)return;
@@ -147,7 +155,7 @@ async function enroll(type,check,{create=false,expectedSerial=null,
     const seed=random(32);try{const out=await wasm('wrap',{certificate:material.certificate,secret:b64(seed),vaultId,wrapperId:w.id});w.binding={kind:'hybrid',cipher:out.cipher,recipientKey:out.recipientKey,serial:material.serial};w.vaultId=vaultId;check();secret=await pivSecret(w);delete w.vaultId;if(!secret.every((b,i)=>b===seed[i]))throw Error('PIV enrollment verification failed.');}finally{seed.fill(0);}
    }
    if(record?.wrappers.some(x=>x.type==='piv'&&x.binding.kind===w.binding.kind&&(x.binding.recipientKey||x.binding.fingerprint||x.binding.kemPublic)===(w.binding.recipientKey||w.binding.fingerprint||w.binding.kemPublic)))throw Error('This PIV key already unlocks the vault.');
-  }else{w.binding={salt:b64(random(32)),credentialId:'',...(globalThis.hardwareTransport?.getMode()==='smartcard'?window.directFido.enrollmentBinding(expectedSerial):{})};if(create){
+  }else{w.binding={salt:b64(random(32)),credentialId:'',...window.directFido.enrollmentBinding(expectedSerial)};if(create){
     // Discover first under this exact RP and serial; never turn cancellation,
     // wrong PIN, transport loss or unsupported PRF into credential creation.
     const found=await discoverOrCreate({
@@ -162,7 +170,7 @@ async function enroll(type,check,{create=false,expectedSerial=null,
   const creatingVault=!record;
   if(creatingVault)await engine.create(w,secret,vaultId);else await engine.add(w,secret,{makeDefault});
   check();await commit();
-  if(creatingVault){trackUnlockKey(w.binding.serial,window.hardwareTransport?.getMode());render();}
+  if(creatingVault){trackUnlockKey(w.binding.serial);render();}
   if(create)window.directFido.creationSaved();tell('Unlock method verified and saved. The same vault can use PIV or FIDO PRF.');if(type==='prf')window.directFido?.complete('FIDO PRF unlock method saved. Lock the vault to test a fresh unlock.');
  }finally{secret?.fill(0);}
 }
@@ -176,11 +184,7 @@ window.offerProvisionedVaultUnlock=async({serial,type})=>{
  const label=type==='piv'?'hybrid PIV':'FIDO PRF';
  const name='YubiKey SN# '+serial;
  let enrolled=false,failure,credentialDeclined=false;
- await run(async checkEpoch=>{
-  const check=()=>{
-   checkEpoch();
-   if(window.hardwareTransport?.getMode()!=='smartcard')throw Error('Use Web Smart Card to enroll the reviewed YubiKey.');
-  };
+ await run(async check=>{
   if(!await confirmUnlockEnrollment(document,window,{
    title:'Add '+name+' as a vault unlock method?',
    detail:label+' will unlock this vault alongside its existing methods. Keep an enrolled YubiKey connected. Your current default stays selected.',
@@ -212,9 +216,6 @@ window.offerProvisionedVaultUnlock=async({serial,type})=>{
 };
 el('vault-create-prf').onclick=()=>run(c=>enroll('prf',c,{create:true}));
 async function enrollConnectedPiv(check,requestedSerial){
- // The native helper has a configured identity. Web Smart Card can enroll
- // an unknown connected device after independently authenticating its keys.
- if(window.hardwareTransport?.getMode()!=='smartcard')return enroll('piv',check);
  let serial=requestedSerial;
  if(!serial){
   const devices=await discoverIdentityDevices(call);
@@ -226,20 +227,14 @@ async function enrollConnectedPiv(check,requestedSerial){
   });
   if(!serial)return;
  }
- const checkTransport=()=>{
-  check();
-  if(window.hardwareTransport?.getMode()!=='smartcard')throw Error('Use Web Smart Card to enroll the selected YubiKey.');
- };
- checkTransport();
- return enroll('piv',checkTransport,{expectedSerial:serial});
+ return enroll('piv',check,{expectedSerial:serial});
 }
 el('vault-add-piv').onclick=()=>run(c=>enrollConnectedPiv(c));
 el('vault-add-prf').onclick=()=>run(c=>enroll('prf',c));
 async function unlockWithMethod(method,check){
  const w=structuredClone(method);
- const mode=window.hardwareTransport?.getMode();
  let unlockSerial=w.binding.serial;
- const showProgress=w.type==='piv'&&w.binding.kind==='hybrid'&&window.hardwareTransport?.getMode()==='smartcard';
+ const showProgress=w.type==='piv'&&w.binding.kind==='hybrid';
  const progressPanel=el(el('startup').hidden?'vault-unlock-progress':'startup-vault-progress');
  const progress=showProgress?showVaultUnlockProgress(progressPanel,w.binding.serial):null;
  let secret;
@@ -248,7 +243,7 @@ async function unlockWithMethod(method,check){
   check();
   await engine.unlock(record,w.id,secret);
   check();
-  trackUnlockKey(unlockSerial,mode);
+  trackUnlockKey(unlockSerial);
   tell('Vault unlocked.');
   if(w.type==='prf')window.directFido?.complete('Vault unlocked successfully with FIDO PRF. Keep the unlock key connected.');
   window.dispatchEvent(new Event('iwa-vault-unlocked'));
@@ -265,14 +260,14 @@ el('vault-unlock').onclick=()=>run(async check=>{
   const methods=attachedUnlockAlternatives(record,selected,error);
   if(!methods.length)throw error;
   check();
-  const current=record,transport=window.hardwareTransport;
+  const current=record;
   const requireScp=window.SequoiaSecureChannel?.isRequired();
   const id=await reviewAlternateUnlock(document,window,selected.binding.serial,methods);
   check();
   if(!id){tell(error.message+' Unlock cancelled.');return;}
   const latest=await load();
   check();
-  if(transport?.getMode()!=='smartcard'||window.SequoiaSecureChannel?.isRequired()!==requireScp)
+  if(window.SequoiaSecureChannel?.isRequired()!==requireScp)
    throw Error('YubiKey connection settings changed. Start a fresh unlock.');
   if(!latest||latest.id!==current.id||latest.revision!==current.revision)
    throw Error('The vault changed. Start a fresh unlock.');

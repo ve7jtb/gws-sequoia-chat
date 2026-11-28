@@ -1,45 +1,22 @@
-// Dual-mode hardware transport selector: explicit choice between
-// 'native' (scoped extension -> Native Messaging -> PKCS#11) and
-// 'smartcard' (direct browser navigator.smartCard -> macOS PCSC.framework).
-// Never silently falls back between transports.
+// Web Smart Card is the only hardware transport in the IWA.
 (function(global){
 'use strict';
 
-const STORAGE_KEY = 'sequoia_hardware_transport';
-const VALID_MODES = new Set(['native', 'smartcard']);
 const TICKET_TTL_MS = 10 * 60 * 1000;
 
-// Extension-only (non-PIV) operations still pass through even in smartcard mode.
-const EXTENSION_PASSTHROUGH_OPS = new Set([
-  'vault-prf',
-  'google-oauth-test', 'google-oauth-services',
-  'google-chat-upload', 'google-chat-download',
-]);
+// Private message operations use the RFC 9980 Ed25519/X25519 components.
+function supportsSmartCardIdentity(identity){
+  return identity.version===6 && identity.profile==='level3' && !identity.companion;
+}
 
 function createHardwareTransport(deps = {}){
   const piv = deps.piv || global.SequoiaSmartCardPiv;
-  const storage = deps.storage ?? global.localStorage;
   const tickets = new Map();
 
   function randomHex(bytesLen){
     const buf = new Uint8Array(bytesLen);
     crypto.getRandomValues(buf);
     return Array.from(buf, b=>b.toString(16).padStart(2,'0')).join('');
-  }
-
-  function getMode(){
-    try{
-      const saved = storage?.getItem?.(STORAGE_KEY);
-      if(VALID_MODES.has(saved)) return saved;
-    }catch(_){}
-    return 'smartcard';
-  }
-
-  function setMode(mode){
-    if(!VALID_MODES.has(mode)) throw Error('Unsupported hardware transport: ' + mode);
-    tickets.clear();
-    try{ storage?.setItem?.(STORAGE_KEY, mode); }catch(_){}
-    return mode;
   }
 
   function pruneTickets(){
@@ -129,8 +106,8 @@ function createHardwareTransport(deps = {}){
   async function resolveIdentity(identityRef, ctx){
     if(typeof ctx.authorizeIdentity !== 'function') throw Error('Hardware identity authorization unavailable.');
     const identity = await ctx.authorizeIdentity(identityRef);
-    if(identity.version !== 6 || identity.profile !== 'level3' || identity.companion)
-      throw Error('Direct Web Smart Card currently supports native Level 3 v6 only. Select Native helper for this profile.');
+    if(!supportsSmartCardIdentity(identity))
+      throw Error('Web Smart Card message operations require a Level 3 RFC 9980 identity.');
     return identity;
   }
 
@@ -139,7 +116,7 @@ function createHardwareTransport(deps = {}){
   function checkedPrompt(identity, ctx, onSubmitted){
     return async details => {
       const pin = await promptPinInBrowser(details,onSubmitted);
-      if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
+      if(ctx.signal?.aborted)throw Error('Hardware operation cancelled; no PIN submitted.');
       await ctx.assertIdentity(identity);
       return pin;
     };
@@ -185,7 +162,7 @@ function createHardwareTransport(deps = {}){
         // Start the card's touch window only after the instruction has had
         // time to appear. A timer works when animation frames are throttled.
         if(showing&&!certificate)await paintTouchPrompt();
-        if(ctx.signal?.aborted||getMode()!=='smartcard')throw Error('Hardware operation cancelled; no PIN submitted.');
+        if(ctx.signal?.aborted)throw Error('Hardware operation cancelled; no PIN submitted.');
         await ctx.assertVault();
         return pin;
       },certificate?async ({slot,algorithm,touchPolicy})=>{
@@ -232,7 +209,7 @@ function createHardwareTransport(deps = {}){
   async function dispatchSmartCard(op, data, ctx){
     if(!piv) throw Error('Web Smart Card PIV module is not loaded.');
     if(!global.navigator?.smartCard && !deps.piv){
-      throw Error('Web Smart Card (navigator.smartCard) is unavailable in this browser. Switch Hardware transport to Native helper (PKCS#11) or launch Chromium with --enable-features=SmartCard.');
+      throw Error('Web Smart Card (navigator.smartCard) is unavailable in this browser. Use Chromium with Web Smart Card enabled.');
     }
     pruneTickets();
 
@@ -355,23 +332,16 @@ function createHardwareTransport(deps = {}){
       return withVaultTouch(data.serial,ctx,prompt=>piv.ecdhViaSmartCard(data,data.slot||null,data.serial||null,prompt));
     }
 
-    throw Error(`Operation "${op}" requires the Native helper (PKCS#11). Switch Hardware transport to Native helper to use it.`);
+    throw Error(`Operation "${op}" is not supported over Web Smart Card.`);
   }
 
-  function dispatch(op, data = {}, options = {}, nativeRequest, ctx = {}){
-    const mode = getMode();
+  function dispatch(op, data = {}, options = {}, ctx = {}){
     if(!global.SequoiaSecureChannel && global.document?.getElementById('secure-yubikey-connection'))return Promise.reject(Error('Secure-channel policy is not ready'));
-    // Secure mode must not silently route card work through an unprotected
-    // native implementation. Google-only broker operations are unaffected.
-    if(global.SequoiaSecureChannel?.isRequired() && (op==='vault-prf' || mode==='native' && !EXTENSION_PASSTHROUGH_OPS.has(op)))return Promise.reject(Error('Secure YubiKey connection requires Web Smart Card; native SCP is not implemented.'));
     if(options.signal?.aborted) return Promise.reject(Error('Operation cancelled; no retry.'));
-    if(mode === 'native' || EXTENSION_PASSTHROUGH_OPS.has(op)){
-      return nativeRequest(op, data, options);
-    }
     return dispatchSmartCard(op, data, {...ctx,signal:options.signal,vaultProgress:options.vaultProgress});
   }
 
-  return {getMode, setMode, dispatch, promptPin:promptPinInBrowser,
+  return {dispatch, supportsIdentity:supportsSmartCardIdentity, promptPin:promptPinInBrowser,
    withCertificateTouch:(serial,guard,perform)=>withVaultTouch(serial,{assertVault:guard},perform,'resume certificate signing',true)};
 }
 
@@ -382,19 +352,4 @@ if(typeof module !== 'undefined' && module.exports){
   module.exports = {createHardwareTransport, hardwareTransport: transport};
 }
 
-if(typeof document !== 'undefined'){
-  const select = document.getElementById('hardware-transport');
-  if(select){
-    select.value = transport.getMode();
-    select.addEventListener('change', ()=>{
-      const mode = transport.setMode(select.value);
-      const statusEl = document.getElementById('result');
-      if(statusEl){
-        statusEl.textContent = mode === 'smartcard'
-          ? 'Hardware transport set to Web Smart Card (navigator.smartCard). No native helper or PKCS#11 will be used for PIV operations.'
-          : 'Hardware transport set to Native helper (PKCS#11).';
-      }
-    });
-  }
-}
 })(typeof globalThis !== 'undefined' ? globalThis : window);

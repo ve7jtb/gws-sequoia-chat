@@ -18,7 +18,7 @@ test('IWA bootstrap uses only allowlisted TrustedScriptURL assets in order',asyn
 test('partial restore loads only recovery and card transport until readback clears the marker',async()=>{
  const f=run('pending-digest');await f.done;
  assert.equal(f.opened(),1);assert.equal(f.screen.hidden,true);
- assert.deepEqual(f.loaded,['/config.js','/native-bridge.js','/secure-channel-ui.js','/smartcard-piv.js','/hardware-transport.js','/backup-ui.js']);
+ assert.deepEqual(f.loaded,['/config.js','/secure-channel-ui.js','/smartcard-piv.js','/hardware-transport.js','/backup-ui.js']);
  assert.throws(f.start,/Complete the encrypted restore/);
  f.clear();await Promise.all([f.start(),f.start()]);
  assert.equal(f.loaded.filter(url=>url==='/vault-ui.js').length,1);

@@ -7,9 +7,9 @@ const isMail=()=>$("transport").value!=="chat";
 const service=()=>isDrive()?"Drive":isMail()?"Gmail":"Chat";
 const browserGoogleOperations=new Set(['chat-mail-connect','chat-mail-list','chat-mail-read','chat-mail-open','chat-mail-prepare','chat-drive-prepare','chat-prepare','chat-mail-send','chat-spaces','chat-messages','chat-open','chat-send']);
 let ownEmail="";
-let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount,legacyAccountEmail;
+let accountSettings,accountSnapshot=null,accountReview=null,accountSettingsKey='',normalizeAccount;
 let certificateReview=null,managementReview=null;
-let identityUi,softwareUi,ownIdentityStore,hardwareIdentitySelection,identitySelection,certificateStore,composeReviews,migrationReview=null,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
+let identityUi,softwareUi,ownIdentityStore,hardwareIdentitySelection,identitySelection,certificateStore,composeReviews,readerEvidence=null,signingAbort=null,decryptionAbort=null,readerGeneration=0;
 let sendIdentities=[],decryptionChoice=null,identityListGeneration=0;
 let hardwareTestAbort=null,hardwareTestReport=null,softwareTestAbort=null;
 let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,openMessage=null,cert=null,busy=false;
@@ -18,42 +18,32 @@ let contacts=[],spaces=[],spaceNext='',pages=[''],page=0,next='',review=null,ope
 let localEncrypted=null;
 const say=(text,error=false)=>{$('result').textContent=text;$('result').classList.toggle('error',error);};
 // UI locking is separate from the transport so one signing session can retain
-// the lock across WASM preparation, one native digest request, and finalization.
+// the lock across WASM preparation, one card signature request, and finalization.
 function operationBusy(active) {
  busy=active;$('transport').disabled=active;$('busy').hidden=!active;
- if($('hardware-transport'))$('hardware-transport').disabled=active;
  // The lock blocks a second operation, while the active operation can
  // still wait for review, FIDO entropy, PIN entry, or management approval.
  const operationDialogs='#combined-level3-confirm, #fido-pin-dialog, #smartcard-pin-dialog, #piv-management-dialog';
  document.querySelectorAll('button').forEach(b=>{
   if(!b.closest(operationDialogs))b.disabled=active;
  });
- // A test can be cancelled while its native PIN/touch attempt settles. The
+ // A test can be cancelled while its card PIN/touch attempt settles. The
  // coordinator retains this lock and performs only a final public audit.
  $('test-cancel').disabled=!active||!hardwareTestAbort;
  $('test-export').disabled=active||!hardwareTestReport;
  $('software-test-export').disabled=active||!softwareUi?.hasReport?.();
  // Lock is always available to invalidate software work; terminating a worker
- // or abandoning a native request never silently retries the private operation.
+ // or abandoning a card request never silently retries the private operation.
  $('vault-lock').disabled=!window.vaultIsUnlocked?.();
  if(!active){$('newer').disabled=page===0;$('older').disabled=!next;}
 }
-function nativeRequest(op,data={},options={}) {
- // Public metadata stays available while locked. Recheck the vault immediately
- // before each private operation, including the new digest-only signing route.
- if(['chat-selected-signing-material','chat-selected-decryption-material','chat-sign-digest'].includes(op)||
-    (['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data.service!=='Vault')){try{window.vaultGate?.();}catch(e){return Promise.reject(e);}}
- return requestCompanion(op,data,{...options,progress:say});
-}
-// Route hardware requests explicitly through the user-selected hardware transport
-// ('native' helper PKCS#11 or 'smartcard' navigator.smartCard). No silent fallback.
 function hardwareRequest(op,data={},options={}) {
  if(['chat-selected-signing-material','chat-selected-decryption-material','chat-sign-digest'].includes(op)||
     (['chat-decryption-material','chat-decapsulate-components'].includes(op)&&data.service!=='Vault')){
    try{window.vaultGate?.();}catch(e){return Promise.reject(e);}
  }
- if(window.hardwareTransport){
-  return window.hardwareTransport.dispatch(op,data,options,nativeRequest,{identityStore:ownIdentityStore,say,
+ if(!window.hardwareTransport)return Promise.reject(Error('Web Smart Card transport is not ready.'));
+ return window.hardwareTransport.dispatch(op,data,options,{say,
    inspectPublicBundle:async encoded=>{
     const {inspectBundle}=await import('./identities/client.js');
     return inspectBundle(encoded);
@@ -87,12 +77,10 @@ function hardwareRequest(op,data={},options={}) {
     const {smartcardSigningInput}=await import('./identities/client.js');
     return (await smartcardSigningInput({certificate:selected.certificate,signingFingerprint:request.signingFingerprint,digest:request.digest})).mu;
    }
-  });
- }
- return nativeRequest(op,data,options);
+ });
 }
 // Provider choice is pinned by a revision-checked inventory snapshot. An error
-// in software custody never causes a native key lookup or a hardware retry.
+// in software custody never causes a card lookup or a hardware retry.
 function identityRequest(snapshot){
  if(snapshot?.provider==='software'){
   if(!window.softwareIdentities)throw Error('Software identity provider is not ready.');
@@ -109,8 +97,7 @@ function custodyLabel(identity){return identity.hardware?.privateRemoved?'YubiKe
 function operationSlots(identity,purpose){
  const components=identity.components?.filter(c=>c.role.startsWith(purpose));
  if(components?.length)return components.map(c=>c.storage==='piv'?c.slot.toUpperCase()+' ('+c.algorithm+')':c.algorithm+' in encrypted companion').join(' + ');
- // Older public inventories can still be independently authorized by native
- // code. Do not invent slot numbers from their profile name: a fresh read-only
+ // The live card check revalidates older public inventories. Do not invent slot numbers from their profile name: a fresh read-only
  // bundle restore adds the exact per-certificate mapping to the local record.
  return 'verified from the current signed manifest (restore this bundle again to display exact slots)';
 }
@@ -236,7 +223,7 @@ function reviewCertificateChange(op,fingerprint,email){
  managementReview={op,fingerprint,...(email?{email}:{})};
  $('manage-cert-title').textContent=op==='trust'?'Trust this email and public key?':op==='chat-cert-delete'?'Delete saved public certificate?':'Remove certificate trust?';
  $('manage-cert-details').textContent='Full primary fingerprint: '+fingerprint+(email?'\nEmail: '+email:'');
- $('manage-cert-help').textContent=op==='trust'?'Independently verify this full fingerprint. Trust applies only to this email and primary key, not every email on the certificate.':op==='chat-cert-delete'?'Removes this IWA public certificate and all its email trust bindings. The native migration backup is unchanged and will not be imported automatically. No YubiKey keys are deleted.':'Removes trust only for this email and fingerprint. The public certificate remains available for mathematical signature verification.';
+ $('manage-cert-help').textContent=op==='trust'?'Independently verify this full fingerprint. Trust applies only to this email and primary key, not every email on the certificate.':op==='chat-cert-delete'?'Removes this IWA public certificate and all its email trust bindings. No YubiKey keys are deleted.':'Removes trust only for this email and fingerprint. The public certificate remains available for mathematical signature verification.';
  $('manage-cert-apply').textContent=op==='trust'?'Mark trusted':op==='chat-cert-delete'?'Delete saved certificate':'Remove trust';$('manage-cert-confirm').showModal();
 }
 event('refresh-certificates',refreshCertificates);
@@ -248,22 +235,6 @@ event('manage-cert-apply',async()=>{
   await call('chat-trust',{certificate:c.certificate,email:r.email,fingerprint:r.fingerprint,confirmed:true});
  }else{const {op,...fields}=r;await call(op,{...fields,confirmed:true});}
  await certificatesChanged();say(r.op==='trust'?'Trust saved in this IWA for the selected email and fingerprint.':r.op==='chat-cert-delete'?'IWA certificate and its trust removed.':'Trust removed for the selected email; certificate kept.');
-});
-event('migration-review',async()=>{
- // Reading legacy public files is the only certificate-store operation exposed
- // by the native bridge. Import and trust changes occur only after this review.
- const snapshot=await call('chat-certificate-migration');
- const rows=[];for(const encoded of snapshot.certificates){const c=await certificateStore.preview(encoded);rows.push('OpenPGP v'+c.version+' · '+c.fingerprint+'\n'+c.algorithms.join(' / '));}
- migrationReview=snapshot;
- $('migration-details').textContent=rows.join('\n\n')+'\n\nExisting trust bindings:\n'+(snapshot.bindings.map(b=>b.email+' → '+b.fingerprint).join('\n')||'None');
- $('migration-confirmed').checked=false;$('migration-dialog').showModal();
-});
-event('migration-cancel',()=>{migrationReview=null;$('migration-dialog').close();});
-event('migration-import',async()=>{
- if(!migrationReview||!$('migration-confirmed').checked)throw Error('Review and confirm the existing certificate and trust bindings first.');
- const snapshot=migrationReview;migrationReview=null;$('migration-dialog').close();
- await certificateStore.importLegacy(snapshot,true);await certificatesChanged();
- say('Certificates and reviewed trust copied into this IWA. Native public files remain unchanged; they will not be reimported automatically.');
 });
 // Service labels are derived together so hidden controls and dialogs cannot
 // retain wording from the previously selected transport.
@@ -335,11 +306,6 @@ function reviewAccount(email,source){
  $('account-review-confirmed').checked=false;$('account-review-dialog').showModal();
 }
 event('account-review',()=>reviewAccount($('account-email').value,'Entered in this IWA'));
-event('account-migrate',async()=>{
- // This is an optional, user-triggered public read. It is deliberately absent
- // from startup, contacts, identity inventory refresh and Google sign-in.
- const legacy=await call('chat-state');reviewAccount(legacyAccountEmail(legacy),'Existing helper configuration (email only)');
-});
 event('account-review-cancel',()=>{accountReview=null;$('account-review-dialog').close();});
 $('account-review-dialog').addEventListener('cancel',()=>{accountReview=null;});
 event('account-save',async()=>{
@@ -366,16 +332,13 @@ async function bootstrap(){
  const [{createCertificateStore,createIndexedDbStorage},{inspectCertificate},{createComposeReviews},{createIdentityStore},{createIdentitySelection},{inspectIdentity,matchRecipients},accountModule]=await Promise.all([
   import('./certificates/store.js'),import('./certificates/client.js'),import('./compose-review.js'),import('./identities/store.js'),import('./identities/selection.js'),import('./identities/client.js'),import('./account-settings.js')]);
  accountSettings=accountModule.createAccountSettings();accountSettingsKey=accountModule.ACCOUNT_SETTINGS_KEY;
- normalizeAccount=accountModule.accountEmail;legacyAccountEmail=accountModule.legacyAccount;
+ normalizeAccount=accountModule.accountEmail;
  certificateStore=createCertificateStore({inspect:inspectCertificate,storage:createIndexedDbStorage()});
  ownIdentityStore=createIdentityStore({inspect:inspectCertificate});
- hardwareIdentitySelection=createIdentitySelection({store:ownIdentityStore,inspect:inspectIdentity,match:matchRecipients});
+ hardwareIdentitySelection=createIdentitySelection({store:ownIdentityStore,inspect:inspectIdentity,match:matchRecipients,supports:window.hardwareTransport.supportsIdentity});
  const {createProviderSelection}=await import('./identities/providers.js');
  identitySelection=createProviderSelection({hardware:hardwareIdentitySelection,software:()=>window.softwareIdentities,match:matchRecipients});
  composeReviews=createComposeReviews({certificateStore,identitySelection,gate:()=>{window.vaultGate?.();assertAccount();}});
- // Public inventory and file import must work even when the native helper is
- // unavailable. Startup loads only IWA public stores; hardware metadata is read
- // only when the user explicitly invokes a hardware control or migration.
  const {initializeIdentities}=await import('./identities/ui.js');
  identityUi=await initializeIdentities({request:hardwareRequest,say,isBusy:()=>busy,setBusy:operationBusy,identityStore:ownIdentityStore});
  const {initializeSoftwareUi}=await import('./software-ui.js');
@@ -412,7 +375,7 @@ function openRemoteMessage(name){
  // dismissed with Escape must not win over this newly selected message ID.
  beginReading();openMessage=name;serviceLabels();$('open').showModal();
 }
-// Escape produces a native dialog cancel event rather than clicking our Cancel
+// Escape produces a PIV dialog cancel event rather than clicking our Cancel
 // button. Drop the staged ciphertext on both paths before another selection.
 $('open').addEventListener('cancel',clearPendingOpen);
 // Ordinary mail never borrows the green trusted-signature result from a
@@ -485,7 +448,7 @@ event('prepare',async()=>{
  const recipient=contacts.find(c=>c.id===$('recipient').value);
  if(!recipient)throw Error('Choose a trusted recipient.');
  // Snapshot editable fields before any asynchronous work. Changes typed while
- // the native PIN dialog is open cannot change what this operation signs.
+ // the PIV PIN dialog is open cannot change what this operation signs.
  const mail=isMail(),space=$('space').value,senderChoice=$('send-identity').value;
  const compose={sender:ownEmail,recipient:recipient.email,subject:$('subject').value,
   body:$('body').value,html:$('formatted').checked?formatMessage($('body').value):''};
@@ -555,7 +518,7 @@ function reviewMatchedIdentity(matched,generation,account){
 }
 function showMatchedIdentity(){
  const selected=decryptionChoice?.matched.choices.find(c=>c.id===$('decrypt-identity').value);
- $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v'+(selected.version||6)+' · '+(selected.encryptionAlgorithm||'ML-KEM-768 + X25519')+(selected.hardware?.privateRemoved?'\nUses the unlocked vault mapping and the YubiKey PIV PIN prompt.':selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nComponents: '+operationSlots(selected,'decryption')+'; enter PIN only in the native dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
+ $('matched-identity-details').textContent=selected?custodyLabel(selected)+'\nOpenPGP v'+(selected.version||6)+' · '+(selected.encryptionAlgorithm||'ML-KEM-768 + X25519')+(selected.hardware?.privateRemoved?'\nUses the unlocked vault mapping and the YubiKey PIV PIN prompt.':selected.provider==='software'?'\nUses the unlocked vault; no hardware PIN prompt.':'\nComponents: '+operationSlots(selected,'decryption')+'; enter PIN only in the PIV dialog.')+'\nCertificate: '+selected.fingerprint+'\nRecipient subkey: '+selected.recipientKey:'';
 }
 $('decrypt-identity').addEventListener('change',showMatchedIdentity);
 event('matched-identity-cancel',cancelDecryptionChoice);
@@ -628,7 +591,7 @@ event('test',async()=>{
  if(busy)throw Error('An operation is already running.');
  const account=accountSnapshot;assertAccount(account);window.vaultGate?.();
  const choice=$('test-identity').value,selected=await hardwareIdentitySelection.get(choice,ownEmail);
- if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nOpenPGP v'+selected.version+' · '+selected.signingAlgorithm+' / '+selected.encryptionAlgorithm+'\nSigning: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'.\n'+compatibilityWarnings(selected,selected).join(' ')+'\nExpect two native PIN operations; touch if requested. No email, keys, certificates or policies will be changed.'))return;
+ if(!window.confirm('Run one local signing/decryption test with YubiKey '+selected.serial+'?\nOpenPGP v'+selected.version+' · '+selected.signingAlgorithm+' / '+selected.encryptionAlgorithm+'\nSigning: '+operationSlots(selected,'signing')+'. Decryption: '+operationSlots(selected,'decryption')+'.\n'+compatibilityWarnings(selected,selected).join(' ')+'\nExpect two PIV PIN prompts; touch if requested. No email, keys, certificates or policies will be changed.'))return;
  hardwareTestReport=null;$('test-details').textContent='';hardwareTestAbort=new AbortController();operationBusy(true);
  try{
   const {runHardwareTest,signingFailureLabel}=await import('./hardware-test.js');
@@ -652,7 +615,7 @@ event('test',async()=>{
   say(result.status==='PASS'?'PASS — IWA signing, decryption and unchanged hardware audit.':result.status+' — review Hardware test results before trying again.',result.status!=='PASS');
  }finally{hardwareTestAbort=null;operationBusy(false);}
 });
-event('test-cancel',()=>{hardwareTestAbort?.abort();$('test-cancel').disabled=true;$('test-progress').textContent='Cancelling. Waiting for any native attempt to settle, then checking public keys and policies. No private operation will be retried.';});
+event('test-cancel',()=>{hardwareTestAbort?.abort();$('test-cancel').disabled=true;$('test-progress').textContent='Cancelling. Waiting for any card operation to settle, then checking public keys and policies. No private operation will be retried.';});
 $('test-identity').addEventListener('change',()=>hardwareTestAbort?.abort());
 event('test-export',()=>{
  if(busy||!hardwareTestReport)throw Error('Complete a hardware test first.');

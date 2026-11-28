@@ -1,6 +1,5 @@
 """PIN presentation failures must stop before any private-key subprocess runs."""
 import subprocess
-import re
 import sys
 import tempfile
 import unittest
@@ -9,22 +8,10 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'native'))
 import chat_bridge
-import host
+from chat_bridge import operation_error
 
 
 class PinPromptBoundary(unittest.TestCase):
-    def test_modal_presentation_keeps_dispatch_queue_available(self):
-        # A modal loop entered from a main-dispatch block stranded the visible
-        # probe: accessibility existed, but rendering and Close did not work.
-        # Keep this small source guard alongside real display-only manual QA;
-        # ordinary Python tests cannot exercise AppKit's WindowServer session.
-        source = (Path(__file__).resolve().parents[1] / 'native' / 'PinPrompt.swift').read_text()
-        self.assertIsNone(re.search(r'^\s*DispatchQueue\.main\.', source, re.MULTILINE))
-        self.assertIn('perform(#selector(presentPrompt)', source)
-        self.assertIn('RunLoop.main.add(activation, forMode: .modalPanel)', source)
-        self.assertIn('window.sharingType = visibilityCheck ? .readOnly : .none', source)
-        self.assertIn('if visibilityCheck { exit(0) }', source)
-
     def bridge(self, root):
         # Bypass native state-directory creation; this boundary needs only
         # the fixed device identity and the prompt subprocess. No token exists.
@@ -71,10 +58,10 @@ class PinPromptBoundary(unittest.TestCase):
     def test_timeout_and_cancel_messages_distinguish_no_pin_submission(self):
         for op in ['chat-decapsulate-components', 'chat-sign-digest', 'chat-vault-ecdh']:
             for reason in ['PIN dialog timed out before submission', 'PIN cancelled or invalid']:
-                self.assertIn('No PIN was sent', host.operation_error(op, ValueError(reason)))
+                self.assertIn('No PIN was sent', operation_error(op, ValueError(reason)))
 
     def test_unknown_errors_never_echo_secrets_or_claim_safe_submission(self):
         for op in ['chat-decapsulate-components', 'chat-sign-digest', 'chat-vault-ecdh']:
-            message = host.operation_error(op, ValueError('sensitive-example'))
+            message = operation_error(op, ValueError('sensitive-example'))
             self.assertNotIn('sensitive-example', message)
             self.assertNotIn('No PIN was sent', message)

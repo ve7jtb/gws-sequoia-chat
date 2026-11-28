@@ -10,7 +10,7 @@ import * as accountModule from '../app/account-settings.js';
 import {createTransport} from '../app/google-transport.js';
 import {createProviderSelection} from '../app/identities/providers.js';
 import {signingFailureLabel} from '../app/signing-phases.js';
-const source=['native-bridge.js','app.js'].map(name=>fs.readFileSync(new URL('../app/'+name,import.meta.url),'utf8')).join('\n');
+const source=fs.readFileSync(new URL('../app/app.js',import.meta.url),'utf8');
 function memoryStorage(){const rows=new Map();return {getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value),removeItem:key=>rows.delete(key)};}
 function application(savedEmail){
  const storage=memoryStorage(),settings=accountModule.createAccountSettings({storage,newRevision:()=>webcrypto.randomUUID()});
@@ -46,7 +46,7 @@ function application(savedEmail){
  const transport=createTransport(session);
  const context={Promise,Error,Event,AbortController,structuredClone,Set,setTimeout,clearTimeout,Uint8Array,localStorage:storage,
   document:{getElementById:node,createElement:element,querySelectorAll:()=>[]},EXTENSION_ID:'synthetic-extension',
-  window:{addEventListener:(name,fn)=>events.set(name,fn),dispatchEvent:event=>{dispatched.push(event.type);events.get(event.type)?.(event);return true;},vaultGate(){},googleTransport:transport,confirm:()=>true},
+  window:{addEventListener:(name,fn)=>events.set(name,fn),dispatchEvent:event=>{dispatched.push(event.type);events.get(event.type)?.(event);return true;},vaultGate(){},hardwareTransport:{supportsIdentity:()=>true},googleTransport:transport,confirm:()=>true},
   chrome:{runtime:{connect(){const listeners=[];return {disconnect(){},onMessage:{addListener:fn=>listeners.push(fn)},onDisconnect:{addListener(){}},postMessage(request){native.push(request);queueMicrotask(()=>listeners.forEach(fn=>fn({type:'result',data:{account:'legacy@example.invalid',serial:'12345678',identity:{fingerprint:'public'}}})));}};}}},
   loadModule:async path=>{if(!modules[path])assert.fail('Unexpected import '+path);return modules[path];}
  };
@@ -81,13 +81,6 @@ test('manual configuration requires review and confirmation and preserves local 
  assert.equal(a.settings.read().email,'sender@example.invalid');assert.equal(a.native.length,0);assert.equal(a.clears(),1);
  assert.equal(a.certificateReads(),1);assert.ok(a.reviewClears()>0);
  assert.deepEqual(a.dispatched,['iwa-account-changed']);
-});
-test('legacy account is read only on explicit migration and is not saved until reviewed',async()=>{
- const a=application();await a.start();assert.equal(a.native.length,0);await a.click('account-migrate');
- assert.equal(a.native.length,1);assert.equal(a.native[0].op,'chat-state');assert.equal(a.settings.read(),null);
- assert.match(a.node('account-review-details').textContent,/legacy@example.invalid/);
- a.node('account-review-confirmed').checked=true;await a.click('account-save');
- assert.equal(a.settings.read().email,'legacy@example.invalid');assert.deepEqual(Object.keys(a.settings.read()).sort(),['email','revision','version']);
 });
 test('changed storage blocks calls before the storage event and then clears account-bound UI work',async()=>{
  const a=application('sender@example.invalid');await a.start();const before=a.settings.read();

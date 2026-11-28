@@ -1,5 +1,28 @@
 # Sequoia Chat Lab — experimental IWA
 
+## Web Smart Card replaces the native helper
+
+The IWA uses Web Smart Card for YubiKey operations on macOS and ChromeOS.
+Use a Chromium build with Web Smart Card enabled. On ChromeOS, install the
+[Smart Card Connector](#install-the-preview-on-chromeos). The IWA no longer
+installs a Native Messaging host or offers a PKCS#11 transport setting. Older
+transport preferences are ignored. Vaults, enrolled methods, contact trust
+and saved identities remain in the app's storage.
+
+- Vault unlock and encrypted backup restore still support FIDO PRF, Level 3
+  hybrid PIV, Level 5 hybrid PIV and enrolled classical PIV. An older
+  extension-scoped FIDO credential is checked over Web Smart Card using its
+  original RP ID.
+- YubiKey message signing and decryption support the Level 3 RFC 9980 v6
+  profile. Level 5 and v4/v5 card-backed OpenPGP message operations and
+  encrypted on-key companion restore were specific to the retired helper.
+  Vault-protected software OpenPGP profiles remain available.
+- Configure the account email in **Account**. Use public certificate import
+  or restore a signed public bundle from the YubiKey in **Identities**.
+- Gmail and Drive can use direct loopback OAuth. The separate Google broker
+  extension still supports its OAuth flow and Google Chat attachment transfers.
+  It has no Native Messaging permission.
+
 ## SSH terminal preview (0.20.55, Testing channel)
 
 The **SSH** tab appears after vault unlock. Its terminal runs SSH in a Go WASM
@@ -633,11 +656,9 @@ No ChromeOS restart-persistence or Gmail/Chat transport test is claimed here.
 
 ### Available paths and limitations
 
-The direct path uses Web Smart Card and bundled WASM, without the Mac native
-helper, PKCS#11 installation, Java, or `ykman`. In this release direct PIV private
-operations support **native Level 3 v6**; Level 5, v4/v5 hardware operations and
-companion restoration still require the native path and are not advertised as
-working on ChromeOS. FIDO PRF and previewSign are separate diagnostic/vault paths.
+Web Smart Card and bundled WASM provide Level 3 RFC 9980 v6 card-backed
+OpenPGP operations, vault unlock, public bundle restore and FIDO diagnostics.
+See [supported paths](#web-smart-card-replaces-the-native-helper).
 
 For Google sign-in without the native bridge, choose **Google browser test →
 Google OAuth mode → Direct Sockets loopback PKCE**. The shared Desktop client is
@@ -2259,15 +2280,7 @@ cargo test --locked --manifest-path crypto/Cargo.toml
 cargo build --locked --release --manifest-path crypto/Cargo.toml
 ```
 
-After installing the baseline native runtime below, run `install_chat.py --help`
-and supply that installation, this repository's transport root, the gws and sq
-binaries (and the built `bin/chat-software-identity` policy helper in the
-transport root), your OAuth desktop-client registration JSON, the built worker, and the
-sending email. This copies registration metadata only, never another profile's
-Google account tokens. Rebuild/update the signed IWA without changing its build
-keys and reload the existing extension. Sign in through the IWA, reconnect, then
-review/import the peer's public certificate and independently confirm its full
-primary fingerprint before trusting it.
+This test used the historical Native Messaging runtime, which is now retired.
 
 Offline validation passes twelve Python protocol/bridge tests plus a Rust hybrid
 round-trip test covering wrong signer, wrong recipient and modified ciphertext.
@@ -2333,51 +2346,24 @@ results are saved. An incomplete after-snapshot means unchanged status is
 **unconfirmed**, never an automatic success. The test does not compare arbitrary
 PIV data objects or FIDO/OATH state; it neither reads nor modifies those apps.
 
-## Mac preview installation
+## Build and test the IWA
 
-This preview uses **Chrome Canary 160** with a separate profile and the
-`IsolatedWebApps,IsolatedWebAppDevMode` feature flags. On this version the developer
-UI is `chrome://iwa-dev`. The signed bundle is `build/sequoia-lab.swbn`.
-Canary ignored `--load-extension`; load `extension/` with **Load unpacked** in
-`chrome://extensions` after enabling Developer mode in the test profile.
-
-The native host, PIN UI and required test runtimes are installed under
-`~/Library/Application Support/Sequoia IWA Lab/`. Keeping executable helpers out
-of Documents avoids granting Canary additional Documents-folder access.
-The host registration is in this experiment's
-`private/chrome-profile/NativeMessagingHosts/`; it does not change your normal
-Chrome profile. Hardware output is under the installed helper's
-`private/hardware-*/` directory.
-
-`private/config.json` is local-only configuration: public certificate location,
-serial, fixed executable paths and extension ID. Build keys and local browser
-state are excluded from source control. The generated development signing key
-is not a production distribution identity. Do not distribute `private/`.
-
-## Build and tests
-
-Node 22.13+ is required by `wbn-sign`; the local preview uses isolated Node 24.
-Dependencies are pinned in `package-lock.json`. Build with:
+Use Node 22.13 or later. Build the WASM verifier and public fixtures as described
+in [wasm/README.md](wasm/README.md), and build the SSH WASM with
+`ssh-engine/build.sh`. Install the pinned JavaScript dependencies and build the
+signed bundle.
 
 ```sh
 npm ci
-./node_modules/node/bin/node build.mjs
-swiftc native/PinPrompt.swift -o build/pin-prompt
-python3 -B -m unittest discover -s tests -v
+node build.mjs
+node --test tests/test_hardware_transport.cjs tests/google-broker-routing.test.cjs
 ```
 
-The build creates a stable experiment signing key and extension ID on first use.
-Never regenerate them to update an installed preview. A native host installation
-must point at the matching fixed local configuration and preserve owner-only
-private files. Hardware dependencies are local prerequisites, not bundled into
-the web bundle. This preview is not a self-contained public installer.
-
-Protocol tests cover valid framing, truncated/oversized input, non-object
-messages and rejection of extra fields/arbitrary operations. Direct native-host
-checks additionally confirmed correct-caller status and wrong-caller rejection.
-`wbn-sign info` verified the bundle signature. Canary installed and opened the
-signed bundle and successfully queried the connected key through the extension.
-Live cryptographic results are recorded separately after user PIN authorization.
+The bundle is written to `build/sequoia-lab.swbn`. Preserve the same signing key
+when updating an existing installation. Use `chrome://iwa-dev` to install a
+local development bundle. If using Google Chat attachments or extension OAuth,
+reload the generated `extension/` directory in `chrome://extensions` after a
+rebuild and preserve its extension key. Keep `private/` out of distribution.
 
 ## Live Mac IWA hardware result — 2026-11-21
 
@@ -2390,8 +2376,7 @@ the final PASS result. All 24 before/after slot records were identical, includin
 public-key hashes and PIN/touch policies. No mail was sent or keys provisioned.
 
 This confirms the experimental Mac Native Messaging bridge, not native macOS
-Web Smart Card support or a production IWA deployment path. The prototype still
-requires local runtime installation and an unpacked extension.
+Web Smart Card support or a production IWA deployment path. That prototype required a local runtime and an unpacked extension.
 
 Observed timings (including user touch wait) were **3,114 ms** for signing,
 **1,010 ms** for Sequoia-ciphertext decryption and **897 ms** for independent
@@ -2399,26 +2384,6 @@ PQ Mail-ciphertext decryption. These are single-run measurements, not a benchmar
 The source generalizes device-specific display text to the configured serial;
 local serial numbers, fingerprints, account data and hardware transcripts are
 not included in this repository.
-
-### Reproduce the initial native-runner installation (historical)
-
-These steps describe the original runner. For the current smaller hardware
-service, use the installation steps below.
-
-1. Build the existing [`sequoia-pqmail-piv` adapter and hardware test](https://github.com/ve7jtb/sequoia/tree/development/yubikey6-piv/piv-adapter), following that fork's prerequisites. Prepare its `PqMailInterop` Java classes and the existing PQ Mail JAR/libraries. `piv-test` can depend on a separately installed OpenSSL; inspect `otool -L` and retain those dependencies. This experiment does not build or silently replace your PKCS#11 backend.
-2. Run the build commands above. Copy `config.example.json` to ignored `private/config-input.json` and set the absolute paths, matching **public-only** v6 certificate, and explicit Level 3 serial. The test selects only 9c/84/9d/85; arbitrary slot mappings and Level 5 are not supported here.
-3. Run `python3 install_native.py --config private/config-input.json`. It copies existing runtimes into a new directory under Application Support and registers the host only in this experiment's Canary profile. It refuses to overwrite an existing destination; `--destination` can select a new one. The source installer is additional packaging convenience; the successful hardware test used an equivalent local runtime copy, not a clean-machine installer test.
-4. Run `python3 launch_canary.py`. In that profile, enable extension Developer mode and load the generated `extension/` directory with **Load unpacked**. Launch **Sequoia Chat Lab** from `chrome://iwa-dev`.
-5. Choose **Check YubiKey**, then **Hardware test → Run signing & decryption test**. Confirm the fixed test, enter PINs only in the native dialogs, and touch as requested. A failure is not retried automatically. Keep the device connected for the after snapshot.
-
-This requires user approval of developer-mode installation. The extension and
-IWA are local experimental code; neither is a Chrome Web Store release. The
-signed web bundle authenticates its contents, not a publicly vetted publisher.
-
-To remove the experiment, close its Canary profile, unregister its dedicated
-NativeMessagingHosts manifest and remove the dedicated installed helper and
-profile only when you no longer need their local test records. No YubiKey reset
-is involved. Do not remove your usual Chrome profile or PQ Mail installation.
 
 ## Verification-only WebAssembly prototype
 
@@ -2586,7 +2551,7 @@ attempt passed, without an automatic private-key retry. Local test reports and
 message content are excluded from Git. These results specifically exercise the
 new WASM decryption boundary, unlike the earlier native-decryption tests.
 
-### IWA credential vault (preview 0.9)
+### Historical IWA credential vault (preview 0.9)
 
 The browser stores an AES-256-GCM encrypted vault in IndexedDB. Each vault has a
 random 256-bit content key. PIV and FIDO PRF methods independently wrap that same
@@ -2865,33 +2830,6 @@ transport.
 API references: [Gmail send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send),
 [Chat media upload](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload),
 [Chat media download](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/download).
-
-## Install the current hardware service (0.16.0)
-
-Build the Rust worker and baseline/wide WASM using the regression commands above,
-then build the signed IWA and native PIN prompt. Preserve existing development
-signing keys and extension identity when updating an installed preview. For a
-fresh helper, copy `config.example.json` to ignored `private/config-input.json`
-and supply the existing backend, ykman, public certificate, serial and certified
-enrollment email. No hardware keys are created by installation.
-
-```sh
-python3 install_native.py --config private/config-input.json \
-  --crypto-bin /absolute/path/to/sequoia-iwa-crypto
-```
-
-The destination must be new. To update code in an existing helper after backing
-it up and closing in-flight operations, the historical upgrade filename remains:
-
-```sh
-python3 install_chat.py --installed "/absolute/path/to/Sequoia IWA Lab" \
-  --crypto-bin /absolute/path/to/sequoia-iwa-crypto
-```
-
-No transport root or standalone CLI is required. Omitting `--email` preserves
-the fixed native enrollment exactly. Reload the matching extension and install
-the newer signed bundle through Canary's IWA developer UI. Existing origin-local
-account, vault, identities and trust remain associated with the stable IWA ID.
 
 ### Development installation conversion limitation (2026-11-25)
 

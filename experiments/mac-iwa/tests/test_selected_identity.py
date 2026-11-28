@@ -10,7 +10,7 @@ from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'native'))
 import identities,signing,decryption
 from chat_bridge import ChatBridge,validate
-import host
+from chat_bridge import operation_error
 
 RAW=b'canonical synthetic public certificate'
 ENC=base64.b64encode(RAW).decode()
@@ -148,9 +148,9 @@ class SelectedIdentity(unittest.TestCase):
     ChatBridge.crypto(self.b,'sign-digest',None,bytes(64),service='Message',signing={},identity=CONTEXT)
    run.assert_not_called()
  def test_connect_guidance_only_exposes_bounded_numeric_serials(self):
-  message=host.operation_error('chat-selected-signing-material',ValueError('Connect YubiKey 222'))
+  message=operation_error('chat-selected-signing-material',ValueError('Connect YubiKey 222'))
   self.assertIn('Connect YubiKey 222',message);self.assertIn('No PIN was submitted',message)
   for text in ('Connect YubiKey 222 secret','Connect YubiKey ../123','Connect YubiKey 9999999999'):
-   self.assertNotIn(text,host.operation_error('chat-selected-signing-material',ValueError(text)))
+   self.assertNotIn(text,operation_error('chat-selected-signing-material',ValueError(text)))
 
 if __name__=='__main__':unittest.main()

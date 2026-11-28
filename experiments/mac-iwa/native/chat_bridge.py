@@ -18,7 +18,7 @@ from native_state import check_certificate
 # remains unconfirmed after a successful 20-round run. Search this marker for
 # removal points. This classifier is independent of the optional disk history:
 # keep it for useful safe errors, or coordinate removal with crypto/src/main.rs,
-# native/host.py, piv_soak.py and tests/test_vault_bridge.py.
+# the retired native host and the retained standalone diagnostic tests.
 # Only these fixed status codes may cross the diagnostic boundary. Native
 # stdout contains session keys; neither stdout nor raw stderr is ever logged.
 CRYPTO_STATUS={'MLKEM_FAILED','X25519_FAILED','ADAPTER_TIMEOUT_OR_INPUT',
@@ -424,3 +424,63 @@ class ChatBridge:
                 return {'account':self.cfg['chat_email'],'serial':self.cfg['serial'],
                         'identity':own,'contacts':[]}
             raise ValueError('Unknown operation')
+
+
+# Fixed public errors for the standalone diagnostic harness.
+def operation_error(op, error=None):
+    """Return fixed, operation-specific guidance without exposing CLI secrets.
+
+    Connection failures happen before the hardware operation. Keep them separate
+    from signing/decryption failures so users do not unnecessarily retry a PIN.
+    """
+    if op and op.startswith('chat-'):
+        # Only fixed pre-crypto labels get this explanation. Never expose the
+        # exception text/output or turn a private-operation error into a retry.
+        if str(error)=='PIN dialog timed out before submission':
+            return 'The native PIN dialog timed out before submission. No PIN was sent to the YubiKey. Start the operation again and look for the YubiKey PIN dialog or pin-prompt in the Dock or Command-Tab.'
+        if str(error)=='PIN cancelled or invalid':
+            return 'PIN entry was cancelled or its format was rejected locally. No PIN was sent to the YubiKey. No automatic retry was performed.'
+        # Only a strictly numeric serial from our pre-PIN presence check may
+        # enter this guidance. Never surface arbitrary backend exception text.
+        missing=re.fullmatch(r'Connect YubiKey ([1-9][0-9]{0,9})',str(error))
+        if missing and int(missing.group(1))<=2147483647:
+            return 'Connect YubiKey '+missing.group(1)+'. No PIN was submitted. Retry only after connecting that key.'
+    if op in ('chat-selected-signing-material','chat-selected-decryption-material'):
+        return 'Selected identity review stopped. Connect the selected YubiKey and restore its current bundle if certificates changed. The signed bundle, exact public certificate and live keys must match. No PIN was submitted and no card data was changed.'
+    if op in ('chat-identity-bundle-read','chat-identity-key-snapshot','chat-identity-companion-read','chat-identity-devices'):
+        return 'Public YubiKey read stopped. Connect the configured YubiKey and retry with its current public bundle. No PIN was submitted and no card or identity data was changed.'
+    if op=='chat-hardware-audit':
+        return 'Read-only hardware audit stopped. The selected signed bundle, device, public keys or metadata could not be read consistently. No PIN was requested and unchanged status is unconfirmed.'
+    if op=='chat-identity-current':
+        return 'The configured public identity could not be read. No YubiKey operation was attempted.'
+    if op=='chat-certificate-migration':
+        return 'Legacy public-certificate export stopped. Check the old store for conflicting, malformed or oversized records. No certificates or trust were changed. No YubiKey operation was attempted.'
+    if op=='chat-decryption-material':
+        return 'The configured public decryption identity could not be read. No YubiKey operation was attempted.'
+    if op in ('chat-sign-digest','chat-decapsulate-components'):
+        return 'YubiKey operation stopped. Check the configured key and native PIN dialog. No automatic private-operation retry was performed.'
+    if op and op.startswith('chat-vault-'):
+        # Reflect only our fixed diagnostics, never arbitrary exceptions, native
+        # stderr, PINs or secret output. Cancellation is not a token PIN failure.
+        # PIV_UNLOCK_DIAGNOSTICS: these fixed component labels consume the
+        # status protocol from chat_bridge.py and crypto/src/main.rs. They may
+        # remain when disk history is removed. If removing the protocol too,
+        # retain a generic failure response: never expose str(error)/raw stderr
+        # or add an automatic private-operation retry.
+        reasons={'PIN cancelled or invalid':'PIN dialog cancelled or local PIN format rejected',
+                 'Vault crypto MLKEM_FAILED':'ML-KEM-768 PKCS#11 component failed',
+                 'Vault crypto X25519_FAILED':'X25519 PKCS#11 component failed',
+                 'Vault crypto ADAPTER_TIMEOUT_OR_INPUT':'PKCS#11 adapter timed out or rejected input',
+                 'Vault crypto MLKEM_RESPONSE_SIZE':'ML-KEM-768 returned an invalid response length',
+                 'Vault crypto X25519_RESPONSE_SIZE':'X25519 returned an invalid response length',
+                 'Vault crypto CRYPTO_FAILED':'native cryptographic validation failed (unclassified)',
+                 'Vault helper timeout':'native cryptographic helper timed out',
+                 'Expected YubiKey not connected':'configured YubiKey not connected',
+                 'Cryptographic operation failed; no retry':'PKCS#11 decapsulation failed',
+                 'Wrong PIV key':'public-key mismatch',
+                 'Required vault YubiKey absent':'configured classical PIV key not connected'}
+        reason=reasons.get(str(error),'native vault operation could not complete')
+        return 'Vault stopped: '+reason+'. No retry or vault write was performed.'
+    if op and op.startswith('chat-'):
+        return 'Unsupported or failed hardware operation. No automatic cryptographic retry was performed.'
+    return 'Operation stopped. Check the key connection or native dialog. No automatic retry; unchanged status is unconfirmed unless the saved comparison completed.'

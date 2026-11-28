@@ -27,7 +27,6 @@ const progress=s=>{say(s);if(el('fido-pin-dialog').open)stage(/touch/i.test(s)?'
 const cancel=()=>active?.abort();
 window.addEventListener('iwa-vault-locked',cancel);
 window.addEventListener('pagehide',cancel);
-el('hardware-transport').addEventListener('change',cancel);
 el('fido-cancel').onclick=cancel;
 el('fido-rp').options[0].value=packageRp();
 el('fido-rp').options[0].textContent='IWA package — '+packageRp();
@@ -71,7 +70,6 @@ el('fido-getinfo').onclick=async()=>{try{const result=await run(options=>getInfo
 window.directFido=Object.freeze({
  complete,
  async entropy({signal,guard,serial:reviewedSerial}){
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card for single-touch entropy.');
   if(!globalThis.SequoiaSecureChannel?.isRequired())throw Error('Enable secure YubiKey connection for entropy collection.');
   const serial=reviewedSerial===undefined?selectedSerial():reviewedSerial;
   if(typeof serial!=='string'||!/^[1-9][0-9]{0,9}$/.test(serial))
@@ -91,7 +89,7 @@ window.directFido=Object.freeze({
  },
  // Only public recovery metadata is persisted; never PINs or PRF outputs.
  async create(binding,name,vaultId){
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard'||binding.rpId!==packageRp())throw Error('Select Web Smart Card and the IWA package RP first.');
+  if(binding.rpId!==packageRp())throw Error('New FIDO credentials require the IWA package RP.');
   const key='iwa-fido-creation-recovery:'+packageRp();let pending=JSON.parse(localStorage.getItem(key)||'null');
   if(pending&&(pending.vaultId!==vaultId||pending.binding.serial!==binding.serial))throw Error('An unfinished credential enrollment belongs to another vault/key.');
   if(pending&&!pending.binding.credentialId){
@@ -116,9 +114,19 @@ window.directFido=Object.freeze({
   ?{rpId:packageRp(),serial}
   :{rpId:el('fido-rp').value,serial:selectedSerial()},
  async prf(binding,options){
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Choose Web Smart Card transport first.');
   return run(async options=>{
-   const serial=binding.serial||selectedSerial();
+   let serial=binding.serial;
+   if(!serial){
+    // Old extension-RP wrappers may only record the credential ID. Preserve
+    // that RP and credential, and require an unambiguous physical card.
+    serial=el('fido-serial').value.trim();
+    if(serial)serial=selectedSerial();
+    else{
+     const devices=await window.SequoiaSmartCardPiv.listYubiKeys();
+     if(devices.length!==1)throw Error('Connect only the YubiKey for this FIDO unlock method or enter its serial under FIDO enrollment settings.');
+     serial=String(devices[0].serial);
+    }
+   }
    const r=await evaluate({serial,rpId:binding.rpId||extensionRp(),credentialId:binding.credentialId?bytes(binding.credentialId):null,salt:bytes(binding.salt)},details=>promptPin(details,options.signal),options);
    try{progress('PRF received. Checking the encrypted vault…');return {credentialId:b64(r.credentialId),secret:b64(r.secret),serial};}
    finally{r.secret.fill(0);}
@@ -135,7 +143,6 @@ el('preview-create').onclick=async()=>{
  try{
   if(previewBatchActive)throw Error('Finish the ten-key test first.');
   const key=previewStore();if(localStorage.getItem(key))throw Error('Test setup already exists or is incomplete. Do not create a duplicate.');
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card transport.');
   const serial=selectedSerial();
   const result=await run(options=>createPreviewSign({serial,rpId:packageRp(),userId:crypto.getRandomValues(new Uint8Array(32)),name:'IWA previewSign diagnostic'},details=>promptPin(details,options.signal,true),{...options,beforeCreate:()=>localStorage.setItem(key,JSON.stringify({pending:true,serial,rpId:packageRp()}))}));
   localStorage.setItem(key,JSON.stringify({serial,rpId:packageRp(),credentialId:b64(result.credentialId),credentialKey:b64(encode(result.credentialKey)),keyHandle:b64(result.keyHandle),publicKey:b64(encode(result.publicKey))}));
@@ -146,7 +153,6 @@ el('preview-sign').onclick=async()=>{
  try{
   if(previewBatchActive)throw Error('Finish the ten-key test first.');
   const saved=JSON.parse(localStorage.getItem(previewStore())||'null');if(!saved||saved.pending)throw Error('Create the separate previewSign test credential first; incomplete setup must be inspected before retrying.');
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card transport.');
   const ikm=crypto.getRandomValues(new Uint8Array(32));let derived;
   try{derived=derive(decode(bytes(saved.publicKey)),ikm,new TextEncoder().encode('Sequoia IWA previewSign test'));}finally{ikm.fill(0);}
   const message=new TextEncoder().encode('Synthetic previewSign diagnostic '+crypto.randomUUID());
@@ -170,7 +176,6 @@ el('preview-pgp').onclick=async()=>{
  try{
   const saved=JSON.parse(localStorage.getItem(previewStore())||'null');
   if(!saved||saved.pending)throw Error('Complete previewSign test setup first.');
-  if(globalThis.hardwareTransport?.getMode()!=='smartcard')throw Error('Select Web Smart Card transport.');
   previewSay('Preparing ten ARKG-derived OpenPGP identities. Expect 20 PIN/touch operations; no email is sent.');
   el('preview-downloads').replaceChildren();await initPreviewSequoia();
   const sign=async(derived,hash,purpose)=>{

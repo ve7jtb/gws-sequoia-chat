@@ -22,7 +22,7 @@ export async function signAndEncrypt(material, compose, signDigest, options = {}
   const cancel = () => fail('Signing cancelled; no retry.','signing-cancelled');
   try {
     worker = createWorker();
-    timer = setTimeout(() => fail('Browser signing timed out; check the native operation before trying again.','signing-timeout'), timeoutMs);
+    timer = setTimeout(() => fail('Browser signing timed out; check the card operation before trying again.','signing-timeout'), timeoutMs);
     signal?.addEventListener('abort', cancel, {once: true});
     worker.onerror = () => fail('Browser signing failed; no native fallback.','signing-worker');
     worker.onmessage = ({data}) => {

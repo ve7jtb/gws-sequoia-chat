@@ -1,5 +1,9 @@
 # gws + Sequoia Mail & Chat
 
+The IWA uses Web Smart Card for YubiKey operations. The browser extension
+handles Google OAuth and Chat attachments only.
+[Supported IWA hardware and vault paths](experiments/mac-iwa/README.md#web-smart-card-replaces-the-native-helper)
+
 **IWA 0.20.53 passed backup-first Level 3 provisioning and on-key restore**
 on YubiKey SN# 41088108. The IWA issued and verified the S/MIME and experimental
 NIST v6 certificates in software without a PIN or touch, then imported ten keys

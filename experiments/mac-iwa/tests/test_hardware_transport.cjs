@@ -58,11 +58,6 @@ async function testBrowserPinValidation() {
 }
 (async () => {
   await testBrowserPinValidation();
-  const mem = new Map();
-  const storage = { getItem: k => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
-  const nativeCalls = [];
-  const nativeRequest = async (op, data) => { nativeCalls.push({ op, data }); return { via: 'native', op }; };
-
   const pivCalls = [];
   const fakePiv = {
     async listYubiKeys() { pivCalls.push('listYubiKeys'); return [{ serial: '41088108', version: '0.0.1', reader: 'YubiKey' }]; },
@@ -81,59 +76,41 @@ async function testBrowserPinValidation() {
     async ecdhViaSmartCard(req) { pivCalls.push('ecdh'); return { secret: 'EE==', fingerprint: req.fingerprint }; },
   };
 
-  const t = createHardwareTransport({ piv: fakePiv, storage, promptPin: async () => '123456' });
-
-  // New installations default to direct Web Smart Card; saved native choices persist.
-  assert.equal(t.getMode(), 'smartcard');
-  t.setMode('native');
-  assert.equal(t.getMode(), 'native');
-  const r1 = await t.dispatch('status', {}, {}, nativeRequest);
-  assert.equal(r1.via, 'native');
-  assert.equal(pivCalls.length, 0);
-
-  // Switch explicitly to 'smartcard'
-  t.setMode('smartcard');
-  assert.equal(t.getMode(), 'smartcard');
-
-  const st = await t.dispatch('status', {}, {}, nativeRequest);
+  const t = createHardwareTransport({ piv: fakePiv, promptPin: async () => '123456' });
+  const st = await t.dispatch('status');
   assert.equal(st.connected, true);
   assert.equal(st.serial, '41088108');
-  assert.equal(nativeCalls.length, 1); // native was NOT called again
 
   // Device discovery returns strict {serial}-only objects required by identities/devices.js
-  const devs = await t.dispatch('chat-identity-devices', {}, {}, nativeRequest);
+  const devs = await t.dispatch('chat-identity-devices', {}, {});
   assert.equal(JSON.stringify(devs), JSON.stringify({ devices: [{ serial: '41088108' }] }));
   assert.equal(Object.keys(devs.devices[0]).join(), 'serial');
 
   // Bundle read & key snapshot via smartcard
-  await assert.rejects(t.dispatch('chat-identity-bundle-read', {serial:'41088108'}, {}, nativeRequest),/verification unavailable/);
-  const bsnap = await t.dispatch('chat-identity-bundle-read', { serial: '41088108' }, {}, nativeRequest,{inspectPublicBundle:async()=>{}});
+  await assert.rejects(t.dispatch('chat-identity-bundle-read', {serial:'41088108'}, {}),/verification unavailable/);
+  const bsnap = await t.dispatch('chat-identity-bundle-read', { serial: '41088108' }, {},{inspectPublicBundle:async()=>{}});
   assert.equal(bsnap.generation, 4);
-  const ksnap = await t.dispatch('chat-identity-key-snapshot', { serial: '41088108' }, {}, nativeRequest);
+  const ksnap = await t.dispatch('chat-identity-key-snapshot', { serial: '41088108' }, {});
   assert.equal(ksnap.format, 'sequoia-iwa-public-snapshot');
-
-  // Non-PIV extension ops still pass through
-  const prf = await t.dispatch('vault-prf', { name: 'test' }, {}, nativeRequest);
-  assert.equal(prf.via, 'native');
 
   // Signing ticket + signDigest flow via smartcard
   const id = {version:6,profile:'level3',bundleHash:'b'.repeat(64), serial: '41088108', fingerprint: 'F'.repeat(64), certificateHash: 'a'.repeat(64), email: 'u@example.test', certificate: 'CERT', signingFingerprint: 'S'.repeat(64), recipientKey: 'R'.repeat(64) };
   const auth={authorizeIdentity:async()=>id,assertIdentity:async()=>{},signingInput:async()=> 'MU'};
-  const originalDispatch=t.dispatch; t.dispatch=(op,data,opt,native,context)=>originalDispatch(op,data,opt,native,{...auth,...context});
-  const mat = await t.dispatch('chat-selected-signing-material', { identity: id }, {}, nativeRequest);
+  const originalDispatch=t.dispatch; t.dispatch=(op,data,opt,context)=>originalDispatch(op,data,opt,{...auth,...context});
+  const mat = await t.dispatch('chat-selected-signing-material', { identity: id }, {});
   assert.equal(mat.signingFingerprint, 'S'.repeat(64));
-  const sig = await t.dispatch('chat-sign-digest', { review: mat.review, requestId: '1'.repeat(64), digest: 'D'.repeat(86) + '==', signingFingerprint: id.signingFingerprint }, {}, nativeRequest);
+  const sig = await t.dispatch('chat-sign-digest', { review: mat.review, requestId: '1'.repeat(64), digest: 'D'.repeat(86) + '==', signingFingerprint: id.signingFingerprint }, {});
   assert.equal(sig.mldsa65, 'BB==');
 
   // Replay of consumed signing ticket must fail (no retry/no fallback)
   await assert.rejects(
-    t.dispatch('chat-sign-digest', { review: mat.review, requestId: '1'.repeat(64) }, {}, nativeRequest),
+    t.dispatch('chat-sign-digest', { review: mat.review, requestId: '1'.repeat(64) }, {}),
     /Expired or unknown/
   );
 
   // Decapsulation ticket + decapsulate flow via smartcard
-  const dmat = await t.dispatch('chat-selected-decryption-material', { identity: id }, {}, nativeRequest);
-  const shares = await t.dispatch('chat-decapsulate-components', { review: dmat.review, requestId: '2'.repeat(64), recipientKey:id.recipientKey }, {}, nativeRequest);
+  const dmat = await t.dispatch('chat-selected-decryption-material', { identity: id }, {});
+  const shares = await t.dispatch('chat-decapsulate-components', { review: dmat.review, requestId: '2'.repeat(64), recipientKey:id.recipientKey }, {});
   assert.equal(shares.mlkemSecret, 'CC==');
 
   // Locked-vault hybrid operations use verified public material rather than
@@ -141,38 +118,32 @@ async function testBrowserPinValidation() {
   let vaultActive=true;
   const vaultCtx={prepareLevel3VaultUnlock:async (serial,recipientKey,progress)=>{assert.equal(serial,'41088108');assert.equal(recipientKey,id.recipientKey);progress?.({stage:'prepare'});return id;},assertVault:()=>{if(!vaultActive)throw Error('Vault operation ended');}};
   const progress=[];
-  const vd=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{vaultProgress:event=>progress.push(event)},nativeRequest,vaultCtx);
+  const vd=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{vaultProgress:event=>progress.push(event)},vaultCtx);
   assert.deepEqual(progress,[{stage:'prepare'}]);
-  await assert.rejects(t.dispatch('chat-decapsulate-components',{review:vd.review,service:'Chat',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/purpose changed/);
-  const actual=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
-  await t.dispatch('chat-decapsulate-components',{review:actual.review,service:'Vault',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx);
+  await assert.rejects(t.dispatch('chat-decapsulate-components',{review:vd.review,service:'Chat',recipientKey:id.recipientKey},{},vaultCtx),/purpose changed/);
+  const actual=await t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},vaultCtx);
+  await t.dispatch('chat-decapsulate-components',{review:actual.review,service:'Vault',recipientKey:id.recipientKey},{},vaultCtx);
   vaultActive=false;
-  await assert.rejects(t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},nativeRequest,vaultCtx),/operation ended/);
+  await assert.rejects(t.dispatch('chat-decryption-material',{service:'Vault',serial:'41088108',recipientKey:id.recipientKey},{},vaultCtx),/operation ended/);
 
   // Vault material + classical ECDH via smartcard
-  const vmat = await t.dispatch('chat-vault-material', {}, {}, nativeRequest,{prepareVault:()=>fakePiv.readVaultMaterialViaSmartCard()});
+  const vmat = await t.dispatch('chat-vault-material', {}, {},{prepareVault:()=>fakePiv.readVaultMaterialViaSmartCard()});
   assert.equal(vmat.serial, '41088108');
   assert.equal(vmat.classical.slot, '9d');
   assert.equal(vmat.classical.algorithm, 'ECDH-P256');
-  const ecdh = await t.dispatch('chat-vault-ecdh', { peer: 'AA==', fingerprint: 'fp1' }, {}, nativeRequest);
+  const ecdh = await t.dispatch('chat-vault-ecdh', { peer: 'AA==', fingerprint: 'fp1' }, {});
   assert.equal(ecdh.secret, 'EE==');
 
-  // Unsupported native-only op fails explicitly without silent fallback
-  await assert.rejects(
-    t.dispatch('chat-certificate-migration', {}, {}, nativeRequest),
-    /requires the Native helper/
-  );
-
-  // Requiring SCP forbids the unprotected native path and native FIDO PRF,
-  // while unrelated Google API brokerage still works.
+  // Retired routes and saved preferences cannot invoke a native transport.
+  ctx.localStorage = {getItem: () => 'native'};
+  assert.equal((await createHardwareTransport({piv:fakePiv}).dispatch('status')).serial,'41088108');
+  for(const op of ['chat-certificate-migration','chat-identity-current','vault-prf','chat-identity-companion-read'])
+    await assert.rejects(t.dispatch(op), /not supported over Web Smart Card/);
+  for(const profile of [{...id,version:4},{...id,version:5},{...id,profile:'level5'},{...id,companion:{}}]){
+    assert.equal(t.supportsIdentity(profile),false);
+    await assert.rejects(t.dispatch('chat-selected-signing-material',{}, {},{authorizeIdentity:async()=>profile}), /require a Level 3 RFC 9980/);
+  }
   ctx.SequoiaSecureChannel={isRequired:()=>true};
-  t.setMode('native');
-  const before=nativeCalls.length;
-  await assert.rejects(t.dispatch('chat-vault-ecdh',{}, {},nativeRequest),/requires Web Smart Card/);
-  await assert.rejects(t.dispatch('vault-prf',{}, {},nativeRequest),/requires Web Smart Card/);
-  assert.equal(nativeCalls.length,before);
-  await t.dispatch('google-oauth-test',{}, {},nativeRequest);
-  assert.equal(nativeCalls.length,before+1);
 
   // Exercise the production PIN dialog through its actual submission handler.
   // The modal must stay open with a cleared PIN all the way into the card call.
@@ -186,7 +157,7 @@ async function testBrowserPinValidation() {
   const element=id=>elements.get('smartcard-pin-'+id);
   ctx.document={getElementById:id=>elements.get(id)};
   Object.assign(ctx,{setTimeout,clearTimeout,requestAnimationFrame:cb=>queueMicrotask(cb)});
-  const browserTransport=createHardwareTransport({storage,piv:{
+  const browserTransport=createHardwareTransport({piv:{
     async openLevel5VaultViaSmartCard(data,prompt){
       const submitted=prompt({title:'PIV PIN',detail:'Test'});
       assert.equal(element('dialog').open,true);
@@ -201,11 +172,10 @@ async function testBrowserPinValidation() {
       throw Error('Card declined the command (bare SW=6982) [INS=87 P1=E7 P2=9D, final command, SW=6982]');
     },
   }});
-  browserTransport.setMode('smartcard');
-  await assert.rejects(browserTransport.dispatch('chat-vault-level5-open',{serial:'123'},{},nativeRequest,{assertVault(){}}),/declined the operation.*touch the key promptly.*INS=87 P1=E7 P2=9D/);
+  await assert.rejects(browserTransport.dispatch('chat-vault-level5-open',{serial:'123'},{},{assertVault(){}}),/declined the operation.*touch the key promptly.*INS=87 P1=E7 P2=9D/);
   assert.equal(element('dialog').open,false);
   assert.equal(element('entry').hidden,false);
   assert.equal(element('wait').hidden,true);
 
-  console.log('PASS hardware-transport dual-mode routing, ticket single-use, and no-fallback tests');
+  console.log('PASS hardware-transport Web Smart Card routing, ticket single-use, and no-fallback tests');
 })();

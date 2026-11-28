@@ -2,7 +2,7 @@
 // application. Both screens use this document so an unlocked vault survives
 // the switch in either direction.
 const common=[
- {src:'/config.js'}, {src:'/native-bridge.js'},
+ {src:'/config.js'},
  {"src": "/secure-channel-ui.js", "module": true},
  {src:'/smartcard-piv.js'}, {src:'/hardware-transport.js'},
 ];

@@ -20,7 +20,7 @@ export function nativeIdentity(snapshot){
  * or export. Removing/replacing an identity in another window invalidates an
  * earlier review even if its serial or primary fingerprint stays the same.
  */
-export function createIdentitySelection({store,inspect,match}){
+export function createIdentitySelection({store,inspect,match,supports=()=>true}){
  async function list(account){
   if(typeof account!=='string'||!account.includes('@'))fail('A configured sending account is required.');
   const inventory=await store.list(),choices=[];
@@ -37,7 +37,7 @@ export function createIdentitySelection({store,inspect,match}){
     if(version!==certificate.version||info.fingerprint.length!==(version===4?40:64))fail('Saved own certificate version changed.');
     if(info.fingerprint!==certificate.fingerprint||info.certificateHash!==certificate.certificateHash)fail('Saved own certificate integrity check failed.');
     const id=await hash(new TextEncoder().encode(identity.id+'\n'+certificate.certificateHash+'\n'+account.toLowerCase()));
-    choices.push({id,identityId:identity.id,revision:inventory.revision,serial:identity.serial,
+    const choice={id,identityId:identity.id,revision:inventory.revision,serial:identity.serial,
      bundleHash:identity.bundleHash,certificate:info.certificate,certificateHash:info.certificateHash,
      fingerprint:info.fingerprint,email:account.toLowerCase(),signingFingerprint:info.signingFingerprint,
      recipientKey:info.recipientKey,algorithms:info.algorithms,slots:identity.slots,
@@ -47,7 +47,8 @@ export function createIdentitySelection({store,inspect,match}){
      pqSigning:info.pqSigning??version===6,pqEncryption:info.pqEncryption??info.hybridContact,
      ...(certificate.components?{components:certificate.components}:{}),
      ...(identity.companion?{companion:identity.companion}:{}),
-     custody:identity.companion?'hardware-companion':'hardware'});
+     custody:identity.companion?'hardware-companion':'hardware'};
+    if(supports(choice))choices.push(choice);
    }
   }
   return {choices,revision:inventory.revision};

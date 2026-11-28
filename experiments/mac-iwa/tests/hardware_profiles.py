@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'native'))
 from chat_bridge import ChatBridge,MESSAGE_STATUS
 from identities import preview,companion_preview,run_public,checked_serial
-from host import operation_error
+from chat_bridge import operation_error
 
 ALLOWED={'chat-identity-bundle-read','chat-identity-companion-read','chat-identity-key-snapshot','chat-hardware-audit',
          'chat-selected-signing-material','chat-selected-decryption-material',

@@ -1,8 +1,8 @@
 export const VAULT_REMOVAL_TIMEOUT_MS=30_000;
 const PROBE_INTERVAL_MS=5_000;
 
-export function monitoredVaultSerial(serial,mode,scope=globalThis){
- return mode==='smartcard'&&scope.SequoiaSecureChannel?.isRequired()===true&&
+export function monitoredVaultSerial(serial,scope=globalThis){
+ return scope.SequoiaSecureChannel?.isRequired()===true&&
   typeof serial==='string'&&/^[1-9][0-9]{0,9}$/.test(serial)?serial:null;
 }
 
