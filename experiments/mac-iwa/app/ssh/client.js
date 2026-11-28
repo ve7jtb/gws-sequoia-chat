@@ -16,11 +16,12 @@ function createSshWorker(WorkerClass=Worker){
 }
 // The UI receives no private key. The injected signer checks its vault revision
 // on both sides of signing; trust must pass before any sign callback is accepted.
-export function connectSsh({host,port,username,publicKey,entries,getEntries,acceptUnknownHost,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
+export function connectSsh({host,port,username,publicKey,entries,getEntries,acceptUnknownHost,requestPassword,authorizeKey=false,sign,guard,signal,onOutput,onStatus,WorkerClass=Worker}){
  const target=endpoint(host,port);guard();
  if(typeof username!=='string'||!username||username.length>256||/[\x00-\x20\x7f]/.test(username))throw Error('Enter a valid SSH username.');
+ if(authorizeKey&&typeof requestPassword!=='function')throw Error('Password prompt is unavailable.');
  const worker=createSshWorker(WorkerClass),lifetime=new AbortController();
- let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,hostKey=null;
+ let closed=false,hostAccepted=false,ready=false,signing=false,authUsed=false,passwordUsed=false,hostKey=null;
  const close=()=>{if(closed)return;closed=true;lifetime.abort();worker.terminate();signal?.removeEventListener('abort',close);};
  const check=()=>{if(closed)throw Error('SSH connection closed.');guard();};
  const verify=async candidate=>verifyHost({entries:getEntries?await getEntries():entries,...candidate,guard:check});
@@ -42,14 +43,28 @@ export function connectSsh({host,port,username,publicKey,entries,getEntries,acce
     check();hostAccepted=true;
     if(!closed)worker.postMessage({type:'reply',id:data.id,result:true});
    }else if(data.type==='sign'){
-    if(!hostAccepted||signing||ready||authUsed)throw Error('Unexpected SSH authentication request.');signing=true;authUsed=true;
+    if(authorizeKey||!hostAccepted||signing||ready||authUsed)throw Error('Unexpected SSH authentication request.');signing=true;authUsed=true;
     try{await verify(hostKey);check();const result=await sign(data.data);check();worker.postMessage({type:'reply',id:data.id,result});}finally{signing=false;}
+   }else if(data.type==='password'){
+    if(!authorizeKey||!hostAccepted||passwordUsed)throw Error('Unexpected SSH password request.');
+    passwordUsed=true;let secret;
+    try{
+     await verify(hostKey);check();
+     secret=await requestPassword({...target,username},lifetime.signal);
+     if(!(secret instanceof Uint8Array)||!secret.length||secret.length>1024)throw Error('Invalid SSH password length.');
+     await verify(hostKey);check();
+     // postMessage copies the bytes to the disposable authentication worker.
+     worker.postMessage({type:'reply',id:data.id,result:secret});
+    }finally{if(secret instanceof Uint8Array)secret.fill(0);}
+   }else if(data.type==='authorized'){
+    if(!authorizeKey||!hostAccepted||!passwordUsed)throw Error('Unexpected SSH authorization result.');
+    onStatus('SSH public key authorized.');close();
    }else if(data.type==='ready'){ready=true;onStatus('SSH authenticated.');}
    else if(data.type==='output'){if(hostAccepted)onOutput(data.data);}
    else if(data.type==='error'||data.type==='closed'){onStatus(data.message||'SSH disconnected.');close();}
   }catch(e){if(!closed){onStatus(e.message);close();}}
  };
- worker.postMessage({type:'connect',...target,username,publicKey});
+ worker.postMessage({type:'connect',...target,username,publicKey,authorizeKey});
  return {close,input(data){guard();if(!closed&&ready)worker.postMessage({type:'input',data});},resize(rows,cols){guard();if(!closed&&ready)worker.postMessage({type:'resize',rows,cols});}};
 }
 // Signing workers are short-lived and receive a copy of the selected seeds only.

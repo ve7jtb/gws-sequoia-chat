@@ -125,7 +125,16 @@ func main() {
 				}
 				return octets(v), nil
 			}}
-			terminal, e = engine.Connect(context.Background(), &connection{}, options.Get("address").String(), options.Get("username").String(), signer, hostCheck, output{}, 24, 80)
+			address, user := options.Get("address").String(), options.Get("username").String()
+			if options.Get("authorizeKey").Truthy() {
+				if e := engine.AuthorizePublicKey(context.Background(), &connection{}, address, user, pub, hostCheck, requestPassword); e != nil {
+					js.Global().Call("sshFailure", e.Error())
+					return
+				}
+				js.Global().Call("sshAuthorized")
+				return
+			}
+			terminal, e = engine.Connect(context.Background(), &connection{}, address, user, signer, hostCheck, output{}, 24, 80)
 			if e != nil {
 				js.Global().Call("sshFailure", e.Error())
 				return
@@ -170,4 +179,20 @@ func main() {
 		return nil
 	}))
 	select {}
+}
+
+// The SSH library needs a password string for its encrypted auth packet.
+// Clear both byte buffers after conversion and keep the string in this worker.
+func requestPassword() (string, error) {
+	v, err := await(js.Global().Call("sshPassword"))
+	if err != nil {
+		return "", err
+	}
+	defer v.Call("fill", 0)
+	if n := v.Get("byteLength").Int(); n < 1 || n > 1024 {
+		return "", errors.New("invalid SSH password length")
+	}
+	secret := octets(v)
+	defer clear(secret)
+	return string(secret), nil
 }

@@ -32,6 +32,31 @@ test('first-use review must save the same host key before any authentication',as
  assert.equal(reviewed,2);reconnect.close();
 });
 
+test('password is requested once after host verification and is cleared after handoff',async()=>{
+ let prompts=0,secret;
+ class PasswordWorker extends FakeWorker{
+  postMessage(message){super.postMessage(structuredClone(message));}
+ }
+ const options={host:'host',port:22,username:'user',publicKey:b,entries:[entry],
+  authorizeKey:true,requestPassword:async target=>{
+   prompts++;assert.deepEqual(target,{host:'host',port:22,username:'user'});
+   secret=new TextEncoder().encode('disposable password');return secret;
+  },
+  sign:()=>assert.fail('Key authorization must not access private keys'),
+  guard(){},onOutput(){},onStatus(){},WorkerClass:PasswordWorker};
+ connectSsh(options);
+ await FakeWorker.instance.emit({type:'password',id:1});
+ assert.equal(prompts,0);assert(FakeWorker.instance.stopped);
+ connectSsh(options);
+ const worker=FakeWorker.instance;
+ await worker.emit({type:'host',id:1,algorithm:entry.type,data:b});
+ await worker.emit({type:'password',id:2});
+ assert.equal(prompts,1);assert(secret.every(byte=>byte===0));
+ assert.equal(new TextDecoder().decode(worker.sent.at(-1).result),'disposable password');
+ await worker.emit({type:'password',id:3});
+ assert.equal(prompts,1);assert(worker.stopped);
+});
+
 test('SSH connection and signing use a fixed TrustedScriptURL and module worker',async()=>{
  const oldPolicy=globalThis.trustedTypes,oldWorker=globalThis.Worker;
  let createScriptURL;

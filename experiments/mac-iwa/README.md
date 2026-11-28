@@ -45,6 +45,14 @@ check reads the server’s advertised algorithms, shows the expected encryption
 and key exchange, and warns when the key exchange would be classical. Host
 verification happens when connecting.
 
+To set up a remote account, select the SSH identity, enter the host and
+username, then choose **Authorize SSH public key…**. After host verification,
+enter the remote account password. The app uses it once to run a fixed command
+that adds the selected public key to the default `~/.ssh/authorized_keys` file.
+Existing key restrictions are preserved. Use **Connect SSH terminal** for
+subsequent key-based login. The server must allow SSH password authentication
+and command execution for setup and support the composite key for terminal login.
+
 Validation on 2026-11-27: **425 Node tests passed, one optional test skipped**.
 Go tests cover a disposable loopback SSH server, authenticated PTY round trip,
 host-trust rejection before signing, and corrupted composite components.
