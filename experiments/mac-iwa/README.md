@@ -2371,6 +2371,14 @@ local development bundle. If using Google Chat attachments or extension OAuth,
 reload the generated `extension/` directory in `chrome://extensions` after a
 rebuild and preserve its extension key. Keep `private/` out of distribution.
 
+### Release workflow
+
+Develop the IWA on `development/iwa`. Tag the exact commit used to build each
+release as `iwa-v<version>` and publish the signed bundle and checksums from
+that tag. The installed updater reads `update-manifest.json` from `main`.
+Add the release to the intended channel there and merge `main` into
+`development/iwa` to keep the manifest and documentation current.
+
 ## Live Mac IWA hardware result — 2026-11-21
 
 The installed signed IWA → extension → native helper path passed with an
@@ -2917,19 +2925,101 @@ It encrypts with the existing random AES-256 vault key, fresh nonce and distinct
 associated data; there is no backup password. The recovery header contains the
 encrypted vault and existing authenticator wrappers, including public wrapper
 names/identifiers. Restore requires the same signed IWA origin and an enrolled
-credential from the export. In 0.20.68, choose an enrolled FIDO PRF, hybrid PIV,
-or classical PIV method on the restore screen. The picker shows the saved names
-and YubiKey serials where available. Export reuses an active vault session, and
-the app carries a verified restore into an unlocked session after readback.
+credential from the export. From 0.20.68, the restore picker lists enrolled
+FIDO PRF and PIV methods, including hybrid and classical PIV wrappers, with saved
+names and YubiKey serials where available. Export can reuse an unlocked vault,
+and a verified restore carries the unlocked session into the app.
 
 Restore refuses conflicting destination data, supports an interrupted identical
 restore, and checks all records by readback. A pending marker blocks ordinary
 startup until restore completes. Close other app windows before capture. The
 Drive backup list is separate from OpenPGP files and accepts only encrypted
 backup envelopes. In-memory drafts/tokens are excluded. Automated tests cover
-restoration, wrong authenticator, tampering, conflicts and interrupted recovery;
-**real second-instance restoration is not yet validated**. Do not uninstall the
-Chromebook's existing app until that validation completes.
+restoration, wrong authenticator, tampering, conflicts and interrupted recovery.
+
+#### macOS Google Drive restore with hybrid PIV (0.20.68 Testing)
+
+On November 28, 2026, Chromium IWA Lab downloaded the complete encrypted
+backup from Google Drive. From a locked session, the backup was verified and
+restored into the existing Mac instance with the enrolled **ML-KEM-768 +
+X25519 hybrid PIV** credential on **YubiKey SN# 41088108** over Web Smart Card.
+Restore completed after **one PIV PIN prompt**. **Continue to app** opened the
+workspace, and the Vault tab showed the restored vault was still unlocked.
+This run used the existing Mac instance with matching data.
+
+Read-only PC/SC snapshots matched before and after the restore across all 24
+PIV slots, including all 12 populated public keys, PIN and touch policies,
+and PIN retry counts. Stable FIDO settings reported by the key also matched.
+[Signed 0.20.68 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.68)
+
+#### macOS Level 3 vault unlock timing (0.20.70 Testing)
+
+On November 28, 2026, Sequoia Chat Lab on macOS measured **3.712 seconds**
+from **Unlock vault** to the PIV PIN prompt on **YubiKey SN# 41088108**,
+compared with about **9.1 seconds** in the earlier 0.20.68 run on the same
+Mac and key. Both runs required SCP11b over Web Smart Card. The 0.20.70
+measurement used the in-app timer and ended when the PIN dialog opened,
+before PIN entry or touch. The vault opened after **one PIV PIN prompt**.
+
+Read-only PC/SC snapshots before and after the unlock matched across all 24
+PIV slots, including the 12 populated public keys, PIN and touch policies,
+PIN retry counts, and stable FIDO settings reported by the key.
+[Signed 0.20.70 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.70)
+
+#### macOS alternate YubiKey vault unlock (0.20.71 Testing)
+
+With the default YubiKey **SN# 41088108** unplugged, Sequoia Chat Lab on macOS
+discovered the enrolled **SN# 41088353** over Web Smart Card with SCP11b
+required. The app named the missing and attached serials, then waited for
+confirmation. The alternate unlocked the vault, and the next locked login
+screen still selected SN# 41088108 as the default.
+
+Read-only PC/SC snapshots matched the baseline on both keys across all 24 PIV
+slots per key. The 12 populated public keys on SN# 41088108 and the nine on
+SN# 41088353 matched, as did their PIN and touch policies, PIN retry counts,
+and stable FIDO settings. SN# 41088108 was reconnected for its post-test audit.
+[Signed 0.20.71 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.71)
+
+#### macOS vault auto-lock on YubiKey removal (0.20.72 Testing)
+
+With SCP11b required over Web Smart Card, Sequoia Chat Lab on macOS unlocked
+the vault using **YubiKey SN# 41088108**. Unplugging that key returned the app
+to the login screen after about **29.6 seconds**, while the enrolled
+**SN# 41088353** remained attached. USB and screen observations bounded the
+delay to **29.4–29.8 seconds**, within the 30-second target.
+
+Read-only post-test PC/SC snapshots matched both pre-test baselines across all
+24 PIV slots per key, including the populated public keys, PIN and touch
+policies, PIN retry counts, and stable FIDO settings.
+[Signed 0.20.72 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.72)
+
+#### macOS Level 3 signing and decryption on SN# 41088008 (0.20.76 Testing)
+
+The Mac IWA passed the offline Level 3 test with **YubiKey SN# 41088008**
+over Web Smart Card with **SCP11b required**. It verified the
+ML-DSA-65 + Ed25519 signature from slots 9C and 84, then decrypted the
+message using ML-KEM-768 + X25519 in slots 9D and 85. The recovered plain
+text, HTML, and binary attachment matched the original test payload. No email
+was sent.
+
+The in-app audit matched all 10 slots mapped by the signed bundle. An
+independent read-only PC/SC audit matched the baseline across all **24 PIV
+slots**, including the 10 populated public keys, PIN and touch policies,
+and PIN retry counts. The stable FIDO settings covered by the audit also
+matched.
+[Signed 0.20.76 Testing release](https://github.com/ve7jtb/gws-sequoia-chat/releases/tag/iwa-v0.20.76)
+
+#### Chromebook Google Drive restore with hybrid PIV (0.20.68 Testing)
+
+The Chromebook restored the complete encrypted Google Drive backup over Web
+Smart Card using the enrolled **ML-KEM-768 + X25519 hybrid PIV** credential on
+**YubiKey SN# 41088108**. The tester confirmed **one PIV PIN prompt** and that
+the vault stayed unlocked when continuing into the app.
+
+After the Chromebook test, two read-only PC/SC snapshots on the Mac matched
+the saved baseline across all 24 PIV slots, including the 12 populated public
+keys, PIN and touch policies, and PIN retry counts. The stable FIDO settings
+reported by the key also matched.
 
 The live Chromium IWA Lab check found and fixed a Trusted Types bootstrap error;
 script loading now accepts only a fixed list of signed-bundle assets. Startup
